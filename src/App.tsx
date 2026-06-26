@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Boxes, Gauge, Home, Keyboard, MonitorCog, Settings, Wrench } from "lucide-react";
+import { Gauge, Home, Keyboard, MonitorCog, PanelLeftClose, PanelLeftOpen, Settings, Wrench } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 
@@ -26,6 +26,7 @@ function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyToolId, setBusyToolId] = useState<string | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const loadSnapshot = useCallback(async () => {
     try {
@@ -61,14 +62,20 @@ function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar" aria-label="主导航">
-        <div className="brand-mark" aria-hidden="true">
-          <Boxes size={16} strokeWidth={2.2} />
-        </div>
+      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`} aria-label="主导航">
+        <button
+          aria-label={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+          className="collapse-button"
+          onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          type="button"
+        >
+          {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+        </button>
         <nav className="primary-nav">
           <button
             className={`nav-item ${view === "home" ? "active" : ""}`}
             onClick={() => setView("home")}
+            title="首页"
             type="button"
           >
             <Home size={15} />
@@ -78,7 +85,7 @@ function App() {
           {tools.map((tool, index) => {
             const Icon = toolIcons[index] ?? Wrench;
             return (
-              <div className="tool-nav-item" key={tool.id}>
+              <div className="tool-nav-item" key={tool.id} title={tool.name}>
                 <Icon size={15} />
                 <span>{tool.name}</span>
                 <button
@@ -98,6 +105,7 @@ function App() {
           <button
             className={`nav-item ${view === "settings" ? "active" : ""}`}
             onClick={() => setView("settings")}
+            title="设置"
             type="button"
           >
             <Settings size={15} />
