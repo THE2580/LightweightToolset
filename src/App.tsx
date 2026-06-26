@@ -1,7 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ChevronLeft, Gauge, Home, Keyboard, Minus, MonitorCog, PanelLeftClose, PanelLeftOpen, Settings, Wrench, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Gauge,
+  Home,
+  Keyboard,
+  Minus,
+  MonitorCog,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Settings,
+  Wrench,
+  X,
+} from "lucide-react";
+import { type MouseEvent, useCallback, useEffect, useState } from "react";
 import "./App.css";
 
 type Tool = {
@@ -20,6 +33,11 @@ type AppSnapshot = {
 
 type View = "home" | "settings" | "tool";
 
+type NavigationTarget = {
+  view: View;
+  toolId?: string;
+};
+
 const toolIcons = [Keyboard, MonitorCog];
 
 function App() {
@@ -29,6 +47,10 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [busyToolId, setBusyToolId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [history, setHistory] = useState<NavigationTarget[]>([{ view: "home" }]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+
+  const tools = snapshot?.tools ?? [];
 
   const loadSnapshot = useCallback(async () => {
     try {
@@ -46,12 +68,14 @@ function App() {
   async function setToolEnabled(tool: Tool, enabled: boolean) {
     setBusyToolId(tool.id);
     try {
-      setSnapshot(
-        await invoke<AppSnapshot>("set_tool_enabled", {
-          toolId: tool.id,
-          enabled,
-        }),
-      );
+      const nextSnapshot = await invoke<AppSnapshot>("set_tool_enabled", {
+        toolId: tool.id,
+        enabled,
+      });
+      setSnapshot(nextSnapshot);
+      if (activeTool?.id === tool.id) {
+        setActiveTool(nextSnapshot.tools.find((nextTool) => nextTool.id === tool.id) ?? null);
+      }
       setError(null);
     } catch (reason) {
       setError(String(reason));
@@ -60,37 +84,84 @@ function App() {
     }
   }
 
-  function openTool(tool: Tool) {
-    setActiveTool(tool);
-    setView("tool");
+  function applyNavigation(target: NavigationTarget) {
+    setView(target.view);
+    setActiveTool(target.toolId ? tools.find((tool) => tool.id === target.toolId) ?? null : null);
   }
 
-  const tools = snapshot?.tools ?? [];
+  function navigate(target: NavigationTarget) {
+    const current = history[historyIndex];
+    if (current.view === target.view && current.toolId === target.toolId) {
+      return;
+    }
+
+    const nextHistory = [...history.slice(0, historyIndex + 1), target];
+    setHistory(nextHistory);
+    setHistoryIndex(nextHistory.length - 1);
+    applyNavigation(target);
+  }
+
+  function navigateHistory(direction: -1 | 1) {
+    const nextIndex = historyIndex + direction;
+    const target = history[nextIndex];
+    if (!target) {
+      return;
+    }
+
+    setHistoryIndex(nextIndex);
+    applyNavigation(target);
+  }
+
+  function openTool(tool: Tool) {
+    navigate({ view: "tool", toolId: tool.id });
+  }
+
+  function handleTitlebarMouseDown(event: MouseEvent<HTMLElement>) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) {
+      return;
+    }
+    void getCurrentWindow().startDragging();
+  }
 
   return (
-    <div className="app-shell">
-      <header className="window-chrome" data-tauri-drag-region>
+    <div className="app-shell" onContextMenu={(event) => event.preventDefault()}>
+      <header className="window-chrome" onMouseDown={handleTitlebarMouseDown}>
         <span className="window-title">LightweightToolset</span>
-        <div className="window-controls" onMouseDown={(event) => event.stopPropagation()}>
-          <button aria-label="最小化" onClick={() => void getCurrentWindow().minimize()} type="button"><Minus size={14} /></button>
-          <button aria-label="关闭" className="window-close" onClick={() => void getCurrentWindow().close()} type="button"><X size={15} /></button>
+        <div className="window-controls">
+          <button aria-label="最小化" onClick={() => void getCurrentWindow().minimize()} type="button">
+            <Minus size={14} />
+          </button>
+          <button aria-label="关闭" className="window-close" onClick={() => void getCurrentWindow().close()} type="button">
+            <X size={15} />
+          </button>
         </div>
       </header>
 
       <div className="app-workspace">
         <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`} aria-label="主导航">
-          <button
-            aria-label={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
-            className="collapse-button"
-            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
-            type="button"
-          >
-            {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-          </button>
+          <div className="sidebar-actions">
+            <div className="history-controls" aria-label="浏览历史">
+              <button aria-label="后退" disabled={historyIndex === 0} onClick={() => navigateHistory(-1)} type="button">
+                <ChevronLeft size={14} />
+              </button>
+              <button aria-label="前进" disabled={historyIndex >= history.length - 1} onClick={() => navigateHistory(1)} type="button">
+                <ChevronRight size={14} />
+              </button>
+            </div>
+            <button
+              aria-label={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+              className="collapse-button"
+              onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+              type="button"
+            >
+              {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+            </button>
+          </div>
+
           <nav className="primary-nav">
             <button
               className={`nav-item ${view === "home" ? "active" : ""}`}
-              onClick={() => setView("home")}
+              onClick={() => navigate({ view: "home" })}
               title="首页"
               type="button"
             >
@@ -100,15 +171,33 @@ function App() {
             <p className="nav-label">生命周期验证</p>
             {tools.map((tool, index) => {
               const Icon = toolIcons[index] ?? Wrench;
+              const isActive = view === "tool" && activeTool?.id === tool.id;
               return (
-                <div className="tool-nav-item" key={tool.id} title={tool.name}>
+                <div
+                  aria-current={isActive ? "page" : undefined}
+                  className={`tool-nav-item ${isActive ? "active" : ""}`}
+                  key={tool.id}
+                  onClick={() => openTool(tool)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openTool(tool);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  title={tool.name}
+                >
                   <Icon size={15} />
                   <span>{tool.name}</span>
                   <button
                     aria-label={`${tool.enabled ? "禁用" : "启用"}${tool.name}`}
                     className={`switch ${tool.enabled ? "on" : ""}`}
                     disabled={busyToolId === tool.id}
-                    onClick={() => void setToolEnabled(tool, !tool.enabled)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void setToolEnabled(tool, !tool.enabled);
+                    }}
                     type="button"
                   >
                     <span />
@@ -117,10 +206,11 @@ function App() {
               );
             })}
           </nav>
+
           <div className="sidebar-footer">
             <button
               className={`nav-item ${view === "settings" ? "active" : ""}`}
-              onClick={() => setView("settings")}
+              onClick={() => navigate({ view: "settings" })}
               title="设置"
               type="button"
             >
@@ -132,7 +222,7 @@ function App() {
 
         <main className="content">
           {view === "home" ? (
-            <>
+            <div className="page-enter" key="home">
               <header className="page-header">
                 <div>
                   <h1>轻量化工具集</h1>
@@ -168,11 +258,11 @@ function App() {
                 <p>冷启动 {snapshot?.coldStartMs ?? "--"} ms</p>
                 <p>{tools.filter((tool) => tool.workerRunning).length}/{tools.length} 个工具运行中</p>
               </section>
-            </>
+            </div>
           ) : view === "settings" ? (
-            <SettingsView coldStartupMs={snapshot?.coldStartMs ?? 0} />
+            <div className="page-enter" key="settings"><SettingsView coldStartupMs={snapshot?.coldStartMs ?? 0} /></div>
           ) : activeTool ? (
-            <ToolPage onBack={() => setView("home")} tool={activeTool} />
+            <div className="page-enter" key={activeTool.id}><ToolPage onBack={() => navigateHistory(-1)} tool={activeTool} /></div>
           ) : null}
         </main>
       </div>
@@ -221,7 +311,7 @@ function SettingsView({ coldStartupMs }: { coldStartupMs: number }) {
         <div className="settings-row">
           <div>
             <h2>冷启动基线</h2>
-            <p>首次界面快照时冻结的进程启动耗时；后续补充安装包、内存、CPU 与快捷弹窗指标。</p>
+            <p>首次界面快照冻结的进程启动耗时；后续补充安装包、内存、CPU 与快捷弹窗指标。</p>
           </div>
           <span className="setting-value">{coldStartupMs} ms</span>
         </div>
