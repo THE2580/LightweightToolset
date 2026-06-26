@@ -2,7 +2,7 @@ mod settings;
 mod tools;
 mod window_service;
 
-use std::{path::PathBuf, sync::Mutex, time::Instant};
+use std::{path::PathBuf, sync::{Mutex, OnceLock}, time::Instant};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -17,14 +17,26 @@ use tools::{ToolRegistry, ToolSnapshot};
 pub struct AppState {
     registry: Mutex<ToolRegistry>,
     settings_path: PathBuf,
-    started_at: Instant,
+    process_started_at: Instant,
+    cold_start_ms: Mutex<Option<u128>>,
+}
+
+static PROCESS_STARTED_AT: OnceLock<Instant> = OnceLock::new();
+
+pub fn mark_process_start() {
+    PROCESS_STARTED_AT.get_or_init(Instant::now);
 }
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSnapshot {
     tools: Vec<ToolSnapshot>,
-    startup_ms: u128,
+    cold_start_ms: u128,
+}
+
+fn cold_start_ms(state: &AppState) -> Result<u128, String> {
+    let mut metric = state.cold_start_ms.lock().map_err(|_| "性能指标不可用")?;
+    Ok(*metric.get_or_insert_with(|| state.process_started_at.elapsed().as_millis()))
 }
 
 #[tauri::command]
@@ -32,7 +44,7 @@ fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     Ok(AppSnapshot {
         tools: registry.snapshot(),
-        startup_ms: state.started_at.elapsed().as_millis(),
+        cold_start_ms: cold_start_ms(&state)?,
     })
 }
 
@@ -48,7 +60,7 @@ fn set_tool_enabled(
     AppSettings::save(&state.settings_path, registry.settings())?;
     Ok(AppSnapshot {
         tools: registry.snapshot(),
-        startup_ms: state.started_at.elapsed().as_millis(),
+        cold_start_ms: cold_start_ms(&state)?,
     })
 }
 
@@ -108,7 +120,8 @@ pub fn run() {
             app.manage(AppState {
                 registry: Mutex::new(registry),
                 settings_path,
-                started_at: Instant::now(),
+                process_started_at: *PROCESS_STARTED_AT.get_or_init(Instant::now),
+                cold_start_ms: Mutex::new(None),
             });
             build_tray(app.handle())?;
             Ok(())

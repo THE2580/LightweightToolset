@@ -1,14 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  Activity,
-  Boxes,
-  Gauge,
-  Home,
-  Keyboard,
-  MonitorCog,
-  Settings,
-  Wrench,
-} from "lucide-react";
+import { Boxes, Gauge, Home, Keyboard, MonitorCog, Settings, Wrench } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 
@@ -23,7 +14,7 @@ type Tool = {
 
 type AppSnapshot = {
   tools: Tool[];
-  startupMs: number;
+  coldStartupMs: number;
 };
 
 type View = "home" | "settings";
@@ -72,7 +63,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar" aria-label="主导航">
         <div className="brand-mark" aria-hidden="true">
-          <Boxes size={19} strokeWidth={2.2} />
+          <Boxes size={16} strokeWidth={2.2} />
         </div>
         <nav className="primary-nav">
           <button
@@ -80,7 +71,7 @@ function App() {
             onClick={() => setView("home")}
             type="button"
           >
-            <Home size={19} />
+            <Home size={15} />
             <span>首页</span>
           </button>
           <p className="nav-label">生命周期验证</p>
@@ -88,7 +79,7 @@ function App() {
             const Icon = toolIcons[index] ?? Wrench;
             return (
               <div className="tool-nav-item" key={tool.id}>
-                <Icon size={18} />
+                <Icon size={15} />
                 <span>{tool.name}</span>
                 <button
                   aria-label={`${tool.enabled ? "禁用" : "启用"}${tool.name}`}
@@ -109,7 +100,7 @@ function App() {
             onClick={() => setView("settings")}
             type="button"
           >
-            <Settings size={19} />
+            <Settings size={15} />
             <span>设置</span>
           </button>
         </div>
@@ -123,10 +114,6 @@ function App() {
                 <h1>轻量化工具集</h1>
                 <p>LightweightToolset</p>
               </div>
-              <div className="service-status">
-                <Activity size={15} />
-                基础服务运行中
-              </div>
             </header>
 
             {error ? <div className="error-banner">{error}</div> : null}
@@ -137,7 +124,7 @@ function App() {
                 return (
                   <article className={`tool-card ${tool.enabled ? "" : "disabled"}`} key={tool.id}>
                     <div className="tool-card-topline">
-                      <div className="tool-icon"><Icon size={25} /></div>
+                      <div className="tool-icon"><Icon size={19} /></div>
                       <button
                         aria-label={`${tool.enabled ? "禁用" : "启用"}${tool.name}`}
                         className={`switch ${tool.enabled ? "on" : ""}`}
@@ -162,20 +149,20 @@ function App() {
             </section>
 
             <section className="status-strip" aria-label="基础服务状态">
-              <div><Gauge size={18} /><span>性能指标</span></div>
-              <p>冷启动记录 {snapshot?.startupMs ?? "--"} ms</p>
+              <div><Gauge size={14} /><span>基础服务运行中</span></div>
+              <p>冷启动 {snapshot?.coldStartupMs ?? "--"} ms</p>
               <p>{tools.filter((tool) => tool.workerRunning).length}/{tools.length} 个工具运行中</p>
             </section>
           </>
         ) : (
-          <SettingsView startupMs={snapshot?.startupMs ?? 0} />
+          <SettingsView coldStartupMs={snapshot?.coldStartupMs ?? 0} />
         )}
       </main>
     </div>
   );
 }
 
-function SettingsView({ startupMs }: { startupMs: number }) {
+function SettingsView({ coldStartupMs }: { coldStartupMs: number }) {
   return (
     <>
       <header className="page-header settings-header">
@@ -188,7 +175,7 @@ function SettingsView({ startupMs }: { startupMs: number }) {
         <div className="settings-row">
           <div>
             <h2>窗口服务</h2>
-            <p>主窗口固定为 676 × 444；快捷弹窗、自由窗口和透明窗口能力已预留。</p>
+            <p>主窗口已按旧版外框尺寸校准；快捷弹窗、自由窗口和透明窗口能力已预留。</p>
           </div>
           <span className="setting-value">已锁定</span>
         </div>
@@ -202,9 +189,9 @@ function SettingsView({ startupMs }: { startupMs: number }) {
         <div className="settings-row">
           <div>
             <h2>冷启动基线</h2>
-            <p>首次打开主界面的进程启动耗时；后续补充安装包、内存、CPU 与快捷弹窗指标。</p>
+            <p>首次界面快照时冻结的进程启动耗时；后续补充安装包、内存、CPU 与快捷弹窗指标。</p>
           </div>
-          <span className="setting-value">{startupMs} ms</span>
+          <span className="setting-value">{coldStartupMs} ms</span>
         </div>
       </section>
     </>

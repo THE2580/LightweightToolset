@@ -2,5 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    lightweight_toolset_lib::mark_process_start();
     lightweight_toolset_lib::run()
 }
