@@ -13,12 +13,12 @@
     "windows": [
       {
         "title": "LightweightToolset",
-        "width": 676,
-        "height": 444,
-        "minWidth": 676,
-        "minHeight": 444,
-        "maxWidth": 676,
-        "maxHeight": 444,
+        "width": 910,
+        "height": 568,
+        "minWidth": 910,
+        "minHeight": 568,
+        "maxWidth": 910,
+        "maxHeight": 568,
         "resizable": false,
         "maximizable": false
       }
