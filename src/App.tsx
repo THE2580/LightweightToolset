@@ -125,8 +125,10 @@ function App() {
 
   return (
     <div className="app-shell" onContextMenu={(event) => event.preventDefault()}>
-      <header className="window-chrome" onMouseDown={handleTitlebarMouseDown}>
-        <span className="window-title">LightweightToolset</span>
+      <header className="window-chrome">
+        <div className="window-drag-area" onMouseDown={handleTitlebarMouseDown}>
+          <span className="window-title">LightweightToolset</span>
+        </div>
         <div className="window-controls">
           <button aria-label="最小化" onClick={() => void getCurrentWindow().minimize()} type="button">
             <Minus size={14} />
