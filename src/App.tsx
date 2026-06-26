@@ -127,7 +127,7 @@ function App() {
     <div className="app-shell" onContextMenu={(event) => event.preventDefault()}>
       <header className="window-chrome">
         <div className="window-drag-area" onMouseDown={handleTitlebarMouseDown}>
-          <span className="window-title">LightweightToolset</span>
+          <span className="window-title">轻量化工具集</span>
         </div>
         <div className="window-controls">
           <button aria-label="最小化" onClick={() => void getCurrentWindow().minimize()} type="button">
@@ -225,10 +225,9 @@ function App() {
         <main className="content">
           {view === "home" ? (
             <div className="page-enter" key="home">
-              <header className="page-header">
+              <header className="page-header home-header">
                 <div>
                   <h1>轻量化工具集</h1>
-                  <p>LightweightToolset</p>
                 </div>
               </header>
 
@@ -264,7 +263,7 @@ function App() {
           ) : view === "settings" ? (
             <div className="page-enter" key="settings"><SettingsView coldStartupMs={snapshot?.coldStartMs ?? 0} /></div>
           ) : activeTool ? (
-            <div className="page-enter" key={activeTool.id}><ToolPage onBack={() => navigateHistory(-1)} tool={activeTool} /></div>
+            <div className="page-enter" key={activeTool.id}><ToolPage tool={activeTool} /></div>
           ) : null}
         </main>
       </div>
@@ -272,10 +271,9 @@ function App() {
   );
 }
 
-function ToolPage({ onBack, tool }: { onBack: () => void; tool: Tool }) {
+function ToolPage({ tool }: { tool: Tool }) {
   return (
     <section className="tool-page">
-      <button className="back-button" onClick={onBack} type="button"><ChevronLeft size={14} /> 返回工具总览</button>
       <h1>{tool.name}</h1>
       <p>{tool.description}</p>
       <div className="tool-page-status">

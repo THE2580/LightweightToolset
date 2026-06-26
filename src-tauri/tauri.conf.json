@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LightweightToolset",
+  "productName": "轻量化工具集",
   "version": "0.1.0",
   "identifier": "com.the.lightweight-toolset",
   "build": {
@@ -12,12 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "LightweightToolset",
-        "width": 950,
+        "title": "轻量化工具集",
+        "width": 912,
         "height": 598,
-        "minWidth": 950,
+        "minWidth": 912,
         "minHeight": 598,
-        "maxWidth": 950,
+        "maxWidth": 912,
         "maxHeight": 598,
         "resizable": false,
         "maximizable": false,
