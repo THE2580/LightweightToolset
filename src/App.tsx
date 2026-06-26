@@ -14,7 +14,7 @@ type Tool = {
 
 type AppSnapshot = {
   tools: Tool[];
-  coldStartupMs: number;
+  coldStartMs: number;
 };
 
 type View = "home" | "settings";
@@ -150,12 +150,12 @@ function App() {
 
             <section className="status-strip" aria-label="基础服务状态">
               <div><Gauge size={14} /><span>基础服务运行中</span></div>
-              <p>冷启动 {snapshot?.coldStartupMs ?? "--"} ms</p>
+              <p>冷启动 {snapshot?.coldStartMs ?? "--"} ms</p>
               <p>{tools.filter((tool) => tool.workerRunning).length}/{tools.length} 个工具运行中</p>
             </section>
           </>
         ) : (
-          <SettingsView coldStartupMs={snapshot?.coldStartupMs ?? 0} />
+          <SettingsView coldStartupMs={snapshot?.coldStartMs ?? 0} />
         )}
       </main>
     </div>
