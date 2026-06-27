@@ -2,7 +2,7 @@ mod settings;
 mod tools;
 mod window_service;
 
-use std::{path::PathBuf, sync::{Mutex, OnceLock}, time::Instant};
+use std::{fs, path::PathBuf, process::Command, sync::{Mutex, OnceLock}, time::Instant};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -39,7 +39,6 @@ pub struct AppSnapshot {
 #[serde(rename_all = "camelCase")]
 struct SettingsPatch {
     theme: Option<ThemeMode>,
-    auto_start: Option<bool>,
     auto_check_updates: Option<bool>,
     show_update_notification: Option<bool>,
     window_title: Option<String>,
@@ -48,19 +47,65 @@ struct SettingsPatch {
     storage_path: Option<String>,
 }
 
+const AUTO_START_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const AUTO_START_RUN_VALUE: &str = "LightweightToolset";
+
 fn cold_start_ms(state: &AppState) -> Result<u128, String> {
     let mut metric = state.cold_start_ms.lock().map_err(|_| "性能指标不可用")?;
     Ok(*metric.get_or_insert_with(|| state.process_started_at.elapsed().as_millis()))
 }
 
+fn app_snapshot(state: &AppState, registry: &ToolRegistry) -> Result<AppSnapshot, String> {
+    Ok(AppSnapshot {
+        tools: registry.snapshot(),
+        cold_start_ms: cold_start_ms(state)?,
+        settings: registry.settings().clone(),
+    })
+}
+
+fn default_storage_path(state: &AppState) -> Result<PathBuf, String> {
+    state
+        .settings_path
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| "默认存储目录不可用".to_owned())
+}
+
+fn resolve_storage_path(state: &AppState, storage_path: Option<String>) -> Result<PathBuf, String> {
+    let value = storage_path.unwrap_or_default();
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        default_storage_path(state)
+    } else {
+        Ok(PathBuf::from(trimmed))
+    }
+}
+
+fn set_auto_start_registry(enabled: bool) -> Result<(), String> {
+    if enabled {
+        let exe = std::env::current_exe().map_err(|error| format!("获取当前程序路径失败: {error}"))?;
+        let target = format!("\"{}\"", exe.display());
+        let status = Command::new("reg")
+            .args(["add", AUTO_START_RUN_KEY, "/v", AUTO_START_RUN_VALUE, "/t", "REG_SZ", "/d"])
+            .arg(target)
+            .args(["/f"])
+            .status()
+            .map_err(|error| format!("写入开机自启注册表失败: {error}"))?;
+        if !status.success() {
+            return Err("写入开机自启注册表失败".to_owned());
+        }
+    } else {
+        let _ = Command::new("reg")
+            .args(["delete", AUTO_START_RUN_KEY, "/v", AUTO_START_RUN_VALUE, "/f"])
+            .status();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
-    Ok(AppSnapshot {
-        tools: registry.snapshot(),
-        cold_start_ms: cold_start_ms(&state)?,
-        settings: registry.settings().clone(),
-    })
+    app_snapshot(&state, &registry)
 }
 
 #[tauri::command]
@@ -73,11 +118,32 @@ fn set_tool_enabled(
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.set_enabled(&app, &tool_id, enabled)?;
     AppSettings::save(&state.settings_path, registry.settings())?;
-    Ok(AppSnapshot {
-        tools: registry.snapshot(),
-        cold_start_ms: cold_start_ms(&state)?,
-        settings: registry.settings().clone(),
-    })
+    app_snapshot(&state, &registry)
+}
+
+#[tauri::command]
+fn set_auto_start_enabled(state: State<'_, AppState>, enabled: bool) -> Result<AppSnapshot, String> {
+    set_auto_start_registry(enabled)?;
+    let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+    registry.settings_mut().auto_start = enabled;
+    AppSettings::save(&state.settings_path, registry.settings())?;
+    app_snapshot(&state, &registry)
+}
+
+#[tauri::command]
+fn get_default_storage_path(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(default_storage_path(&state)?.display().to_string())
+}
+
+#[tauri::command]
+fn open_storage_path(state: State<'_, AppState>, storage_path: Option<String>) -> Result<(), String> {
+    let path = resolve_storage_path(&state, storage_path)?;
+    fs::create_dir_all(&path).map_err(|error| format!("创建存储目录失败: {error}"))?;
+    Command::new("explorer")
+        .arg(&path)
+        .spawn()
+        .map_err(|error| format!("打开存储目录失败: {error}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -90,9 +156,6 @@ fn update_app_settings(
     let settings = registry.settings_mut();
     if let Some(theme) = patch.theme {
         settings.theme = theme;
-    }
-    if let Some(auto_start) = patch.auto_start {
-        settings.auto_start = auto_start;
     }
     if let Some(auto_check_updates) = patch.auto_check_updates {
         settings.auto_check_updates = auto_check_updates;
@@ -119,11 +182,7 @@ fn update_app_settings(
         settings.storage_path = storage_path;
     }
     AppSettings::save(&state.settings_path, registry.settings())?;
-    Ok(AppSnapshot {
-        tools: registry.snapshot(),
-        cold_start_ms: cold_start_ms(&state)?,
-        settings: registry.settings().clone(),
-    })
+    app_snapshot(&state, &registry)
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -192,6 +251,9 @@ pub fn run() {
             let settings_path = config_dir.join("settings.json");
             let settings = AppSettings::load(&settings_path)?;
             let mut registry = ToolRegistry::new(settings);
+            if registry.settings().auto_start {
+                let _ = set_auto_start_registry(true);
+            }
             registry.start_enabled(app.handle())?;
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title(&registry.settings().window_title);
@@ -205,7 +267,14 @@ pub fn run() {
             build_tray(app.handle())?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_app_snapshot, set_tool_enabled, update_app_settings])
+        .invoke_handler(tauri::generate_handler![
+            get_app_snapshot,
+            set_tool_enabled,
+            set_auto_start_enabled,
+            get_default_storage_path,
+            open_storage_path,
+            update_app_settings
+        ])
         .run(tauri::generate_context!())
         .expect("启动 LightweightToolset 失败");
 }

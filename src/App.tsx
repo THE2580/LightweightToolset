@@ -12,10 +12,13 @@ import {
   Monitor,
   MonitorCog,
   Moon,
+  Pencil,
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
+  RotateCcw,
   Settings,
+  ShieldCheck,
   Sun,
   Wrench,
   X,
@@ -48,7 +51,7 @@ type AppSettings = {
   storagePath: string;
 };
 
-type SettingsPatch = Partial<Omit<AppSettings, "tools">>;
+type SettingsPatch = Partial<Omit<AppSettings, "tools" | "autoStart">>;
 
 type AppSnapshot = {
   tools: Tool[];
@@ -135,6 +138,15 @@ function App() {
   async function updateSettings(patch: SettingsPatch) {
     try {
       setSnapshot(await invoke<AppSnapshot>("update_app_settings", { patch }));
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  async function setAutoStartEnabled(enabled: boolean) {
+    try {
+      setSnapshot(await invoke<AppSnapshot>("set_auto_start_enabled", { enabled }));
       setError(null);
     } catch (reason) {
       setError(String(reason));
@@ -359,6 +371,7 @@ function App() {
               <SettingsView
                 coldStartupMs={snapshot?.coldStartMs ?? 0}
                 settings={settings}
+                setAutoStartEnabled={setAutoStartEnabled}
                 tools={tools}
                 updateSettings={updateSettings}
               />
@@ -388,22 +401,40 @@ function ToolPage({ tool }: { tool: Tool }) {
 function SettingsView({
   coldStartupMs,
   settings,
+  setAutoStartEnabled,
   tools,
   updateSettings,
 }: {
   coldStartupMs: number;
   settings: AppSettings;
+  setAutoStartEnabled: (enabled: boolean) => Promise<void>;
   tools: Tool[];
   updateSettings: (patch: SettingsPatch) => Promise<void>;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
   const [titleDraft, setTitleDraft] = useState(settings.windowTitle);
   const [storagePathDraft, setStoragePathDraft] = useState(settings.storagePath);
+  const [defaultStoragePath, setDefaultStoragePath] = useState("");
   const titleChanged = titleDraft.trim() !== settings.windowTitle;
   const titleResetVisible = titleDraft.trim() !== DEFAULT_TITLE || settings.windowTitle !== DEFAULT_TITLE;
+  const storageChanged = storagePathDraft.trim() !== settings.storagePath;
 
   useEffect(() => setTitleDraft(settings.windowTitle), [settings.windowTitle]);
   useEffect(() => setStoragePathDraft(settings.storagePath), [settings.storagePath]);
+  useEffect(() => {
+    void invoke<string>("get_default_storage_path")
+      .then(setDefaultStoragePath)
+      .catch(() => setDefaultStoragePath(""));
+  }, []);
+
+  function openStoragePath() {
+    void invoke("open_storage_path", { storagePath: storagePathDraft });
+  }
+
+  function restoreDefaultStoragePath() {
+    setStoragePathDraft("");
+    void updateSettings({ storagePath: "" });
+  }
 
   return (
     <>
@@ -438,9 +469,9 @@ function SettingsView({
             </div>
             <ToggleRow
               checked={settings.autoStart}
-              description="应用启动时自动运行；系统注册能力已预留，当前先持久化设置"
+              description="通过当前用户的 Windows 启动项注册表真实接入，关闭时会移除注册项"
               label="开机自启"
-              onChange={(value) => updateSettings({ autoStart: value })}
+              onChange={(value) => setAutoStartEnabled(value)}
             />
             <div className="settings-row">
               <div>
@@ -472,11 +503,17 @@ function SettingsView({
             <div className="settings-row stack">
               <div>
                 <h2>存储路径</h2>
-                <p>旧版支持迁移数据目录；当前 Tauri 路线先记录目标路径，迁移执行能力后续接入</p>
+                <p>{defaultStoragePath ? `默认目录：${defaultStoragePath}` : "默认使用应用配置目录；可打开当前目录或恢复默认"}</p>
               </div>
               <div className="settings-inline wide">
                 <input className="settings-input mono" placeholder="默认应用配置目录" value={storagePathDraft} onChange={(event) => setStoragePathDraft(event.target.value)} />
-                <button className="primary-action" onClick={() => updateSettings({ storagePath: storagePathDraft })} type="button">保存</button>
+                {storageChanged ? (
+                  <button className="primary-action" onClick={() => updateSettings({ storagePath: storagePathDraft })} type="button">保存</button>
+                ) : null}
+                <button className="secondary-action" onClick={openStoragePath} type="button">打开</button>
+                {settings.storagePath ? (
+                  <button className="icon-action" aria-label="恢复默认存储路径" onClick={restoreDefaultStoragePath} type="button"><RotateCcw size={13} /></button>
+                ) : null}
               </div>
             </div>
           </div>
@@ -485,15 +522,19 @@ function SettingsView({
         {activeTab === "hotkey" ? (
           <div className="settings-section page-enter">
             {tools.map((tool) => (
-              <div className="settings-row" key={tool.id}>
+              <div className="settings-row hotkey-row" key={tool.id}>
                 <div>
                   <h2>{tool.name}</h2>
-                  <p>{tool.enabled ? "快捷键已注册；禁用工具会释放快捷键" : "工具已禁用；快捷键已释放"}</p>
+                  <p>{tool.enabled ? "当前快捷键已注册；后续编辑时会先做冲突检查再保存" : "工具已禁用；快捷键已释放，启用后才允许编辑"}</p>
                 </div>
-                <kbd>{tool.hotkey}</kbd>
+                <div className="hotkey-controls">
+                  <kbd>{tool.hotkey}</kbd>
+                  <span className="setting-value neutral"><ShieldCheck size={12} />无冲突</span>
+                  <button className="secondary-action planned-action" disabled type="button"><Pencil size={12} />编辑</button>
+                </div>
               </div>
             ))}
-            <p className="settings-note">旧版支持快捷键编辑、冲突检查和启停开关；当前先保留统一快捷键总览，编辑能力随真实工具迁移补齐。</p>
+            <p className="settings-note">本页已固定为“当前值 + 冲突状态 + 编辑入口”的结构；快捷键改写会在真实工具迁移时接入统一注册器，避免先做只改 UI 的伪编辑。</p>
           </div>
         ) : null}
 
@@ -516,14 +557,14 @@ function SettingsView({
             </div>
             <ToggleRow
               checked={settings.autoCheckUpdates}
-              description="旧版启动时自动检查更新；Tauri 更新通道后续接入"
+              description="仅保存偏好并保留更新入口；当前不接 release 更新器"
               label="自动检查更新"
               onChange={(value) => updateSettings({ autoCheckUpdates: value })}
             />
             {settings.autoCheckUpdates ? (
               <ToggleRow
                 checked={settings.showUpdateNotification}
-                description="自动检查发现新版本时弹出提示"
+                description="仅作为后续更新通道的提示策略预留"
                 label="新版本提示弹窗"
                 onChange={(value) => updateSettings({ showUpdateNotification: value })}
               />
