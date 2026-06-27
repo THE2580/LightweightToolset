@@ -69,6 +69,10 @@ impl ToolRegistry {
         &self.settings
     }
 
+    pub fn settings_mut(&mut self) -> &mut AppSettings {
+        &mut self.settings
+    }
+
     pub fn start_enabled(&mut self, app: &AppHandle) -> Result<(), String> {
         for tool in TOOLS.iter() {
             if self.is_enabled(tool.id) {

@@ -11,7 +11,7 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::ShortcutState;
 
-use settings::AppSettings;
+use settings::{AppSettings, CloseBehavior, ThemeMode};
 use tools::{ToolRegistry, ToolSnapshot};
 
 pub struct AppState {
@@ -32,6 +32,20 @@ pub fn mark_process_start() {
 pub struct AppSnapshot {
     tools: Vec<ToolSnapshot>,
     cold_start_ms: u128,
+    settings: AppSettings,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsPatch {
+    theme: Option<ThemeMode>,
+    auto_start: Option<bool>,
+    auto_check_updates: Option<bool>,
+    show_update_notification: Option<bool>,
+    window_title: Option<String>,
+    close_behavior: Option<CloseBehavior>,
+    developer_mode: Option<bool>,
+    storage_path: Option<String>,
 }
 
 fn cold_start_ms(state: &AppState) -> Result<u128, String> {
@@ -45,6 +59,7 @@ fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     Ok(AppSnapshot {
         tools: registry.snapshot(),
         cold_start_ms: cold_start_ms(&state)?,
+        settings: registry.settings().clone(),
     })
 }
 
@@ -61,6 +76,53 @@ fn set_tool_enabled(
     Ok(AppSnapshot {
         tools: registry.snapshot(),
         cold_start_ms: cold_start_ms(&state)?,
+        settings: registry.settings().clone(),
+    })
+}
+
+#[tauri::command]
+fn update_app_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    patch: SettingsPatch,
+) -> Result<AppSnapshot, String> {
+    let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+    let settings = registry.settings_mut();
+    if let Some(theme) = patch.theme {
+        settings.theme = theme;
+    }
+    if let Some(auto_start) = patch.auto_start {
+        settings.auto_start = auto_start;
+    }
+    if let Some(auto_check_updates) = patch.auto_check_updates {
+        settings.auto_check_updates = auto_check_updates;
+    }
+    if let Some(show_update_notification) = patch.show_update_notification {
+        settings.show_update_notification = show_update_notification;
+    }
+    if let Some(window_title) = patch.window_title {
+        let title = window_title.trim();
+        if !title.is_empty() {
+            settings.window_title = title.to_owned();
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_title(title);
+            }
+        }
+    }
+    if let Some(close_behavior) = patch.close_behavior {
+        settings.close_behavior = close_behavior;
+    }
+    if let Some(developer_mode) = patch.developer_mode {
+        settings.developer_mode = developer_mode;
+    }
+    if let Some(storage_path) = patch.storage_path {
+        settings.storage_path = storage_path;
+    }
+    AppSettings::save(&state.settings_path, registry.settings())?;
+    Ok(AppSnapshot {
+        tools: registry.snapshot(),
+        cold_start_ms: cold_start_ms(&state)?,
+        settings: registry.settings().clone(),
     })
 }
 
@@ -112,8 +174,14 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 if let WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = window.hide();
+                    let should_hide = window
+                        .try_state::<AppState>()
+                        .and_then(|state| state.registry.lock().ok().map(|registry| registry.settings().close_behavior == CloseBehavior::Tray))
+                        .unwrap_or(true);
+                    if should_hide {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
                 }
             }
         })
@@ -125,6 +193,9 @@ pub fn run() {
             let settings = AppSettings::load(&settings_path)?;
             let mut registry = ToolRegistry::new(settings);
             registry.start_enabled(app.handle())?;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_title(&registry.settings().window_title);
+            }
             app.manage(AppState {
                 registry: Mutex::new(registry),
                 settings_path,
@@ -134,7 +205,7 @@ pub fn run() {
             build_tray(app.handle())?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_app_snapshot, set_tool_enabled])
+        .invoke_handler(tauri::generate_handler![get_app_snapshot, set_tool_enabled, update_app_settings])
         .run(tauri::generate_context!())
         .expect("启动 LightweightToolset 失败");
 }

@@ -1,21 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ChevronLeft,
   ChevronRight,
   Gauge,
   Home,
+  Info,
   Keyboard,
   Minus,
+  Monitor,
   MonitorCog,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  RefreshCw,
   Settings,
+  Sun,
   Wrench,
   X,
 } from "lucide-react";
 import { type MouseEvent, useCallback, useEffect, useState } from "react";
 import "./App.css";
+
+type ThemeMode = "system" | "light" | "dark";
+type CloseBehavior = "quit" | "tray";
+type SettingsTab = "general" | "hotkey" | "about";
 
 type Tool = {
   id: string;
@@ -26,9 +36,24 @@ type Tool = {
   workerRunning: boolean;
 };
 
+type AppSettings = {
+  tools: Record<string, boolean>;
+  theme: ThemeMode;
+  autoStart: boolean;
+  autoCheckUpdates: boolean;
+  showUpdateNotification: boolean;
+  windowTitle: string;
+  closeBehavior: CloseBehavior;
+  developerMode: boolean;
+  storagePath: string;
+};
+
+type SettingsPatch = Partial<Omit<AppSettings, "tools">>;
+
 type AppSnapshot = {
   tools: Tool[];
   coldStartMs: number;
+  settings: AppSettings;
 };
 
 type View = "home" | "settings" | "tool";
@@ -38,6 +63,7 @@ type NavigationTarget = {
   toolId?: string;
 };
 
+const DEFAULT_TITLE = "轻量化工具集";
 const toolIcons = [Keyboard, MonitorCog];
 
 function App() {
@@ -49,8 +75,13 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [history, setHistory] = useState<NavigationTarget[]>([{ view: "home" }]);
   const [historyIndex, setHistoryIndex] = useState(0);
+  const [contentScrolled, setContentScrolled] = useState(false);
 
   const tools = snapshot?.tools ?? [];
+  const settings = snapshot?.settings;
+  const windowTitle = settings?.windowTitle || DEFAULT_TITLE;
+  const isHistoryBackAvailable = canNavigateHistory(-1);
+  const isHistoryForwardAvailable = canNavigateHistory(1);
 
   const loadSnapshot = useCallback(async () => {
     try {
@@ -65,6 +96,14 @@ function App() {
     void loadSnapshot();
   }, [loadSnapshot]);
 
+  useEffect(() => {
+    const theme = settings?.theme ?? "system";
+    const resolved = theme === "system"
+      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : theme;
+    document.documentElement.dataset.theme = resolved;
+  }, [settings?.theme]);
+
   async function setToolEnabled(tool: Tool, enabled: boolean) {
     setBusyToolId(tool.id);
     try {
@@ -73,8 +112,17 @@ function App() {
         enabled,
       });
       setSnapshot(nextSnapshot);
+      if (!enabled) {
+        setHistory((entries) => entries.map((entry) => (entry.view === "tool" && entry.toolId === tool.id ? { view: "home" } : entry)));
+      }
       if (activeTool?.id === tool.id) {
-        setActiveTool(nextSnapshot.tools.find((nextTool) => nextTool.id === tool.id) ?? null);
+        const nextTool = nextSnapshot.tools.find((candidate) => candidate.id === tool.id) ?? null;
+        if (nextTool?.enabled) {
+          setActiveTool(nextTool);
+        } else {
+          setActiveTool(null);
+          applyNavigation({ view: "home" }, nextSnapshot.tools);
+        }
       }
       setError(null);
     } catch (reason) {
@@ -84,12 +132,35 @@ function App() {
     }
   }
 
-  function applyNavigation(target: NavigationTarget) {
+  async function updateSettings(patch: SettingsPatch) {
+    try {
+      setSnapshot(await invoke<AppSnapshot>("update_app_settings", { patch }));
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  function isNavigationAllowed(target: NavigationTarget, sourceTools = tools) {
+    if (target.view !== "tool") {
+      return true;
+    }
+    return Boolean(target.toolId && sourceTools.some((tool) => tool.id === target.toolId && tool.enabled));
+  }
+
+  function applyNavigation(target: NavigationTarget, sourceTools = tools) {
+    if (!isNavigationAllowed(target, sourceTools)) {
+      return false;
+    }
     setView(target.view);
-    setActiveTool(target.toolId ? tools.find((tool) => tool.id === target.toolId) ?? null : null);
+    setActiveTool(target.toolId ? sourceTools.find((tool) => tool.id === target.toolId && tool.enabled) ?? null : null);
+    return true;
   }
 
   function navigate(target: NavigationTarget) {
+    if (!isNavigationAllowed(target)) {
+      return;
+    }
     const current = history[historyIndex];
     if (current.view === target.view && current.toolId === target.toolId) {
       return;
@@ -101,8 +172,24 @@ function App() {
     applyNavigation(target);
   }
 
+  function findNavigableHistoryIndex(direction: -1 | 1) {
+    for (let index = historyIndex + direction; index >= 0 && index < history.length; index += direction) {
+      if (isNavigationAllowed(history[index])) {
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  function canNavigateHistory(direction: -1 | 1) {
+    return findNavigableHistoryIndex(direction) !== -1;
+  }
+
   function navigateHistory(direction: -1 | 1) {
-    const nextIndex = historyIndex + direction;
+    const nextIndex = findNavigableHistoryIndex(direction);
+    if (nextIndex === -1) {
+      return;
+    }
     const target = history[nextIndex];
     if (!target) {
       return;
@@ -113,6 +200,9 @@ function App() {
   }
 
   function openTool(tool: Tool) {
+    if (!tool.enabled) {
+      return;
+    }
     navigate({ view: "tool", toolId: tool.id });
   }
 
@@ -127,7 +217,7 @@ function App() {
     <div className="app-shell" onContextMenu={(event) => event.preventDefault()}>
       <header className="window-chrome">
         <div className="window-drag-area" onMouseDown={handleTitlebarMouseDown}>
-          <span className="window-title">轻量化工具集</span>
+          <span className="window-title">{windowTitle}</span>
         </div>
         <div className="window-controls">
           <button aria-label="最小化" onClick={() => void getCurrentWindow().minimize()} type="button">
@@ -143,10 +233,10 @@ function App() {
         <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`} aria-label="主导航">
           <div className="sidebar-actions">
             <div className="history-controls" aria-label="浏览历史">
-              <button aria-label="后退" disabled={historyIndex === 0} onClick={() => navigateHistory(-1)} type="button">
+              <button aria-label="后退" disabled={!isHistoryBackAvailable} onClick={() => navigateHistory(-1)} type="button">
                 <ChevronLeft size={14} />
               </button>
-              <button aria-label="前进" disabled={historyIndex >= history.length - 1} onClick={() => navigateHistory(1)} type="button">
+              <button aria-label="前进" disabled={!isHistoryForwardAvailable} onClick={() => navigateHistory(1)} type="button">
                 <ChevronRight size={14} />
               </button>
             </div>
@@ -177,7 +267,8 @@ function App() {
               return (
                 <div
                   aria-current={isActive ? "page" : undefined}
-                  className={`tool-nav-item ${isActive ? "active" : ""}`}
+                  aria-disabled={!tool.enabled}
+                  className={`tool-nav-item ${isActive ? "active" : ""} ${tool.enabled ? "" : "disabled"}`}
                   key={tool.id}
                   onClick={() => openTool(tool)}
                   onKeyDown={(event) => {
@@ -187,7 +278,7 @@ function App() {
                     }
                   }}
                   role="button"
-                  tabIndex={0}
+                  tabIndex={tool.enabled ? 0 : -1}
                   title={tool.name}
                 >
                   <Icon size={15} />
@@ -222,7 +313,10 @@ function App() {
           </div>
         </aside>
 
-        <main className="content">
+        <main
+          className={`content ${view === "settings" ? "settings-content" : ""} ${contentScrolled ? "scrolled" : ""}`}
+          onScroll={(event) => setContentScrolled(event.currentTarget.scrollTop > 42)}
+        >
           {view === "home" ? (
             <div className="page-enter" key="home">
               <header className="page-header home-header">
@@ -237,7 +331,7 @@ function App() {
                 {tools.map((tool, index) => {
                   const Icon = toolIcons[index] ?? Wrench;
                   return (
-                    <button className={`tool-card ${tool.enabled ? "" : "disabled"}`} key={tool.id} onClick={() => openTool(tool)} type="button">
+                    <button className={`tool-card ${tool.enabled ? "" : "disabled"}`} disabled={!tool.enabled} key={tool.id} onClick={() => openTool(tool)} type="button">
                       <div className="tool-card-heading">
                         <div className="tool-icon"><Icon size={19} /></div>
                         <h2>{tool.name}</h2>
@@ -260,8 +354,15 @@ function App() {
                 <p>{tools.filter((tool) => tool.workerRunning).length}/{tools.length} 个工具运行中</p>
               </section>
             </div>
-          ) : view === "settings" ? (
-            <div className="page-enter" key="settings"><SettingsView coldStartupMs={snapshot?.coldStartMs ?? 0} /></div>
+          ) : view === "settings" && settings ? (
+            <div className="page-enter" key="settings">
+              <SettingsView
+                coldStartupMs={snapshot?.coldStartMs ?? 0}
+                settings={settings}
+                tools={tools}
+                updateSettings={updateSettings}
+              />
+            </div>
           ) : activeTool ? (
             <div className="page-enter" key={activeTool.id}><ToolPage tool={activeTool} /></div>
           ) : null}
@@ -284,39 +385,194 @@ function ToolPage({ tool }: { tool: Tool }) {
   );
 }
 
-function SettingsView({ coldStartupMs }: { coldStartupMs: number }) {
+function SettingsView({
+  coldStartupMs,
+  settings,
+  tools,
+  updateSettings,
+}: {
+  coldStartupMs: number;
+  settings: AppSettings;
+  tools: Tool[];
+  updateSettings: (patch: SettingsPatch) => Promise<void>;
+}) {
+  const [activeTab, setActiveTab] = useState<SettingsTab>("general");
+  const [titleDraft, setTitleDraft] = useState(settings.windowTitle);
+  const [storagePathDraft, setStoragePathDraft] = useState(settings.storagePath);
+  const titleChanged = titleDraft.trim() !== settings.windowTitle;
+  const titleResetVisible = titleDraft.trim() !== DEFAULT_TITLE || settings.windowTitle !== DEFAULT_TITLE;
+
+  useEffect(() => setTitleDraft(settings.windowTitle), [settings.windowTitle]);
+  useEffect(() => setStoragePathDraft(settings.storagePath), [settings.storagePath]);
+
   return (
     <>
       <header className="page-header settings-header">
         <div>
           <h1>设置</h1>
-          <p>基础能力与性能基线</p>
         </div>
       </header>
+      <div className="settings-tabs" role="tablist" aria-label="设置分类">
+        <SettingsTabButton active={activeTab === "general"} icon={<Monitor size={14} />} label="通用" onClick={() => setActiveTab("general")} />
+        <SettingsTabButton active={activeTab === "hotkey"} icon={<Keyboard size={14} />} label="快捷键" onClick={() => setActiveTab("hotkey")} />
+        <SettingsTabButton active={activeTab === "about"} icon={<Info size={14} />} label="关于" onClick={() => setActiveTab("about")} />
+      </div>
+
       <section className="settings-panel">
-        <div className="settings-row">
-          <div>
-            <h2>窗口服务</h2>
-            <p>主窗口已按旧版外框尺寸校准；快捷弹窗、自由窗口和透明窗口能力已预留。</p>
+        {activeTab === "general" ? (
+          <div className="settings-section page-enter">
+            <div className="settings-row stack">
+              <div>
+                <h2>主窗口标题</h2>
+                <p>显示在窗口标题栏的文字</p>
+              </div>
+              <div className="settings-inline">
+                <input className="settings-input" value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} />
+                {titleChanged ? (
+                  <button className="primary-action" onClick={() => updateSettings({ windowTitle: titleDraft })} type="button">保存</button>
+                ) : null}
+                {titleResetVisible ? (
+                  <button className="icon-action" aria-label="重置标题" onClick={() => updateSettings({ windowTitle: DEFAULT_TITLE })} type="button"><RefreshCw size={13} /></button>
+                ) : null}
+              </div>
+            </div>
+            <ToggleRow
+              checked={settings.autoStart}
+              description="应用启动时自动运行；系统注册能力已预留，当前先持久化设置"
+              label="开机自启"
+              onChange={(value) => updateSettings({ autoStart: value })}
+            />
+            <div className="settings-row">
+              <div>
+                <h2>主题模式</h2>
+                <p>切换深色/浅色外观</p>
+              </div>
+              <div className="segmented">
+                <button className={settings.theme === "system" ? "active" : ""} onClick={() => updateSettings({ theme: "system" })} type="button"><Monitor size={13} />跟随系统</button>
+                <button className={settings.theme === "light" ? "active" : ""} onClick={() => updateSettings({ theme: "light" })} type="button"><Sun size={13} />浅色</button>
+                <button className={settings.theme === "dark" ? "active" : ""} onClick={() => updateSettings({ theme: "dark" })} type="button"><Moon size={13} />深色</button>
+              </div>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h2>关闭应用时</h2>
+                <p>点击关闭按钮的行为</p>
+              </div>
+              <select className="settings-select" value={settings.closeBehavior} onChange={(event) => updateSettings({ closeBehavior: event.target.value as CloseBehavior })}>
+                <option value="quit">直接退出</option>
+                <option value="tray">缩小到托盘</option>
+              </select>
+            </div>
+            <ToggleRow
+              checked={settings.developerMode}
+              description="后续用于显示诊断日志与开发辅助入口"
+              label="开发者模式"
+              onChange={(value) => updateSettings({ developerMode: value })}
+            />
+            <div className="settings-row stack">
+              <div>
+                <h2>存储路径</h2>
+                <p>旧版支持迁移数据目录；当前 Tauri 路线先记录目标路径，迁移执行能力后续接入</p>
+              </div>
+              <div className="settings-inline wide">
+                <input className="settings-input mono" placeholder="默认应用配置目录" value={storagePathDraft} onChange={(event) => setStoragePathDraft(event.target.value)} />
+                <button className="primary-action" onClick={() => updateSettings({ storagePath: storagePathDraft })} type="button">保存</button>
+              </div>
+            </div>
           </div>
-          <span className="setting-value">已锁定</span>
-        </div>
-        <div className="settings-row">
-          <div>
-            <h2>工具生命周期</h2>
-            <p>禁用时统一注销快捷键、停止后台 worker，并关闭关联窗口。</p>
+        ) : null}
+
+        {activeTab === "hotkey" ? (
+          <div className="settings-section page-enter">
+            {tools.map((tool) => (
+              <div className="settings-row" key={tool.id}>
+                <div>
+                  <h2>{tool.name}</h2>
+                  <p>{tool.enabled ? "快捷键已注册；禁用工具会释放快捷键" : "工具已禁用；快捷键已释放"}</p>
+                </div>
+                <kbd>{tool.hotkey}</kbd>
+              </div>
+            ))}
+            <p className="settings-note">旧版支持快捷键编辑、冲突检查和启停开关；当前先保留统一快捷键总览，编辑能力随真实工具迁移补齐。</p>
           </div>
-          <span className="setting-value">已启用</span>
-        </div>
-        <div className="settings-row">
-          <div>
-            <h2>冷启动基线</h2>
-            <p>首次界面快照冻结的进程启动耗时；后续补充安装包、内存、CPU 与快捷弹窗指标。</p>
+        ) : null}
+
+        {activeTab === "about" ? (
+          <div className="settings-section page-enter">
+            <InfoRow label="应用" value="LightweightToolset" />
+            <InfoRow label="作者" value="THE2580" />
+            <InfoRow label="版本" value="0.1.0" />
+            <div className="settings-row">
+              <div>
+                <h2>GitHub</h2>
+              </div>
+              <button
+                className="link-action"
+                onClick={() => void openUrl("https://github.com/THE2580/LightweightToolset")}
+                type="button"
+              >
+                github.com/THE2580/LightweightToolset
+              </button>
+            </div>
+            <ToggleRow
+              checked={settings.autoCheckUpdates}
+              description="旧版启动时自动检查更新；Tauri 更新通道后续接入"
+              label="自动检查更新"
+              onChange={(value) => updateSettings({ autoCheckUpdates: value })}
+            />
+            {settings.autoCheckUpdates ? (
+              <ToggleRow
+                checked={settings.showUpdateNotification}
+                description="自动检查发现新版本时弹出提示"
+                label="新版本提示弹窗"
+                onChange={(value) => updateSettings({ showUpdateNotification: value })}
+              />
+            ) : null}
+            <div className="settings-row">
+              <div>
+                <h2>冷启动基线</h2>
+                <p>首次界面快照冻结的进程启动耗时</p>
+              </div>
+              <span className="setting-value">{coldStartupMs} ms</span>
+            </div>
           </div>
-          <span className="setting-value">{coldStartupMs} ms</span>
-        </div>
+        ) : null}
       </section>
     </>
+  );
+}
+
+function SettingsTabButton({ active, icon, label, onClick }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
+  return (
+    <button className={`settings-tab ${active ? "active" : ""}`} onClick={onClick} role="tab" type="button">
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function ToggleRow({ checked, description, label, onChange }: { checked: boolean; description: string; label: string; onChange: (value: boolean) => void }) {
+  return (
+    <div className="settings-row">
+      <div>
+        <h2>{label}</h2>
+        <p>{description}</p>
+      </div>
+      <button className={`switch ${checked ? "on" : ""}`} onClick={() => onChange(!checked)} type="button">
+        <span />
+      </button>
+    </div>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="settings-row">
+      <div>
+        <h2>{label}</h2>
+      </div>
+      <span className="setting-value">{value}</span>
+    </div>
   );
 }
 
