@@ -7,7 +7,7 @@ use std::{path::PathBuf, sync::{Mutex, OnceLock}, time::Instant};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, State,
+    AppHandle, Manager, State, WindowEvent,
 };
 use tauri_plugin_global_shortcut::ShortcutState;
 
@@ -109,6 +109,14 @@ pub fn run() {
             }
         }).build())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main_window(app)))
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             let _supported_window_kinds = window_service::reserved_window_kinds();
             let config_dir = app.path().app_config_dir()?;
