@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ChevronLeft,
@@ -433,8 +434,13 @@ function SettingsView({
   }
 
   async function changeStoragePath() {
-    const selected = await invoke<string | null>("pick_storage_path", { storagePath: storagePathDraft });
-    if (selected) {
+    const selected = await open({
+      defaultPath: storagePathDraft || defaultStoragePath || undefined,
+      directory: true,
+      multiple: false,
+      title: "选择存储路径",
+    });
+    if (typeof selected === "string") {
       setStoragePathDraft(selected);
     }
   }
