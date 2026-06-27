@@ -22,6 +22,8 @@ import {
   Settings,
   ShieldCheck,
   Sun,
+  Terminal,
+  Trash2,
   Wrench,
   X,
 } from "lucide-react";
@@ -30,7 +32,7 @@ import "./App.css";
 
 type ThemeMode = "system" | "light" | "dark";
 type CloseBehavior = "quit" | "tray";
-type SettingsTab = "general" | "hotkey" | "about";
+type SettingsTab = "general" | "hotkey" | "logs" | "about";
 
 type Tool = {
   id: string;
@@ -59,6 +61,12 @@ type AppSnapshot = {
   tools: Tool[];
   coldStartMs: number;
   settings: AppSettings;
+};
+
+type DebugLogEntry = {
+  timestampMs: number;
+  level: string;
+  message: string;
 };
 
 type View = "home" | "settings" | "tool";
@@ -137,14 +145,14 @@ function App() {
     }
   }
 
-  async function updateSettings(patch: SettingsPatch) {
+  const updateSettings = useCallback(async (patch: SettingsPatch) => {
     try {
       setSnapshot(await invoke<AppSnapshot>("update_app_settings", { patch }));
       setError(null);
     } catch (reason) {
       setError(String(reason));
     }
-  }
+  }, []);
 
   async function setAutoStartEnabled(enabled: boolean) {
     try {
@@ -387,6 +395,69 @@ function App() {
   );
 }
 
+function DebugLogPanel() {
+  const [logs, setLogs] = useState<DebugLogEntry[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadLogs = useCallback(async () => {
+    try {
+      setLogs(await invoke<DebugLogEntry[]>("get_debug_logs"));
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadLogs();
+    const interval = window.setInterval(() => void loadLogs(), 1500);
+    return () => window.clearInterval(interval);
+  }, [loadLogs]);
+
+  async function clearLogs() {
+    try {
+      await invoke("clear_debug_logs");
+      setLogs([]);
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  return (
+    <div className="settings-section page-enter">
+      <div className="log-heading">
+        <div>
+          <h2>控制台日志</h2>
+          <p>保留最近 300 条主进程与页面日志</p>
+        </div>
+        <div className="log-actions">
+          <button className="secondary-action icon-text-action" onClick={() => void loadLogs()} type="button"><RefreshCw size={13} />刷新</button>
+          <button className="secondary-action icon-text-action" onClick={() => void clearLogs()} type="button"><Trash2 size={13} />清空</button>
+        </div>
+      </div>
+      {error ? <div className="error-banner">{error}</div> : null}
+      <div className="terminal-panel" aria-label="终端日志输出">
+        {logs.length ? logs.map((entry, index) => (
+          <div className="terminal-line" key={`${entry.timestampMs}-${index}`}>
+            <span className="terminal-prefix">
+              <span className="terminal-time">{formatLogTime(entry.timestampMs)}</span>
+              <span className={`terminal-level ${entry.level}`}>[{entry.level}]</span>
+            </span>
+            <span className="terminal-message">{entry.message}</span>
+          </div>
+        )) : (
+          <div className="terminal-line muted">暂无日志输出</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatLogTime(timestampMs: number) {
+  return new Date(timestampMs).toLocaleTimeString("zh-CN", { hour12: false });
+}
+
 function ToolPage({ tool }: { tool: Tool }) {
   return (
     <section className="tool-page">
@@ -419,15 +490,29 @@ function SettingsView({
   const [defaultStoragePath, setDefaultStoragePath] = useState("");
   const titleChanged = titleDraft.trim() !== settings.windowTitle;
   const titleResetVisible = titleDraft.trim() !== DEFAULT_TITLE || settings.windowTitle !== DEFAULT_TITLE;
-  const storageChanged = storagePathDraft.trim() !== settings.storagePath;
 
   useEffect(() => setTitleDraft(settings.windowTitle), [settings.windowTitle]);
   useEffect(() => setStoragePathDraft(settings.storagePath), [settings.storagePath]);
+  useEffect(() => {
+    if (activeTab === "logs" && !settings.developerMode) {
+      setActiveTab("general");
+    }
+  }, [activeTab, settings.developerMode]);
   useEffect(() => {
     void invoke<string>("get_default_storage_path")
       .then(setDefaultStoragePath)
       .catch(() => setDefaultStoragePath(""));
   }, []);
+
+  useEffect(() => {
+    if (storagePathDraft.trim() === settings.storagePath) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void updateSettings({ storagePath: storagePathDraft });
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [settings.storagePath, storagePathDraft, updateSettings]);
 
   function openStoragePath() {
     void invoke("open_storage_path", { storagePath: storagePathDraft });
@@ -442,7 +527,12 @@ function SettingsView({
     });
     if (typeof selected === "string") {
       setStoragePathDraft(selected);
+      void updateSettings({ storagePath: selected });
     }
+  }
+
+  function updateStoragePath(value: string) {
+    setStoragePathDraft(value);
   }
 
   function restoreDefaultStoragePath() {
@@ -460,6 +550,9 @@ function SettingsView({
       <div className="settings-tabs" role="tablist" aria-label="设置分类">
         <SettingsTabButton active={activeTab === "general"} icon={<Monitor size={14} />} label="通用" onClick={() => setActiveTab("general")} />
         <SettingsTabButton active={activeTab === "hotkey"} icon={<Keyboard size={14} />} label="快捷键" onClick={() => setActiveTab("hotkey")} />
+        {settings.developerMode ? (
+          <SettingsTabButton active={activeTab === "logs"} icon={<Terminal size={14} />} label="控制台日志" onClick={() => setActiveTab("logs")} />
+        ) : null}
         <SettingsTabButton active={activeTab === "about"} icon={<Info size={14} />} label="关于" onClick={() => setActiveTab("about")} />
       </div>
 
@@ -520,10 +613,7 @@ function SettingsView({
                 <p>{defaultStoragePath ? `默认目录：${defaultStoragePath}` : "默认使用应用配置目录；可打开当前目录或恢复默认"}</p>
               </div>
               <div className="settings-inline wide">
-                <input className="settings-input mono" placeholder="默认应用配置目录" value={storagePathDraft} onChange={(event) => setStoragePathDraft(event.target.value)} />
-                {storageChanged ? (
-                  <button className="primary-action" onClick={() => updateSettings({ storagePath: storagePathDraft })} type="button">保存</button>
-                ) : null}
+                <input className="settings-input mono" placeholder="默认应用配置目录" value={storagePathDraft} onChange={(event) => updateStoragePath(event.target.value)} />
                 <button className="secondary-action icon-text-action" onClick={() => void changeStoragePath()} type="button"><FolderOpen size={13} />更改</button>
                 <button className="secondary-action" onClick={openStoragePath} type="button">打开</button>
                 {settings.storagePath ? (
@@ -552,6 +642,8 @@ function SettingsView({
             <p className="settings-note">本页已固定为“当前值 + 冲突状态 + 编辑入口”的结构；快捷键改写会在真实工具迁移时接入统一注册器，避免先做只改 UI 的伪编辑。</p>
           </div>
         ) : null}
+
+        {activeTab === "logs" ? <DebugLogPanel /> : null}
 
         {activeTab === "about" ? (
           <div className="settings-section page-enter">

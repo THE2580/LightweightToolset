@@ -74,6 +74,9 @@ button { font: inherit; }
 .nav-item.active { color: #fff; background: var(--primary); }
 .tool-nav-item { gap: 7px; padding: 0 7px 0 9px; color: #52627a; cursor: pointer; font-size: 10px; }
 .tool-nav-item.active { color: #fff; background: var(--primary); }
+.tool-nav-item.active .switch { background: rgba(255, 255, 255, 0.26); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72); }
+.tool-nav-item.active .switch.on { background: #fff; }
+.tool-nav-item.active .switch.on span { background: var(--primary); box-shadow: none; }
 .tool-nav-item.disabled { color: #8f9aae; cursor: default; }
 .tool-nav-item.disabled:hover { color: #8f9aae; background: transparent; }
 .tool-nav-item:focus-visible { outline: 1px solid #2b63e8; outline-offset: 1px; }
@@ -167,6 +170,20 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .tool-page h1 { margin: 0 0 4px; font-size: 20px; }
 .tool-page > p { margin: 0; color: #687896; font-size: 10px; }
 .tool-page-status { display: flex; align-items: center; gap: 12px; margin-top: 18px; font-size: 9px; }
+.log-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0 10px; }
+.log-heading h2 { margin: 0; font-size: 13px; }
+.log-heading p { margin: 4px 0 0; color: var(--muted-text); font-size: 10px; }
+.log-actions { display: inline-flex; align-items: center; gap: 7px; }
+.terminal-panel { height: min(395px, calc(100vh - 210px)); min-height: 240px; overflow: auto; padding: 10px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--muted-bg); font-family: Consolas, "Cascadia Mono", monospace; font-size: 10px; line-height: 1.45; user-select: text; }
+.terminal-line { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.terminal-line + .terminal-line { margin-top: 2px; }
+.terminal-line.muted { color: var(--muted-text); }
+.terminal-prefix { margin-right: 6px; white-space: nowrap; }
+.terminal-time { color: var(--muted-text); }
+.terminal-level { margin-left: 5px; color: var(--primary); }
+.terminal-level.error { color: #e23131; }
+.terminal-level.warn { color: #a86f00; }
+.terminal-message { color: var(--text); }
 @keyframes page-enter { from { opacity: 0; transform: translateX(6px); } to { opacity: 1; transform: translateX(0); } }
 .page-enter { animation: page-enter 180ms ease-out both; }
 @media (prefers-reduced-motion: reduce) { .sidebar, .history-controls, .history-controls button, .collapse-button, .nav-item, .tool-nav-item, .tool-card, .page-enter { transition: none; animation: none; }.tool-card:hover { transform: none; } }

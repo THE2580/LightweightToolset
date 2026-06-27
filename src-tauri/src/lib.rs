@@ -2,7 +2,7 @@ mod settings;
 mod tools;
 mod window_service;
 
-use std::{fs, path::PathBuf, process::Command, sync::{Mutex, OnceLock}, time::Instant};
+use std::{collections::VecDeque, fs, path::PathBuf, process::Command, sync::{Mutex, OnceLock}, time::{Instant, SystemTime, UNIX_EPOCH}};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -20,6 +20,7 @@ pub struct AppState {
     settings_path: PathBuf,
     process_started_at: Instant,
     cold_start_ms: Mutex<Option<u128>>,
+    debug_logs: Mutex<VecDeque<DebugLogEntry>>,
 }
 
 static PROCESS_STARTED_AT: OnceLock<Instant> = OnceLock::new();
@@ -34,6 +35,14 @@ pub struct AppSnapshot {
     tools: Vec<ToolSnapshot>,
     cold_start_ms: u128,
     settings: AppSettings,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DebugLogEntry {
+    timestamp_ms: u128,
+    level: &'static str,
+    message: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -59,6 +68,23 @@ fn app_snapshot(state: &AppState, registry: &ToolRegistry) -> Result<AppSnapshot
         cold_start_ms: cold_start_ms(state)?,
         settings: registry.settings().clone(),
     })
+}
+
+fn push_debug_log(state: &AppState, level: &'static str, message: impl Into<String>) {
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    if let Ok(mut logs) = state.debug_logs.lock() {
+        logs.push_back(DebugLogEntry {
+            timestamp_ms,
+            level,
+            message: message.into(),
+        });
+        while logs.len() > 300 {
+            logs.pop_front();
+        }
+    }
 }
 
 fn default_storage_path(state: &AppState) -> Result<PathBuf, String> {
@@ -96,6 +122,19 @@ fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
 }
 
 #[tauri::command]
+fn get_debug_logs(state: State<'_, AppState>) -> Result<Vec<DebugLogEntry>, String> {
+    let logs = state.debug_logs.lock().map_err(|_| "调试日志不可用")?;
+    Ok(logs.iter().cloned().collect())
+}
+
+#[tauri::command]
+fn clear_debug_logs(state: State<'_, AppState>) -> Result<(), String> {
+    let mut logs = state.debug_logs.lock().map_err(|_| "调试日志不可用")?;
+    logs.clear();
+    Ok(())
+}
+
+#[tauri::command]
 fn set_tool_enabled(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -105,6 +144,7 @@ fn set_tool_enabled(
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.set_enabled(&app, &tool_id, enabled)?;
     AppSettings::save(&state.settings_path, registry.settings())?;
+    push_debug_log(&state, "info", format!("工具 {tool_id} {}", if enabled { "已启用" } else { "已禁用" }));
     app_snapshot(&state, &registry)
 }
 
@@ -114,6 +154,7 @@ fn set_auto_start_enabled(app: AppHandle, state: State<'_, AppState>, enabled: b
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.settings_mut().auto_start = enabled;
     AppSettings::save(&state.settings_path, registry.settings())?;
+    push_debug_log(&state, "info", format!("开机自启{}", if enabled { "已开启" } else { "已关闭" }));
     app_snapshot(&state, &registry)
 }
 
@@ -130,6 +171,7 @@ fn open_storage_path(state: State<'_, AppState>, storage_path: Option<String>) -
         .arg(&path)
         .spawn()
         .map_err(|error| format!("打开存储目录失败: {error}"))?;
+    push_debug_log(&state, "info", format!("打开存储目录：{}", path.display()));
     Ok(())
 }
 
@@ -169,6 +211,7 @@ fn update_app_settings(
         settings.storage_path = storage_path;
     }
     AppSettings::save(&state.settings_path, registry.settings())?;
+    push_debug_log(&state, "info", "应用设置已保存");
     app_snapshot(&state, &registry)
 }
 
@@ -252,12 +295,22 @@ pub fn run() {
                 settings_path,
                 process_started_at: *PROCESS_STARTED_AT.get_or_init(Instant::now),
                 cold_start_ms: Mutex::new(None),
+                debug_logs: Mutex::new(VecDeque::from([DebugLogEntry {
+                    timestamp_ms: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_millis())
+                        .unwrap_or_default(),
+                    level: "info",
+                    message: "LightweightToolset 开发版日志已启动".to_owned(),
+                }])),
             });
             build_tray(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_app_snapshot,
+            get_debug_logs,
+            clear_debug_logs,
             set_tool_enabled,
             set_auto_start_enabled,
             get_default_storage_path,
