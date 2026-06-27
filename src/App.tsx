@@ -483,7 +483,7 @@ function SettingsView({
             </div>
             <ToggleRow
               checked={settings.autoStart}
-              description="通过当前用户的 Windows 启动项注册表真实接入，关闭时会移除注册项"
+              description="登录 Windows 后自动启动；关闭时会同步取消自启"
               label="开机自启"
               onChange={(value) => setAutoStartEnabled(value)}
             />

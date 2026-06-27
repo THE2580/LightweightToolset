@@ -10,6 +10,7 @@ use tauri::{
     AppHandle, Manager, State, WindowEvent,
 };
 use tauri_plugin_global_shortcut::ShortcutState;
+use tauri_plugin_autostart::ManagerExt;
 
 use settings::{AppSettings, CloseBehavior, ThemeMode};
 use tools::{ToolRegistry, ToolSnapshot};
@@ -47,9 +48,6 @@ struct SettingsPatch {
     storage_path: Option<String>,
 }
 
-const AUTO_START_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-const AUTO_START_RUN_VALUE: &str = "LightweightToolset";
-
 fn cold_start_ms(state: &AppState) -> Result<u128, String> {
     let mut metric = state.cold_start_ms.lock().map_err(|_| "性能指标不可用")?;
     Ok(*metric.get_or_insert_with(|| state.process_started_at.elapsed().as_millis()))
@@ -81,23 +79,12 @@ fn resolve_storage_path(state: &AppState, storage_path: Option<String>) -> Resul
     }
 }
 
-fn set_auto_start_registry(enabled: bool) -> Result<(), String> {
+fn set_auto_start_plugin(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let autostart = app.autolaunch();
     if enabled {
-        let exe = std::env::current_exe().map_err(|error| format!("获取当前程序路径失败: {error}"))?;
-        let target = format!("\"{}\"", exe.display());
-        let status = Command::new("reg")
-            .args(["add", AUTO_START_RUN_KEY, "/v", AUTO_START_RUN_VALUE, "/t", "REG_SZ", "/d"])
-            .arg(target)
-            .args(["/f"])
-            .status()
-            .map_err(|error| format!("写入开机自启注册表失败: {error}"))?;
-        if !status.success() {
-            return Err("写入开机自启注册表失败".to_owned());
-        }
+        autostart.enable().map_err(|error| format!("启用开机自启失败: {error}"))?;
     } else {
-        let _ = Command::new("reg")
-            .args(["delete", AUTO_START_RUN_KEY, "/v", AUTO_START_RUN_VALUE, "/f"])
-            .status();
+        autostart.disable().map_err(|error| format!("关闭开机自启失败: {error}"))?;
     }
     Ok(())
 }
@@ -122,8 +109,8 @@ fn set_tool_enabled(
 }
 
 #[tauri::command]
-fn set_auto_start_enabled(state: State<'_, AppState>, enabled: bool) -> Result<AppSnapshot, String> {
-    set_auto_start_registry(enabled)?;
+fn set_auto_start_enabled(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<AppSnapshot, String> {
+    set_auto_start_plugin(&app, enabled)?;
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.settings_mut().auto_start = enabled;
     AppSettings::save(&state.settings_path, registry.settings())?;
@@ -225,6 +212,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::Builder::new().app_name("LightweightToolset").build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, _, event| {
             if event.state() == ShortcutState::Pressed {
                 show_main_window(app);
@@ -253,7 +241,7 @@ pub fn run() {
             let settings = AppSettings::load(&settings_path)?;
             let mut registry = ToolRegistry::new(settings);
             if registry.settings().auto_start {
-                let _ = set_auto_start_registry(true);
+                let _ = set_auto_start_plugin(app.handle(), true);
             }
             registry.start_enabled(app.handle())?;
             if let Some(window) = app.get_webview_window("main") {
