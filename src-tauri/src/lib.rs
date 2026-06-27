@@ -149,6 +149,20 @@ fn set_tool_enabled(
 }
 
 #[tauri::command]
+fn set_tool_hotkey(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tool_id: String,
+    hotkey: String,
+) -> Result<AppSnapshot, String> {
+    let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+    registry.set_hotkey(&app, &tool_id, hotkey.clone())?;
+    AppSettings::save(&state.settings_path, registry.settings())?;
+    push_debug_log(&state, "info", format!("工具 {tool_id} 快捷键已更新为 {hotkey}"));
+    app_snapshot(&state, &registry)
+}
+
+#[tauri::command]
 fn set_auto_start_enabled(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<AppSnapshot, String> {
     set_auto_start_plugin(&app, enabled)?;
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
@@ -312,6 +326,7 @@ pub fn run() {
             get_debug_logs,
             clear_debug_logs,
             set_tool_enabled,
+            set_tool_hotkey,
             set_auto_start_enabled,
             get_default_storage_path,
             open_storage_path,

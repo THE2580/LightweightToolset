@@ -5,6 +5,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ChevronLeft,
   ChevronRight,
+  Check,
+  Copy,
   Gauge,
   FolderOpen,
   Home,
@@ -28,6 +30,7 @@ import {
   X,
 } from "lucide-react";
 import { type MouseEvent, useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import "./App.css";
 
 type ThemeMode = "system" | "light" | "dark";
@@ -69,6 +72,15 @@ type DebugLogEntry = {
   message: string;
 };
 
+type UpdateNotice = {
+  phase: "available" | "up-to-date" | "error";
+  title: string;
+  message: string;
+  releaseNotes?: string;
+  releaseUrl?: string;
+  downloadUrl?: string;
+};
+
 type View = "home" | "settings" | "tool";
 
 type NavigationTarget = {
@@ -77,6 +89,12 @@ type NavigationTarget = {
 };
 
 const DEFAULT_TITLE = "轻量化工具集";
+const APP_NAME = "LightweightToolset";
+const APP_SUBTITLE = "Windows 桌面工具集";
+const APP_VERSION = "0.1.0";
+const GITHUB_REPO = "THE2580/LightweightToolset";
+const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
+const AUTHOR_EMAILS = ["2021289500@qq.com", "liangneng20060725@gmail.com"];
 const toolIcons = [Keyboard, MonitorCog];
 
 function App() {
@@ -382,6 +400,7 @@ function App() {
                 coldStartupMs={snapshot?.coldStartMs ?? 0}
                 settings={settings}
                 setAutoStartEnabled={setAutoStartEnabled}
+                setSnapshot={setSnapshot}
                 tools={tools}
                 updateSettings={updateSettings}
               />
@@ -475,12 +494,14 @@ function SettingsView({
   coldStartupMs,
   settings,
   setAutoStartEnabled,
+  setSnapshot,
   tools,
   updateSettings,
 }: {
   coldStartupMs: number;
   settings: AppSettings;
   setAutoStartEnabled: (enabled: boolean) => Promise<void>;
+  setSnapshot: React.Dispatch<React.SetStateAction<AppSnapshot | null>>;
   tools: Tool[];
   updateSettings: (patch: SettingsPatch) => Promise<void>;
 }) {
@@ -625,65 +646,13 @@ function SettingsView({
         ) : null}
 
         {activeTab === "hotkey" ? (
-          <div className="settings-section page-enter">
-            {tools.map((tool) => (
-              <div className="settings-row hotkey-row" key={tool.id}>
-                <div>
-                  <h2>{tool.name}</h2>
-                  <p>{tool.enabled ? "当前快捷键已注册；后续编辑时会先做冲突检查再保存" : "工具已禁用；快捷键已释放，启用后才允许编辑"}</p>
-                </div>
-                <div className="hotkey-controls">
-                  <kbd>{tool.hotkey}</kbd>
-                  <span className="setting-value neutral"><ShieldCheck size={12} />无冲突</span>
-                  <button className="secondary-action planned-action" disabled type="button"><Pencil size={12} />编辑</button>
-                </div>
-              </div>
-            ))}
-            <p className="settings-note">本页已固定为“当前值 + 冲突状态 + 编辑入口”的结构；快捷键改写会在真实工具迁移时接入统一注册器，避免先做只改 UI 的伪编辑。</p>
-          </div>
+          <HotkeySettings setSnapshot={setSnapshot} tools={tools} />
         ) : null}
 
         {activeTab === "logs" ? <DebugLogPanel /> : null}
 
         {activeTab === "about" ? (
-          <div className="settings-section page-enter">
-            <InfoRow label="应用" value="LightweightToolset" />
-            <InfoRow label="作者" value="THE2580" />
-            <InfoRow label="版本" value="0.1.0" />
-            <div className="settings-row">
-              <div>
-                <h2>GitHub</h2>
-              </div>
-              <button
-                className="link-action"
-                onClick={() => void openUrl("https://github.com/THE2580/LightweightToolset")}
-                type="button"
-              >
-                github.com/THE2580/LightweightToolset
-              </button>
-            </div>
-            <ToggleRow
-              checked={settings.autoCheckUpdates}
-              description="仅保存偏好并保留更新入口；当前不接 release 更新器"
-              label="自动检查更新"
-              onChange={(value) => updateSettings({ autoCheckUpdates: value })}
-            />
-            {settings.autoCheckUpdates ? (
-              <ToggleRow
-                checked={settings.showUpdateNotification}
-                description="仅作为后续更新通道的提示策略预留"
-                label="新版本提示弹窗"
-                onChange={(value) => updateSettings({ showUpdateNotification: value })}
-              />
-            ) : null}
-            <div className="settings-row">
-              <div>
-                <h2>冷启动基线</h2>
-                <p>首次界面快照冻结的进程启动耗时</p>
-              </div>
-              <span className="setting-value">{coldStartupMs} ms</span>
-            </div>
-          </div>
+          <AboutSettings coldStartupMs={coldStartupMs} settings={settings} updateSettings={updateSettings} />
         ) : null}
       </section>
     </>
@@ -699,6 +668,369 @@ function SettingsTabButton({ active, icon, label, onClick }: { active: boolean; 
   );
 }
 
+function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<React.SetStateAction<AppSnapshot | null>>; tools: Tool[] }) {
+  const [editingToolId, setEditingToolId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const editingTool = tools.find((tool) => tool.id === editingToolId) ?? null;
+  const conflictTool = draft ? tools.find((tool) => tool.id !== editingToolId && normalizeHotkeyDraft(tool.hotkey) === normalizeHotkeyDraft(draft)) : null;
+
+  function startEditing(tool: Tool) {
+    setEditingToolId(tool.id);
+    setDraft(tool.hotkey);
+    setError(null);
+  }
+
+  function captureHotkey(event: React.KeyboardEvent<HTMLInputElement>) {
+    event.preventDefault();
+    const key = normalizeKeyboardKey(event.key);
+    if (!key) {
+      return;
+    }
+    const parts = [
+      event.ctrlKey ? "CTRL" : "",
+      event.altKey ? "ALT" : "",
+      event.shiftKey ? "SHIFT" : "",
+      event.metaKey ? "SUPER" : "",
+      key,
+    ].filter(Boolean);
+    setDraft(parts.join("+"));
+    setError(null);
+  }
+
+  async function saveHotkey() {
+    if (!editingTool) {
+      return;
+    }
+    const normalized = normalizeHotkeyDraft(draft);
+    if (!normalized || !normalized.includes("+")) {
+      setError("请输入包含修饰键的组合键");
+      return;
+    }
+    if (conflictTool) {
+      setError(`快捷键已被 ${conflictTool.name} 使用`);
+      return;
+    }
+    try {
+      const nextSnapshot = await invoke<AppSnapshot>("set_tool_hotkey", {
+        hotkey: normalized,
+        toolId: editingTool.id,
+      });
+      setSnapshot(nextSnapshot);
+      setEditingToolId(null);
+      setDraft("");
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  return (
+    <div className="settings-section page-enter">
+      {tools.map((tool) => {
+        const isEditing = editingToolId === tool.id;
+        const hasConflict = isEditing && Boolean(conflictTool);
+        return (
+          <div className="settings-row hotkey-row" key={tool.id}>
+            <div>
+              <h2>{tool.name}</h2>
+              <p>{tool.enabled ? "当前快捷键已注册；保存后会立即重新注册并检查冲突" : "工具已禁用；快捷键会保存，启用后注册"}</p>
+            </div>
+            <div className="hotkey-controls">
+              {isEditing ? (
+                <>
+                  <input
+                    autoFocus
+                    className="hotkey-input"
+                    onChange={(event) => setDraft(event.target.value.toUpperCase())}
+                    onKeyDown={captureHotkey}
+                    placeholder="按下组合键"
+                    value={draft}
+                  />
+                  <span className={`setting-value neutral ${hasConflict ? "danger" : ""}`}>
+                    {hasConflict ? "存在冲突" : "可用"}
+                  </span>
+                  <button className="primary-action icon-text-action" onClick={() => void saveHotkey()} type="button"><Check size={12} />保存</button>
+                  <button className="secondary-action" onClick={() => setEditingToolId(null)} type="button">取消</button>
+                </>
+              ) : (
+                <>
+                  <kbd>{tool.hotkey}</kbd>
+                  <span className="setting-value neutral"><ShieldCheck size={12} />无冲突</span>
+                  <button className="secondary-action planned-action" onClick={() => startEditing(tool)} type="button"><Pencil size={12} />编辑</button>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      {error ? <div className="error-banner">{error}</div> : null}
+      <p className="settings-note">点击输入框后直接按下组合键；同一工具集内会先检查重复，系统级冲突会在保存注册时返回错误。</p>
+    </div>
+  );
+}
+
+function normalizeHotkeyDraft(value: string) {
+  return value.split("+").map((part) => part.trim().toUpperCase()).filter(Boolean).join("+");
+}
+
+function normalizeKeyboardKey(key: string) {
+  if (["Control", "Alt", "Shift", "Meta"].includes(key)) {
+    return "";
+  }
+  if (key === " ") {
+    return "SPACE";
+  }
+  if (key.length === 1) {
+    return key.toUpperCase();
+  }
+  return key.toUpperCase();
+}
+
+function AboutSettings({ coldStartupMs, settings, updateSettings }: { coldStartupMs: number; settings: AppSettings; updateSettings: (patch: SettingsPatch) => Promise<void> }) {
+  const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = useState("当前已是最新版本");
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updateNotice, setUpdateNotice] = useState<UpdateNotice | null>(null);
+  const [updateNoticeClosing, setUpdateNoticeClosing] = useState(false);
+
+  useEffect(() => {
+    if (settings.autoCheckUpdates) {
+      void checkUpdates(false);
+    }
+  }, [settings.autoCheckUpdates]);
+
+  async function copyEmail(email: string) {
+    await navigator.clipboard.writeText(email);
+    setCopiedEmail(email);
+    window.setTimeout(() => setCopiedEmail(null), 1200);
+  }
+
+  async function checkUpdates(manual = true) {
+    if (checkingUpdates) {
+      return;
+    }
+    setCheckingUpdates(true);
+    setUpdateStatus("正在检查更新...");
+    try {
+      const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+        headers: { Accept: "application/vnd.github+json" },
+      });
+      if (response.status === 404) {
+        setUpdateStatus("暂无发布版本");
+        if (manual) {
+          setUpdateNoticeClosing(false);
+          setUpdateNotice({
+            phase: "up-to-date",
+            title: "当前已经是最新版本",
+            message: "远端仓库暂未发布正式 Release，当前版本无需更新。",
+          });
+        }
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(`GitHub 返回 ${response.status}`);
+      }
+      const release = await response.json() as { assets?: Array<{ browser_download_url?: string; name?: string }>; body?: string; html_url?: string; tag_name?: string };
+      const tag = release.tag_name ?? "";
+      if (!isRemoteVersionNewer(tag, APP_VERSION)) {
+        setUpdateStatus("当前已是最新版本");
+        if (manual) {
+          setUpdateNoticeClosing(false);
+          setUpdateNotice({
+            phase: "up-to-date",
+            title: "当前已经是最新版本",
+            message: `当前版本 v${APP_VERSION}，未发现可用更新。`,
+          });
+        }
+        return;
+      }
+      const asset = release.assets?.find((item) => item.name?.toLowerCase().endsWith(".exe")) ?? release.assets?.[0];
+      const notice = {
+        phase: "available" as const,
+        title: `发现新版本 ${tag}`,
+        message: `当前版本 v${APP_VERSION}，建议更新以获得最新改进。`,
+        releaseNotes: release.body?.trim() || "本次 Release 暂未填写更新日志。",
+        releaseUrl: release.html_url ?? GITHUB_URL,
+        downloadUrl: asset?.browser_download_url,
+      };
+      setUpdateStatus(`发现新版本 ${tag}`);
+      if (manual || settings.showUpdateNotification) {
+        setUpdateNoticeClosing(false);
+        setUpdateNotice(notice);
+      }
+    } catch (reason) {
+      const message = `检查失败：${String(reason)}`;
+      setUpdateStatus(message);
+      if (manual) {
+        setUpdateNoticeClosing(false);
+        setUpdateNotice({
+          phase: "error",
+          title: "检查更新失败",
+          message,
+        });
+      }
+    } finally {
+      setCheckingUpdates(false);
+    }
+  }
+
+  function closeUpdateNotice() {
+    setUpdateNoticeClosing(true);
+    window.setTimeout(() => {
+      setUpdateNotice(null);
+      setUpdateNoticeClosing(false);
+    }, 180);
+  }
+
+  return (
+    <div className="settings-section page-enter about-section">
+      <section className="about-block">
+        <h2>{APP_NAME}</h2>
+        <p>{APP_SUBTITLE}</p>
+      </section>
+      <InfoBlock label="作者">
+        <span>THE2580</span>
+      </InfoBlock>
+      <InfoBlock label="GitHub">
+        <button className="about-link" onClick={() => void openUrl(GITHUB_URL)} type="button">
+          github.com/{GITHUB_REPO}
+        </button>
+      </InfoBlock>
+      <InfoBlock label="邮箱">
+        <div className="email-list">
+          {AUTHOR_EMAILS.map((email) => (
+            <div className="email-line" key={email}>
+              <button className="about-link" onClick={() => void openUrl(`mailto:${email}`)} type="button">{email}</button>
+              <button className="icon-action compact" aria-label={`复制 ${email}`} onClick={() => void copyEmail(email)} type="button">
+                {copiedEmail === email ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            </div>
+          ))}
+        </div>
+      </InfoBlock>
+      <InfoBlock label="版本">
+        <span>{APP_VERSION}</span>
+      </InfoBlock>
+      <ToggleRow
+        checked={settings.autoCheckUpdates}
+        description="软件启动时自动检查更新"
+        label="自动检查更新"
+        onChange={(value) => updateSettings({ autoCheckUpdates: value })}
+      />
+      {settings.autoCheckUpdates ? (
+        <div className="update-card">
+          <ToggleRow
+            checked={settings.showUpdateNotification}
+            description="自动检查发现新版本时弹出提示"
+            label="新版本提示弹窗"
+            onChange={(value) => updateSettings({ showUpdateNotification: value })}
+          />
+        </div>
+      ) : null}
+      <div className="update-card update-status-card">
+        <div>
+          <h2>软件更新</h2>
+          <p>{updateStatus}</p>
+          <p>冷启动基线：{coldStartupMs} ms</p>
+        </div>
+        <button className="secondary-action icon-text-action" disabled={checkingUpdates} onClick={() => void checkUpdates()} type="button">
+          <RefreshCw className={checkingUpdates ? "spin-icon" : ""} size={13} />
+          {checkingUpdates ? "检查中" : "检查更新"}
+        </button>
+      </div>
+      {updateNotice ? (
+        <UpdateNoticeDialog
+          closing={updateNoticeClosing}
+          notice={updateNotice}
+          onClose={closeUpdateNotice}
+          onOpenDownload={() => {
+            void openUrl(updateNotice.downloadUrl ?? updateNotice.releaseUrl ?? GITHUB_URL);
+            closeUpdateNotice();
+          }}
+          onOpenRelease={() => {
+            void openUrl(updateNotice.releaseUrl ?? GITHUB_URL);
+            closeUpdateNotice();
+          }}
+          onRetry={() => {
+            setUpdateNotice(null);
+            void checkUpdates();
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function UpdateNoticeDialog({
+  closing,
+  notice,
+  onClose,
+  onOpenDownload,
+  onOpenRelease,
+  onRetry,
+}: {
+  closing: boolean;
+  notice: UpdateNotice;
+  onClose: () => void;
+  onOpenDownload: () => void;
+  onOpenRelease: () => void;
+  onRetry: () => void;
+}) {
+  const isAvailable = notice.phase === "available";
+  const isLatest = notice.phase === "up-to-date";
+  return createPortal(
+    <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
+      <section aria-label="软件更新提示" aria-modal="true" className={`update-dialog ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog">
+        <header className="update-dialog-header">
+          <div className="update-dialog-icon">
+            {isAvailable ? <Info size={16} /> : isLatest ? <Check size={16} /> : <RefreshCw size={16} />}
+          </div>
+          <div>
+            <h2>{notice.title}</h2>
+            <p>{notice.message}</p>
+          </div>
+          <button aria-label="关闭" className="icon-action compact" onClick={onClose} type="button"><X size={13} /></button>
+        </header>
+        {isAvailable ? (
+          <div className="update-dialog-body">
+            <p>更新日志</p>
+            <div>{notice.releaseNotes}</div>
+          </div>
+        ) : null}
+        <footer className="update-dialog-actions">
+          <button className="secondary-action" onClick={onClose} type="button">{isAvailable ? "稍后处理" : "知道了"}</button>
+          {isAvailable ? <button className="secondary-action" onClick={onOpenRelease} type="button">查看 Release</button> : null}
+          {isAvailable ? <button className="primary-action" onClick={onOpenDownload} type="button">前往更新</button> : null}
+          {notice.phase === "error" ? <button className="primary-action" onClick={onRetry} type="button">重新检查</button> : null}
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function InfoBlock({ children, label }: { children: React.ReactNode; label: string }) {
+  return (
+    <section className="about-block">
+      <p>{label}</p>
+      <div className="about-value">{children}</div>
+    </section>
+  );
+}
+
+function isRemoteVersionNewer(tag: string, current: string) {
+  const remote = tag.replace(/^v/i, "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const local = current.replace(/^v/i, "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(remote.length, local.length); index += 1) {
+    const diff = (remote[index] ?? 0) - (local[index] ?? 0);
+    if (diff !== 0) {
+      return diff > 0;
+    }
+  }
+  return false;
+}
+
 function ToggleRow({ checked, description, label, onChange }: { checked: boolean; description: string; label: string; onChange: (value: boolean) => void }) {
   return (
     <div className="settings-row">
@@ -709,17 +1041,6 @@ function ToggleRow({ checked, description, label, onChange }: { checked: boolean
       <button className={`switch ${checked ? "on" : ""}`} onClick={() => onChange(!checked)} type="button">
         <span />
       </button>
-    </div>
-  );
-}
-
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="settings-row">
-      <div>
-        <h2>{label}</h2>
-      </div>
-      <span className="setting-value">{value}</span>
     </div>
   );
 }

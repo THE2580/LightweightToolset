@@ -34,6 +34,8 @@ fn default_window_title() -> String {
 pub struct AppSettings {
     #[serde(default)]
     pub tools: BTreeMap<String, bool>,
+    #[serde(default)]
+    pub hotkeys: BTreeMap<String, String>,
     #[serde(default = "default_theme")]
     pub theme: ThemeMode,
     #[serde(default)]
@@ -56,6 +58,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             tools: BTreeMap::new(),
+            hotkeys: BTreeMap::new(),
             theme: default_theme(),
             auto_start: false,
             auto_check_updates: true,
