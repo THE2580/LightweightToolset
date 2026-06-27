@@ -2,7 +2,7 @@ mod settings;
 mod tools;
 mod window_service;
 
-use std::{fs, path::PathBuf, process::Command, sync::{Mutex, OnceLock}, time::Instant};
+use std::{fs, path::PathBuf, process::Command, sync::{mpsc, Mutex, OnceLock}, thread, time::Instant};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -10,6 +10,16 @@ use tauri::{
     AppHandle, Manager, State, WindowEvent,
 };
 use tauri_plugin_global_shortcut::ShortcutState;
+use windows::{
+    core::HSTRING,
+    Win32::{
+        System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, IBindCtx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED},
+        UI::Shell::{
+            FileOpenDialog, IFileOpenDialog, IShellItem, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS,
+            SIGDN_FILESYSPATH, SHCreateItemFromParsingName,
+        },
+    },
+};
 
 use settings::{AppSettings, CloseBehavior, ThemeMode};
 use tools::{ToolRegistry, ToolSnapshot};
@@ -146,6 +156,93 @@ fn open_storage_path(state: State<'_, AppState>, storage_path: Option<String>) -
     Ok(())
 }
 
+fn show_folder_picker(initial_path: PathBuf) -> Result<Option<String>, String> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let result = unsafe {
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()
+                .map_err(|error| format!("初始化目录选择器失败: {error}"))
+                .and_then(|_| {
+                    let dialog: IFileOpenDialog =
+                        CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+                            .map_err(|error| format!("创建目录选择器失败: {error}"))?;
+                    let options = dialog
+                        .GetOptions()
+                        .map_err(|error| format!("读取目录选择器配置失败: {error}"))?;
+                    dialog
+                        .SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
+                        .map_err(|error| format!("设置目录选择器失败: {error}"))?;
+                    if initial_path.exists() {
+                        if let Ok(folder) = SHCreateItemFromParsingName::<_, _, IShellItem>(
+                            &HSTRING::from(initial_path.display().to_string()),
+                            None::<&IBindCtx>,
+                        ) {
+                            let _ = dialog.SetFolder(&folder);
+                        }
+                    }
+                    let picked = match dialog.Show(None) {
+                        Ok(()) => {
+                            let item = dialog
+                                .GetResult()
+                                .map_err(|error| format!("读取选择目录失败: {error}"))?;
+                            let path = item
+                                .GetDisplayName(SIGDN_FILESYSPATH)
+                                .map_err(|error| format!("读取选择目录路径失败: {error}"))?;
+                            Ok(Some(path.to_string().map_err(|error| {
+                                format!("转换选择目录路径失败: {error}")
+                            })?))
+                        }
+                        Err(error) if error.code().0 as u32 == 0x800704C7 => Ok(None),
+                        Err(error) => Err(format!("打开目录选择器失败: {error}")),
+                    };
+                    CoUninitialize();
+                    picked
+                })
+        };
+        let _ = sender.send(result);
+    });
+
+    receiver
+        .recv()
+        .map_err(|error| format!("等待目录选择器失败: {error}"))?
+}
+
+#[tauri::command]
+fn pick_storage_path(state: State<'_, AppState>, storage_path: Option<String>) -> Result<Option<String>, String> {
+    let initial_path = resolve_storage_path(&state, storage_path)?;
+    if std::env::var_os("LWT_USE_POWERSHELL_FOLDER_PICKER").is_none() {
+        return show_folder_picker(initial_path.clone());
+    }
+    let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = '选择存储路径'
+$dialog.ShowNewFolderButton = $true
+$initial = $env:LWT_INITIAL_DIR
+if ($initial -and [System.IO.Directory]::Exists($initial)) {
+  $dialog.SelectedPath = $initial
+}
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+  Write-Output $dialog.SelectedPath
+}
+"#;
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-STA", "-Command", script])
+        .env("LWT_INITIAL_DIR", initial_path)
+        .output()
+        .map_err(|error| format!("打开目录选择器失败: {error}"))?;
+    if !output.status.success() {
+        return Err("打开目录选择器失败".to_owned());
+    }
+    let selected = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if selected.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(selected))
+    }
+}
+
 #[tauri::command]
 fn update_app_settings(
     app: AppHandle,
@@ -273,6 +370,7 @@ pub fn run() {
             set_auto_start_enabled,
             get_default_storage_path,
             open_storage_path,
+            pick_storage_path,
             update_app_settings
         ])
         .run(tauri::generate_context!())

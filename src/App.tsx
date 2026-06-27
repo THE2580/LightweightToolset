@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Gauge,
+  FolderOpen,
   Home,
   Info,
   Keyboard,
@@ -431,6 +432,13 @@ function SettingsView({
     void invoke("open_storage_path", { storagePath: storagePathDraft });
   }
 
+  async function changeStoragePath() {
+    const selected = await invoke<string | null>("pick_storage_path", { storagePath: storagePathDraft });
+    if (selected) {
+      setStoragePathDraft(selected);
+    }
+  }
+
   function restoreDefaultStoragePath() {
     setStoragePathDraft("");
     void updateSettings({ storagePath: "" });
@@ -510,6 +518,7 @@ function SettingsView({
                 {storageChanged ? (
                   <button className="primary-action" onClick={() => updateSettings({ storagePath: storagePathDraft })} type="button">保存</button>
                 ) : null}
+                <button className="secondary-action icon-text-action" onClick={() => void changeStoragePath()} type="button"><FolderOpen size={13} />更改</button>
                 <button className="secondary-action" onClick={openStoragePath} type="button">打开</button>
                 {settings.storagePath ? (
                   <button className="icon-action" aria-label="恢复默认存储路径" onClick={restoreDefaultStoragePath} type="button"><RotateCcw size={13} /></button>

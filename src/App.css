@@ -153,6 +153,7 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .icon-action { display: grid; width: 30px; place-items: center; color: var(--text); background: var(--panel-bg); }
 .primary-action:hover, .secondary-action:hover, .icon-action:hover { filter: brightness(0.98); }
 .primary-action:disabled, .secondary-action:disabled, .icon-action:disabled { cursor: default; opacity: 0.58; filter: none; }
+.icon-text-action { display: inline-flex; align-items: center; gap: 4px; }
 .planned-action { display: inline-flex; align-items: center; gap: 3px; }
 .link-action { border: 0; color: var(--primary); background: transparent; cursor: pointer; font-size: 9px; text-align: right; text-decoration: none; transition: color 140ms ease; }
 .link-action:hover { text-decoration: underline; }
