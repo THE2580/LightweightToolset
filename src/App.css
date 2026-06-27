@@ -168,8 +168,10 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .settings-note { margin: 10px 0 0; color: var(--muted-text); font-size: 10px; line-height: 1.5; }
 .hotkey-row { align-items: center; }
 .hotkey-controls { display: inline-flex; align-items: center; justify-content: flex-end; gap: 7px; white-space: nowrap; }
-.hotkey-input { width: 134px; height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--panel-bg); font: inherit; font-size: 9px; outline: none; }
-.hotkey-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent); }
+.hotkey-capture { width: 134px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--panel-bg); cursor: text; font: inherit; font-size: 10px; outline: none; text-align: left; }
+.hotkey-capture.empty { color: var(--muted-text); }
+.hotkey-capture:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent); }
+.hotkey-preview { padding: 4px 8px; border-radius: 5px; font-size: 9px; line-height: 1.2; }
 .tool-page { padding-top: 2px; }
 .tool-page h1 { margin: 0 0 4px; font-size: 20px; }
 .tool-page > p { margin: 0; color: #687896; font-size: 10px; }
@@ -209,8 +211,12 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .update-dialog.closing { animation: dialog-pop-out 170ms ease-in both; }
 .update-dialog-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: flex-start; padding: 13px 14px; border-bottom: 1px solid var(--soft-border); background: var(--muted-bg); }
 .update-dialog-icon { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 8px; color: var(--primary); background: var(--primary-soft); }
+.update-dialog-icon.danger { color: #b42318; background: #fff0ed; }
+.dialog-close-button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 6px; color: var(--text); background: transparent; cursor: pointer; transition: background-color 140ms ease, color 140ms ease; }
+.dialog-close-button:hover { color: var(--primary); background: var(--primary-soft); }
 .update-dialog-header h2 { margin: 0; font-size: 12px; }
 .update-dialog-header p { margin: 4px 0 0; color: var(--muted-text); font-size: 10px; line-height: 1.55; }
+.dialog-danger-text { color: #b42318 !important; }
 .update-dialog-body { padding: 12px 14px 4px; }
 .update-dialog-body p { margin: 0 0 6px; color: var(--muted-text); font-size: 10px; font-weight: 700; }
 .update-dialog-body div { max-height: 115px; overflow: auto; padding: 9px 10px; border: 1px solid var(--soft-border); border-radius: 6px; color: var(--text); background: var(--muted-bg); font-size: 10px; line-height: 1.55; white-space: pre-wrap; }

@@ -40,6 +40,7 @@ pub struct ToolRegistry {
     enabled: BTreeMap<String, bool>,
     hotkeys: BTreeMap<String, String>,
     workers: BTreeMap<String, RunningWorker>,
+    shortcuts_suspended: bool,
     settings: AppSettings,
 }
 
@@ -64,6 +65,7 @@ impl ToolRegistry {
             enabled: settings.tools.clone(),
             hotkeys: settings.hotkeys.clone(),
             workers: BTreeMap::new(),
+            shortcuts_suspended: false,
             settings,
         }
     }
@@ -120,7 +122,12 @@ impl ToolRegistry {
             return Ok(());
         }
 
-        if self.is_enabled(tool_id) {
+        if self.is_enabled(tool_id) && self.shortcuts_suspended {
+            let next_shortcut: Shortcut = normalized.parse().map_err(|error| format!("解析新快捷键失败: {error}"))?;
+            app.global_shortcut().register(next_shortcut).map_err(|error| format!("注册新快捷键失败: {error}"))?;
+            let registered_shortcut: Shortcut = normalized.parse().map_err(|error| format!("解析新快捷键失败: {error}"))?;
+            app.global_shortcut().unregister(registered_shortcut).map_err(|error| format!("释放新快捷键检查失败: {error}"))?;
+        } else if self.is_enabled(tool_id) {
             let previous_shortcut: Shortcut = previous.parse().map_err(|error| format!("解析原快捷键失败: {error}"))?;
             app.global_shortcut().unregister(previous_shortcut).map_err(|error| format!("注销原快捷键失败: {error}"))?;
             let next_shortcut: Shortcut = normalized.parse().map_err(|error| format!("解析新快捷键失败: {error}"))?;
@@ -133,6 +140,41 @@ impl ToolRegistry {
 
         self.hotkeys.insert(tool.id.to_owned(), normalized.clone());
         self.settings.hotkeys.insert(tool.id.to_owned(), normalized);
+        Ok(())
+    }
+
+    pub fn suspend_shortcuts(&mut self, app: &AppHandle) -> Result<(), String> {
+        if self.shortcuts_suspended {
+            return Ok(());
+        }
+        for tool in TOOLS.iter() {
+            if self.is_enabled(tool.id) {
+                let shortcut: Shortcut = self.hotkey_for(tool.id).parse().map_err(|error| format!("解析快捷键失败: {error}"))?;
+                app.global_shortcut().unregister(shortcut).map_err(|error| format!("暂停快捷键失败: {error}"))?;
+            }
+        }
+        self.shortcuts_suspended = true;
+        Ok(())
+    }
+
+    pub fn resume_shortcuts(&mut self, app: &AppHandle) -> Result<(), String> {
+        if !self.shortcuts_suspended {
+            return Ok(());
+        }
+        let mut registered = Vec::new();
+        for tool in TOOLS.iter() {
+            if self.is_enabled(tool.id) {
+                let shortcut: Shortcut = self.hotkey_for(tool.id).parse().map_err(|error| format!("解析快捷键失败: {error}"))?;
+                if let Err(error) = app.global_shortcut().register(shortcut) {
+                    for registered_shortcut in registered {
+                        let _ = app.global_shortcut().unregister(registered_shortcut);
+                    }
+                    return Err(format!("恢复快捷键失败: {error}"));
+                }
+                registered.push(shortcut);
+            }
+        }
+        self.shortcuts_suspended = false;
         Ok(())
     }
 
@@ -159,8 +201,10 @@ impl ToolRegistry {
         if self.workers.contains_key(tool.id) {
             return Ok(());
         }
-        let shortcut: Shortcut = self.hotkey_for(tool.id).parse().map_err(|error| format!("解析快捷键失败: {error}"))?;
-        app.global_shortcut().register(shortcut).map_err(|error| format!("注册快捷键失败: {error}"))?;
+        if !self.shortcuts_suspended {
+            let shortcut: Shortcut = self.hotkey_for(tool.id).parse().map_err(|error| format!("解析快捷键失败: {error}"))?;
+            app.global_shortcut().register(shortcut).map_err(|error| format!("注册快捷键失败: {error}"))?;
+        }
         let (stop, receiver) = mpsc::channel();
         let name = tool.id.to_owned();
         let thread = thread::Builder::new()
@@ -174,8 +218,10 @@ impl ToolRegistry {
     }
 
     fn stop(&mut self, app: &AppHandle, tool: &ToolDefinition) -> Result<(), String> {
-        let shortcut: Shortcut = self.hotkey_for(tool.id).parse().map_err(|error| format!("解析快捷键失败: {error}"))?;
-        app.global_shortcut().unregister(shortcut).map_err(|error| format!("注销快捷键失败: {error}"))?;
+        if !self.shortcuts_suspended {
+            let shortcut: Shortcut = self.hotkey_for(tool.id).parse().map_err(|error| format!("解析快捷键失败: {error}"))?;
+            app.global_shortcut().unregister(shortcut).map_err(|error| format!("注销快捷键失败: {error}"))?;
+        }
         window_service::close_tool_window(app, tool.id);
         if let Some(worker) = self.workers.remove(tool.id) {
             let _ = worker.stop.send(());
@@ -195,9 +241,21 @@ fn normalize_hotkey(value: &str) -> Result<String, String> {
         return Err("快捷键必须包含修饰键和一个按键".to_owned());
     }
 
-    let has_key = parts.iter().any(|part| !matches!(part.as_str(), "CTRL" | "CONTROL" | "ALT" | "SHIFT" | "META" | "SUPER" | "CMD" | "COMMAND"));
-    if !has_key {
+    let key_count = parts
+        .iter()
+        .filter(|part| !matches!(part.as_str(), "CTRL" | "CONTROL" | "ALT" | "SHIFT" | "META" | "SUPER" | "CMD" | "COMMAND"))
+        .count();
+    if key_count == 0 {
         return Err("快捷键缺少主按键".to_owned());
+    }
+    if key_count > 1 {
+        return Err("快捷键只能包含一个普通按键".to_owned());
+    }
+    if !matches!(parts.first().map(String::as_str), Some("CTRL" | "CONTROL" | "ALT" | "SHIFT" | "META" | "SUPER" | "CMD" | "COMMAND")) {
+        return Err("快捷键必须以修饰键开头".to_owned());
+    }
+    if matches!(parts.last().map(String::as_str), Some("CTRL" | "CONTROL" | "ALT" | "SHIFT" | "META" | "SUPER" | "CMD" | "COMMAND")) {
+        return Err("快捷键必须以普通按键结尾".to_owned());
     }
 
     let mut normalized = Vec::new();

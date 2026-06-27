@@ -163,6 +163,22 @@ fn set_tool_hotkey(
 }
 
 #[tauri::command]
+fn suspend_tool_hotkeys(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+    registry.suspend_shortcuts(&app)?;
+    push_debug_log(&state, "info", "工具快捷键监听期间已暂停");
+    Ok(())
+}
+
+#[tauri::command]
+fn resume_tool_hotkeys(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+    registry.resume_shortcuts(&app)?;
+    push_debug_log(&state, "info", "工具快捷键已恢复");
+    Ok(())
+}
+
+#[tauri::command]
 fn set_auto_start_enabled(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<AppSnapshot, String> {
     set_auto_start_plugin(&app, enabled)?;
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
@@ -270,8 +286,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::Builder::new().app_name("LightweightToolset").build())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, _, event| {
+        .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, shortcut, event| {
             if event.state() == ShortcutState::Pressed {
+                if let Some(state) = app.try_state::<AppState>() {
+                    push_debug_log(&state, "info", format!("工具快捷键已触发：{shortcut}"));
+                }
                 show_main_window(app);
             }
         }).build())
@@ -327,6 +346,8 @@ pub fn run() {
             clear_debug_logs,
             set_tool_enabled,
             set_tool_hotkey,
+            suspend_tool_hotkeys,
+            resume_tool_hotkeys,
             set_auto_start_enabled,
             get_default_storage_path,
             open_storage_path,

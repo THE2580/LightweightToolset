@@ -22,7 +22,6 @@ import {
   RefreshCw,
   RotateCcw,
   Settings,
-  ShieldCheck,
   Sun,
   Terminal,
   Trash2,
@@ -66,6 +65,11 @@ type AppSnapshot = {
   settings: AppSettings;
 };
 
+type CaptureHotkeyDraft = {
+  display: string;
+  value: string;
+};
+
 type DebugLogEntry = {
   timestampMs: number;
   level: string;
@@ -79,6 +83,17 @@ type UpdateNotice = {
   releaseNotes?: string;
   releaseUrl?: string;
   downloadUrl?: string;
+};
+
+type HotkeyNotice = {
+  phase: "success" | "error";
+  title: string;
+  message: string;
+  detail?: {
+    kind: "plain-error" | "conflict";
+    hotkey?: string;
+    toolName?: string;
+  };
 };
 
 type View = "home" | "settings" | "tool";
@@ -96,6 +111,7 @@ const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const AUTHOR_EMAILS = ["2021289500@qq.com", "liangneng20060725@gmail.com"];
 const toolIcons = [Keyboard, MonitorCog];
+const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SUPER", "CMD", "COMMAND"]);
 
 function App() {
   const [view, setView] = useState<View>("home");
@@ -381,7 +397,6 @@ function App() {
                         <span className={tool.workerRunning ? "state-running" : "state-stopped"}>
                           {tool.workerRunning ? "后台 worker 已启动" : "后台 worker 已停止"}
                         </span>
-                        <kbd>{tool.hotkey}</kbd>
                       </div>
                     </button>
                   );
@@ -670,18 +685,40 @@ function SettingsTabButton({ active, icon, label, onClick }: { active: boolean; 
 
 function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<React.SetStateAction<AppSnapshot | null>>; tools: Tool[] }) {
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<CaptureHotkeyDraft>({ display: "", value: "" });
+  const [notice, setNotice] = useState<HotkeyNotice | null>(null);
+  const [noticeClosing, setNoticeClosing] = useState(false);
   const editingTool = tools.find((tool) => tool.id === editingToolId) ?? null;
-  const conflictTool = draft ? tools.find((tool) => tool.id !== editingToolId && normalizeHotkeyDraft(tool.hotkey) === normalizeHotkeyDraft(draft)) : null;
 
-  function startEditing(tool: Tool) {
+  async function startEditing(tool: Tool) {
     setEditingToolId(tool.id);
-    setDraft(tool.hotkey);
-    setError(null);
+    setDraft({ display: "", value: "" });
+    try {
+      await invoke("suspend_tool_hotkeys");
+    } catch (reason) {
+      showNotice({
+        phase: "error",
+        title: "快捷键监听失败",
+        message: String(reason),
+      });
+    }
   }
 
-  function captureHotkey(event: React.KeyboardEvent<HTMLInputElement>) {
+  async function stopEditing() {
+    setEditingToolId(null);
+    setDraft({ display: "", value: "" });
+    try {
+      await invoke("resume_tool_hotkeys");
+    } catch (reason) {
+      showNotice({
+        phase: "error",
+        title: "快捷键恢复失败",
+        message: String(reason),
+      });
+    }
+  }
+
+  function captureHotkey(event: React.KeyboardEvent<HTMLElement>) {
     event.preventDefault();
     const key = normalizeKeyboardKey(event.key);
     if (!key) {
@@ -691,37 +728,86 @@ function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<Re
       event.ctrlKey ? "CTRL" : "",
       event.altKey ? "ALT" : "",
       event.shiftKey ? "SHIFT" : "",
-      event.metaKey ? "SUPER" : "",
+      event.metaKey ? "WIN" : "",
       key,
     ].filter(Boolean);
-    setDraft(parts.join("+"));
-    setError(null);
+    const display = parts.join("+");
+    setDraft({
+      display,
+      value: display.replace(/\bWIN\b/g, "SUPER"),
+    });
+  }
+
+  function showNotice(nextNotice: HotkeyNotice) {
+    setNoticeClosing(false);
+    setNotice(nextNotice);
+  }
+
+  function closeNotice() {
+    setNoticeClosing(true);
+    window.setTimeout(() => {
+      setNotice(null);
+      setNoticeClosing(false);
+    }, 180);
   }
 
   async function saveHotkey() {
     if (!editingTool) {
       return;
     }
-    const normalized = normalizeHotkeyDraft(draft);
-    if (!normalized || !normalized.includes("+")) {
-      setError("请输入包含修饰键的组合键");
+    const normalizedDraft = normalizeHotkeyDraft(draft.value);
+    if (!normalizedDraft) {
+      showNotice({
+        phase: "error",
+        title: "快捷键未填写",
+        message: "请先点击输入框并按下一个快捷键组合。",
+        detail: { kind: "plain-error" },
+      });
       return;
     }
+    const validationError = validateHotkeyDraft(normalizedDraft);
+    if (validationError) {
+      showNotice({
+        phase: "error",
+        title: "快捷键格式不正确",
+        message: validationError,
+        detail: { kind: "plain-error" },
+      });
+      return;
+    }
+    const conflictTool = tools.find((tool) => tool.id !== editingToolId && normalizeHotkeyDraft(tool.hotkey) === normalizedDraft);
     if (conflictTool) {
-      setError(`快捷键已被 ${conflictTool.name} 使用`);
+      showNotice({
+        phase: "error",
+        title: "快捷键冲突",
+        message: `快捷键 ${formatHotkeyForDisplay(normalizedDraft)} 已被 ${conflictTool.name} 使用。`,
+        detail: {
+          kind: "conflict",
+          hotkey: formatHotkeyForDisplay(normalizedDraft),
+          toolName: conflictTool.name,
+        },
+      });
       return;
     }
     try {
       const nextSnapshot = await invoke<AppSnapshot>("set_tool_hotkey", {
-        hotkey: normalized,
+        hotkey: normalizedDraft,
         toolId: editingTool.id,
       });
       setSnapshot(nextSnapshot);
-      setEditingToolId(null);
-      setDraft("");
-      setError(null);
+      await stopEditing();
+      showNotice({
+        phase: "success",
+        title: "快捷键已保存",
+        message: `${editingTool.name} 已更新为 ${formatHotkeyForDisplay(normalizedDraft)}。`,
+      });
     } catch (reason) {
-      setError(String(reason));
+      showNotice({
+        phase: "error",
+        title: "快捷键注册失败",
+        message: String(reason),
+        detail: { kind: "plain-error" },
+      });
     }
   }
 
@@ -729,7 +815,6 @@ function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<Re
     <div className="settings-section page-enter">
       {tools.map((tool) => {
         const isEditing = editingToolId === tool.id;
-        const hasConflict = isEditing && Boolean(conflictTool);
         return (
           <div className="settings-row hotkey-row" key={tool.id}>
             <div>
@@ -739,39 +824,58 @@ function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<Re
             <div className="hotkey-controls">
               {isEditing ? (
                 <>
-                  <input
+                  <button
                     autoFocus
-                    className="hotkey-input"
-                    onChange={(event) => setDraft(event.target.value.toUpperCase())}
+                    className={`hotkey-capture ${draft.display ? "" : "empty"}`}
+                    onBlur={() => void stopEditing()}
                     onKeyDown={captureHotkey}
-                    placeholder="按下组合键"
-                    value={draft}
-                  />
-                  <span className={`setting-value neutral ${hasConflict ? "danger" : ""}`}>
-                    {hasConflict ? "存在冲突" : "可用"}
-                  </span>
-                  <button className="primary-action icon-text-action" onClick={() => void saveHotkey()} type="button"><Check size={12} />保存</button>
-                  <button className="secondary-action" onClick={() => setEditingToolId(null)} type="button">取消</button>
+                    type="button"
+                  >
+                    {draft.display || "按下快捷键"}
+                  </button>
+                  <button className="primary-action icon-text-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void saveHotkey()} type="button"><Check size={12} />保存</button>
+                  <button className="secondary-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void stopEditing()} type="button">取消</button>
                 </>
               ) : (
                 <>
-                  <kbd>{tool.hotkey}</kbd>
-                  <span className="setting-value neutral"><ShieldCheck size={12} />无冲突</span>
-                  <button className="secondary-action planned-action" onClick={() => startEditing(tool)} type="button"><Pencil size={12} />编辑</button>
+                  <kbd className="hotkey-preview">{formatHotkeyForDisplay(tool.hotkey)}</kbd>
+                  <button className="secondary-action planned-action" onClick={() => void startEditing(tool)} type="button"><Pencil size={12} />编辑</button>
                 </>
               )}
             </div>
           </div>
         );
       })}
-      {error ? <div className="error-banner">{error}</div> : null}
-      <p className="settings-note">点击输入框后直接按下组合键；同一工具集内会先检查重复，系统级冲突会在保存注册时返回错误。</p>
+      <p className="settings-note">点击捕获框后直接按下组合键；同一工具集内会在保存瞬间检查重复，系统级冲突会在保存注册时弹窗提示。</p>
+      {notice ? <HotkeyNoticeDialog closing={noticeClosing} notice={notice} onClose={closeNotice} /> : null}
     </div>
   );
 }
 
 function normalizeHotkeyDraft(value: string) {
   return value.split("+").map((part) => part.trim().toUpperCase()).filter(Boolean).join("+");
+}
+
+function formatHotkeyForDisplay(value: string) {
+  return normalizeHotkeyDraft(value).replace(/\bSUPER\b/g, "WIN");
+}
+
+function validateHotkeyDraft(value: string) {
+  const parts = value.split("+").map((part) => part.trim().toUpperCase()).filter(Boolean);
+  if (parts.length < 2) {
+    return "快捷键必须包含修饰键和一个按键";
+  }
+  const keyCount = parts.filter((part) => !HOTKEY_MODIFIERS.has(part)).length;
+  if (!HOTKEY_MODIFIERS.has(parts[0])) {
+    return "首个按键必须是 Ctrl/Alt/Shift/Win";
+  }
+  if (HOTKEY_MODIFIERS.has(parts[parts.length - 1])) {
+    return "末尾必须是普通按键";
+  }
+  if (keyCount !== 1) {
+    return "只能包含一个普通按键";
+  }
+  return null;
 }
 
 function normalizeKeyboardKey(key: string) {
@@ -785,6 +889,41 @@ function normalizeKeyboardKey(key: string) {
     return key.toUpperCase();
   }
   return key.toUpperCase();
+}
+
+function HotkeyNoticeDialog({ closing, notice, onClose }: { closing: boolean; notice: HotkeyNotice; onClose: () => void }) {
+  const isSuccess = notice.phase === "success";
+  return createPortal(
+    <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
+      <section aria-label="快捷键提示" aria-modal="true" className={`update-dialog ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog">
+        <header className="update-dialog-header">
+          <div className={`update-dialog-icon ${isSuccess ? "" : "danger"}`}>
+            {isSuccess ? <Check size={16} /> : <Info size={16} />}
+          </div>
+          <div>
+            <h2>{notice.title}</h2>
+            <HotkeyNoticeMessage notice={notice} />
+          </div>
+          <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
+        </header>
+        <footer className="update-dialog-actions">
+          <button className="primary-action" onClick={onClose} type="button">知道了</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function HotkeyNoticeMessage({ notice }: { notice: HotkeyNotice }) {
+  if (notice.detail?.kind === "conflict" && notice.detail.hotkey && notice.detail.toolName) {
+    return (
+      <p>
+        快捷键 {notice.detail.hotkey} 已被 <span className="dialog-danger-text">{notice.detail.toolName}</span> 使用。
+      </p>
+    );
+  }
+  return <p className={notice.detail?.kind === "plain-error" ? "dialog-danger-text" : ""}>{notice.message}</p>;
 }
 
 function AboutSettings({ coldStartupMs, settings, updateSettings }: { coldStartupMs: number; settings: AppSettings; updateSettings: (patch: SettingsPatch) => Promise<void> }) {
@@ -990,7 +1129,7 @@ function UpdateNoticeDialog({
             <h2>{notice.title}</h2>
             <p>{notice.message}</p>
           </div>
-          <button aria-label="关闭" className="icon-action compact" onClick={onClose} type="button"><X size={13} /></button>
+          <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
         </header>
         {isAvailable ? (
           <div className="update-dialog-body">
