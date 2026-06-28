@@ -28,7 +28,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { type MouseEvent, useCallback, useEffect, useState } from "react";
+import { type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./App.css";
 
@@ -106,12 +106,121 @@ type NavigationTarget = {
 const DEFAULT_TITLE = "轻量化工具集";
 const APP_NAME = "LightweightToolset";
 const APP_SUBTITLE = "Windows 桌面工具集";
-const APP_VERSION = "0.1.0";
+const APP_VERSION = "0.1.1";
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const AUTHOR_EMAILS = ["2021289500@qq.com", "liangneng20060725@gmail.com"];
 const toolIcons = [Keyboard, MonitorCog];
 const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SUPER", "CMD", "COMMAND"]);
+
+function useUpdateChecker(settings?: AppSettings) {
+  const [updateStatus, setUpdateStatus] = useState("当前已是最新版本");
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updateNotice, setUpdateNotice] = useState<UpdateNotice | null>(null);
+  const [updateNoticeClosing, setUpdateNoticeClosing] = useState(false);
+  const [autoCheckAttempted, setAutoCheckAttempted] = useState(false);
+  const checkingRef = useRef(false);
+
+  const checkUpdates = useCallback(async (manual = true) => {
+    if (checkingRef.current) {
+      return;
+    }
+    checkingRef.current = true;
+    setCheckingUpdates(true);
+    setUpdateStatus("正在检查更新...");
+    try {
+      const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+        headers: { Accept: "application/vnd.github+json" },
+      });
+      if (response.status === 404) {
+        setUpdateStatus("暂无发布版本");
+        if (manual) {
+          setUpdateNoticeClosing(false);
+          setUpdateNotice({
+            phase: "up-to-date",
+            title: "当前已经是最新版本",
+            message: "远端仓库暂未发布正式 Release，当前版本无需更新。",
+          });
+        }
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(`GitHub 返回 ${response.status}`);
+      }
+      const release = await response.json() as { assets?: Array<{ browser_download_url?: string; name?: string }>; body?: string; html_url?: string; tag_name?: string };
+      const tag = release.tag_name ?? "";
+      if (!isRemoteVersionNewer(tag, APP_VERSION)) {
+        setUpdateStatus("当前已是最新版本");
+        if (manual) {
+          setUpdateNoticeClosing(false);
+          setUpdateNotice({
+            phase: "up-to-date",
+            title: "当前已经是最新版本",
+            message: `当前版本 v${APP_VERSION}，未发现可用更新。`,
+          });
+        }
+        return;
+      }
+      const asset = release.assets?.find((item) => item.name?.toLowerCase().endsWith(".exe")) ?? release.assets?.[0];
+      const notice = {
+        phase: "available" as const,
+        title: `发现新版本 ${tag}`,
+        message: `当前版本 v${APP_VERSION}，建议更新以获得最新改进。`,
+        releaseNotes: release.body?.trim() || "本次 Release 暂未填写更新日志。",
+        releaseUrl: release.html_url ?? GITHUB_URL,
+        downloadUrl: asset?.browser_download_url,
+      };
+      setUpdateStatus(`发现新版本 ${tag}`);
+      if (manual || settings?.showUpdateNotification) {
+        setUpdateNoticeClosing(false);
+        setUpdateNotice(notice);
+      }
+    } catch (reason) {
+      const message = `检查失败：${String(reason)}`;
+      setUpdateStatus(message);
+      if (manual) {
+        setUpdateNoticeClosing(false);
+        setUpdateNotice({
+          phase: "error",
+          title: "检查更新失败",
+          message,
+        });
+      }
+    } finally {
+      checkingRef.current = false;
+      setCheckingUpdates(false);
+    }
+  }, [settings?.showUpdateNotification]);
+
+  useEffect(() => {
+    if (!settings?.autoCheckUpdates) {
+      setAutoCheckAttempted(false);
+      return;
+    }
+    if (autoCheckAttempted) {
+      return;
+    }
+    setAutoCheckAttempted(true);
+    void checkUpdates(false);
+  }, [autoCheckAttempted, checkUpdates, settings?.autoCheckUpdates]);
+
+  function closeUpdateNotice() {
+    setUpdateNoticeClosing(true);
+    window.setTimeout(() => {
+      setUpdateNotice(null);
+      setUpdateNoticeClosing(false);
+    }, 180);
+  }
+
+  return {
+    checkingUpdates,
+    checkUpdates,
+    closeUpdateNotice,
+    updateNotice,
+    updateNoticeClosing,
+    updateStatus,
+  };
+}
 
 function App() {
   const [view, setView] = useState<View>("home");
@@ -126,6 +235,7 @@ function App() {
 
   const tools = snapshot?.tools ?? [];
   const settings = snapshot?.settings;
+  const updateChecker = useUpdateChecker(settings);
   const windowTitle = settings?.windowTitle || DEFAULT_TITLE;
   const isHistoryBackAvailable = canNavigateHistory(-1);
   const isHistoryForwardAvailable = canNavigateHistory(1);
@@ -417,6 +527,7 @@ function App() {
                 setAutoStartEnabled={setAutoStartEnabled}
                 setSnapshot={setSnapshot}
                 tools={tools}
+                updateChecker={updateChecker}
                 updateSettings={updateSettings}
               />
             </div>
@@ -425,6 +536,25 @@ function App() {
           ) : null}
         </main>
       </div>
+      {updateChecker.updateNotice ? (
+        <UpdateNoticeDialog
+          closing={updateChecker.updateNoticeClosing}
+          notice={updateChecker.updateNotice}
+          onClose={updateChecker.closeUpdateNotice}
+          onOpenDownload={() => {
+            void openUrl(updateChecker.updateNotice?.downloadUrl ?? updateChecker.updateNotice?.releaseUrl ?? GITHUB_URL);
+            updateChecker.closeUpdateNotice();
+          }}
+          onOpenRelease={() => {
+            void openUrl(updateChecker.updateNotice?.releaseUrl ?? GITHUB_URL);
+            updateChecker.closeUpdateNotice();
+          }}
+          onRetry={() => {
+            updateChecker.closeUpdateNotice();
+            window.setTimeout(() => void updateChecker.checkUpdates(), 180);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -511,6 +641,7 @@ function SettingsView({
   setAutoStartEnabled,
   setSnapshot,
   tools,
+  updateChecker,
   updateSettings,
 }: {
   coldStartupMs: number;
@@ -518,6 +649,7 @@ function SettingsView({
   setAutoStartEnabled: (enabled: boolean) => Promise<void>;
   setSnapshot: React.Dispatch<React.SetStateAction<AppSnapshot | null>>;
   tools: Tool[];
+  updateChecker: ReturnType<typeof useUpdateChecker>;
   updateSettings: (patch: SettingsPatch) => Promise<void>;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
@@ -667,7 +799,7 @@ function SettingsView({
         {activeTab === "logs" ? <DebugLogPanel /> : null}
 
         {activeTab === "about" ? (
-          <AboutSettings coldStartupMs={coldStartupMs} settings={settings} updateSettings={updateSettings} />
+          <AboutSettingsPanel coldStartupMs={coldStartupMs} settings={settings} updateChecker={updateChecker} updateSettings={updateSettings} />
         ) : null}
       </section>
     </>
@@ -926,100 +1058,23 @@ function HotkeyNoticeMessage({ notice }: { notice: HotkeyNotice }) {
   return <p className={notice.detail?.kind === "plain-error" ? "dialog-danger-text" : ""}>{notice.message}</p>;
 }
 
-function AboutSettings({ coldStartupMs, settings, updateSettings }: { coldStartupMs: number; settings: AppSettings; updateSettings: (patch: SettingsPatch) => Promise<void> }) {
+function AboutSettingsPanel({
+  coldStartupMs,
+  settings,
+  updateChecker,
+  updateSettings,
+}: {
+  coldStartupMs: number;
+  settings: AppSettings;
+  updateChecker: ReturnType<typeof useUpdateChecker>;
+  updateSettings: (patch: SettingsPatch) => Promise<void>;
+}) {
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
-  const [updateStatus, setUpdateStatus] = useState("当前已是最新版本");
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
-  const [updateNotice, setUpdateNotice] = useState<UpdateNotice | null>(null);
-  const [updateNoticeClosing, setUpdateNoticeClosing] = useState(false);
-
-  useEffect(() => {
-    if (settings.autoCheckUpdates) {
-      void checkUpdates(false);
-    }
-  }, [settings.autoCheckUpdates]);
 
   async function copyEmail(email: string) {
     await navigator.clipboard.writeText(email);
     setCopiedEmail(email);
     window.setTimeout(() => setCopiedEmail(null), 1200);
-  }
-
-  async function checkUpdates(manual = true) {
-    if (checkingUpdates) {
-      return;
-    }
-    setCheckingUpdates(true);
-    setUpdateStatus("正在检查更新...");
-    try {
-      const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-        headers: { Accept: "application/vnd.github+json" },
-      });
-      if (response.status === 404) {
-        setUpdateStatus("暂无发布版本");
-        if (manual) {
-          setUpdateNoticeClosing(false);
-          setUpdateNotice({
-            phase: "up-to-date",
-            title: "当前已经是最新版本",
-            message: "远端仓库暂未发布正式 Release，当前版本无需更新。",
-          });
-        }
-        return;
-      }
-      if (!response.ok) {
-        throw new Error(`GitHub 返回 ${response.status}`);
-      }
-      const release = await response.json() as { assets?: Array<{ browser_download_url?: string; name?: string }>; body?: string; html_url?: string; tag_name?: string };
-      const tag = release.tag_name ?? "";
-      if (!isRemoteVersionNewer(tag, APP_VERSION)) {
-        setUpdateStatus("当前已是最新版本");
-        if (manual) {
-          setUpdateNoticeClosing(false);
-          setUpdateNotice({
-            phase: "up-to-date",
-            title: "当前已经是最新版本",
-            message: `当前版本 v${APP_VERSION}，未发现可用更新。`,
-          });
-        }
-        return;
-      }
-      const asset = release.assets?.find((item) => item.name?.toLowerCase().endsWith(".exe")) ?? release.assets?.[0];
-      const notice = {
-        phase: "available" as const,
-        title: `发现新版本 ${tag}`,
-        message: `当前版本 v${APP_VERSION}，建议更新以获得最新改进。`,
-        releaseNotes: release.body?.trim() || "本次 Release 暂未填写更新日志。",
-        releaseUrl: release.html_url ?? GITHUB_URL,
-        downloadUrl: asset?.browser_download_url,
-      };
-      setUpdateStatus(`发现新版本 ${tag}`);
-      if (manual || settings.showUpdateNotification) {
-        setUpdateNoticeClosing(false);
-        setUpdateNotice(notice);
-      }
-    } catch (reason) {
-      const message = `检查失败：${String(reason)}`;
-      setUpdateStatus(message);
-      if (manual) {
-        setUpdateNoticeClosing(false);
-        setUpdateNotice({
-          phase: "error",
-          title: "检查更新失败",
-          message,
-        });
-      }
-    } finally {
-      setCheckingUpdates(false);
-    }
-  }
-
-  function closeUpdateNotice() {
-    setUpdateNoticeClosing(true);
-    window.setTimeout(() => {
-      setUpdateNotice(null);
-      setUpdateNoticeClosing(false);
-    }, 180);
   }
 
   return (
@@ -1070,33 +1125,14 @@ function AboutSettings({ coldStartupMs, settings, updateSettings }: { coldStartu
       <div className="update-card update-status-card">
         <div>
           <h2>软件更新</h2>
-          <p>{updateStatus}</p>
+          <p>{updateChecker.updateStatus}</p>
           <p>冷启动基线：{coldStartupMs} ms</p>
         </div>
-        <button className="secondary-action icon-text-action" disabled={checkingUpdates} onClick={() => void checkUpdates()} type="button">
-          <RefreshCw className={checkingUpdates ? "spin-icon" : ""} size={13} />
-          {checkingUpdates ? "检查中" : "检查更新"}
+        <button className="secondary-action icon-text-action" disabled={updateChecker.checkingUpdates} onClick={() => void updateChecker.checkUpdates()} type="button">
+          <RefreshCw className={updateChecker.checkingUpdates ? "spin-icon" : ""} size={13} />
+          {updateChecker.checkingUpdates ? "检查中" : "检查更新"}
         </button>
       </div>
-      {updateNotice ? (
-        <UpdateNoticeDialog
-          closing={updateNoticeClosing}
-          notice={updateNotice}
-          onClose={closeUpdateNotice}
-          onOpenDownload={() => {
-            void openUrl(updateNotice.downloadUrl ?? updateNotice.releaseUrl ?? GITHUB_URL);
-            closeUpdateNotice();
-          }}
-          onOpenRelease={() => {
-            void openUrl(updateNotice.releaseUrl ?? GITHUB_URL);
-            closeUpdateNotice();
-          }}
-          onRetry={() => {
-            setUpdateNotice(null);
-            void checkUpdates();
-          }}
-        />
-      ) : null}
     </div>
   );
 }
