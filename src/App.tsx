@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -6,7 +7,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Check,
+  ClipboardList,
   Copy,
+  FileText,
   Gauge,
   FolderOpen,
   Home,
@@ -14,13 +17,16 @@ import {
   Keyboard,
   Minus,
   Monitor,
-  MonitorCog,
   Moon,
   Pencil,
   PanelLeftClose,
   PanelLeftOpen,
+  Pin,
+  Plus,
   RefreshCw,
   RotateCcw,
+  Scissors,
+  Search,
   Settings,
   Sun,
   Terminal,
@@ -28,7 +34,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./App.css";
 
@@ -43,6 +49,50 @@ type Tool = {
   hotkey: string;
   enabled: boolean;
   workerRunning: boolean;
+};
+
+type ClipboardEntry = {
+  id: string;
+  text: string;
+  title: string;
+  source: string;
+  createdAt: number;
+  lastCopiedAt: number;
+  lastUsedAt: number | null;
+  pinnedAt: number | null;
+  deletedAt: number | null;
+  copyCount: number;
+  useCount: number;
+};
+
+type ClipboardSettings = {
+  listening: boolean;
+  retentionDays: number;
+  maxTextBytes: number;
+  panelWidth: number;
+  panelHeight: number;
+};
+
+type ClipboardSnapshot = {
+  settings: ClipboardSettings;
+  stats: {
+    historyCount: number;
+    pinnedCount: number;
+    trashCount: number;
+    skippedTooLong: number;
+    lastCleanupAt: number | null;
+  };
+  listeningActive: boolean;
+};
+
+type ClipboardQueryResult = {
+  entries: ClipboardEntry[];
+  total: number;
+};
+
+type ToastMessage = {
+  id: number;
+  text: string;
 };
 
 type AppSettings = {
@@ -110,8 +160,9 @@ const APP_VERSION = "0.1.1";
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const AUTHOR_EMAILS = ["2021289500@qq.com", "liangneng20060725@gmail.com"];
-const toolIcons = [Keyboard, MonitorCog];
+const toolIcons = [ClipboardList];
 const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SUPER", "CMD", "COMMAND"]);
+const TOAST_DURATION_MS = 1400;
 
 function useUpdateChecker(settings?: AppSettings) {
   const [updateStatus, setUpdateStatus] = useState("当前已是最新版本");
@@ -222,7 +273,47 @@ function useUpdateChecker(settings?: AppSettings) {
   };
 }
 
+function useToastQueue(durationMs = TOAST_DURATION_MS) {
+  const [current, setCurrent] = useState<ToastMessage | null>(null);
+  const queueRef = useRef<ToastMessage[]>([]);
+  const timerRef = useRef<number | null>(null);
+  const nextIdRef = useRef(1);
+
+  const playNext = useCallback(() => {
+    const next = queueRef.current.shift() ?? null;
+    setCurrent(next);
+    if (next) {
+      timerRef.current = window.setTimeout(playNext, durationMs);
+    } else {
+      timerRef.current = null;
+    }
+  }, [durationMs]);
+
+  const pushToast = useCallback((text: string) => {
+    const next = { id: nextIdRef.current, text };
+    nextIdRef.current += 1;
+    if (!current && timerRef.current === null) {
+      setCurrent(next);
+      timerRef.current = window.setTimeout(playNext, durationMs);
+      return;
+    }
+    queueRef.current.push(next);
+  }, [current, durationMs, playNext]);
+
+  useEffect(() => () => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+    }
+  }, []);
+
+  return { pushToast, toast: current };
+}
+
 function App() {
+  if (window.location.hash === "#/clipboard-popup") {
+    return <ClipboardPopup />;
+  }
+
   const [view, setView] = useState<View>("home");
   const [activeTool, setActiveTool] = useState<Tool | null>(null);
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
@@ -372,6 +463,21 @@ function App() {
     navigate({ view: "tool", toolId: tool.id });
   }
 
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void listen<string>("navigate-tool", (event) => {
+      const tool = tools.find((candidate) => candidate.id === event.payload);
+      if (tool) {
+        openTool(tool);
+      }
+    }).then((unlisten) => {
+      dispose = unlisten;
+    });
+    return () => {
+      dispose?.();
+    };
+  }, [tools, history, historyIndex]);
+
   function handleTitlebarMouseDown(event: MouseEvent<HTMLElement>) {
     if (event.button !== 0 || (event.target as HTMLElement).closest("button")) {
       return;
@@ -426,7 +532,6 @@ function App() {
               <Home size={15} />
               <span>首页</span>
             </button>
-            <p className="nav-label">生命周期验证</p>
             {tools.map((tool, index) => {
               const Icon = toolIcons[index] ?? Wrench;
               const isActive = view === "tool" && activeTool?.id === tool.id;
@@ -496,18 +601,15 @@ function App() {
               <section className="tool-grid" aria-label="已注册工具">
                 {tools.map((tool, index) => {
                   const Icon = toolIcons[index] ?? Wrench;
+                  const badge = tool.enabled ? null : "已禁用";
                   return (
                     <button className={`tool-card ${tool.enabled ? "" : "disabled"}`} disabled={!tool.enabled} key={tool.id} onClick={() => openTool(tool)} type="button">
+                      {badge ? <span className="tool-card-badge">{badge}</span> : null}
                       <div className="tool-card-heading">
                         <div className="tool-icon"><Icon size={19} /></div>
                         <h2>{tool.name}</h2>
                       </div>
                       <p>{tool.description}</p>
-                      <div className="tool-meta">
-                        <span className={tool.workerRunning ? "state-running" : "state-stopped"}>
-                          {tool.workerRunning ? "后台 worker 已启动" : "后台 worker 已停止"}
-                        </span>
-                      </div>
                     </button>
                   );
                 })}
@@ -623,6 +725,10 @@ function formatLogTime(timestampMs: number) {
 }
 
 function ToolPage({ tool }: { tool: Tool }) {
+  if (tool.id === "clipboard") {
+    return <ClipboardToolPage tool={tool} />;
+  }
+
   return (
     <section className="tool-page">
       <h1>{tool.name}</h1>
@@ -982,6 +1088,895 @@ function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<Re
       {notice ? <HotkeyNoticeDialog closing={noticeClosing} notice={notice} onClose={closeNotice} /> : null}
     </div>
   );
+}
+
+function ClipboardToolPage({ tool }: { tool: Tool }) {
+  const [snapshot, setSnapshot] = useState<ClipboardSnapshot | null>(null);
+  const [tab, setTab] = useState<"history" | "pinned">("history");
+  const [entries, setEntries] = useState<ClipboardEntry[]>([]);
+  const [trashEntries, setTrashEntries] = useState<ClipboardEntry[]>([]);
+  const [search, setSearch] = useState("");
+  const { pushToast, toast: currentToast } = useToastQueue();
+  const [manualTitle, setManualTitle] = useState("");
+  const [manualText, setManualText] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [detailEntry, setDetailEntry] = useState<ClipboardEntry | null>(null);
+  const [extractEntry, setExtractEntry] = useState<ClipboardEntry | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [openActionId, setOpenActionId] = useState<string | null>(null);
+  const [selectedTokens, setSelectedTokens] = useState<string[]>([]);
+  const [closingDialog, setClosingDialog] = useState<"settings" | "trash" | "manual" | "detail" | "extract" | null>(null);
+  const entryNodeMapRef = useRef(new Map<string, HTMLElement>());
+  const previousEntryRectsRef = useRef(new Map<string, DOMRect>());
+  const previousEntryOrderRef = useRef<string[]>([]);
+  const selectedEntries = useMemo(() => entries.filter((entry) => selectedIds.has(entry.id)), [entries, selectedIds]);
+  const allEntriesSelected = entries.length > 0 && entries.every((entry) => selectedIds.has(entry.id));
+  const extractTokens = useMemo(() => extractClipboardTokens(extractEntry?.text ?? ""), [extractEntry]);
+
+  const loadClipboard = useCallback(async () => {
+    const [nextSnapshot, result] = await Promise.all([
+      invoke<ClipboardSnapshot>("clipboard_get_snapshot"),
+      invoke<ClipboardQueryResult>("clipboard_query", {
+        input: { scope: tab, search, offset: 0, limit: 80 },
+      }),
+    ]);
+    setSnapshot(nextSnapshot);
+    setEntries(result.entries);
+  }, [search, tab]);
+
+  useEffect(() => {
+    void loadClipboard();
+    const timer = window.setInterval(() => void loadClipboard(), 1200);
+    return () => window.clearInterval(timer);
+  }, [loadClipboard]);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setOpenActionId(null);
+  }, [tab, search]);
+
+  useLayoutEffect(() => {
+    const previousRects = previousEntryRectsRef.current;
+    const previousOrder = previousEntryOrderRef.current;
+    const nextOrder = entries.map((entry) => entry.id);
+    const orderChanged = previousOrder.length !== nextOrder.length || previousOrder.some((id, index) => id !== nextOrder[index]);
+    const nextRects = new Map<string, DOMRect>();
+
+    entryNodeMapRef.current.forEach((node, id) => {
+      nextRects.set(id, node.getBoundingClientRect());
+    });
+
+    if (orderChanged) {
+      nextRects.forEach((nextRect, id) => {
+        const previousRect = previousRects.get(id);
+        const node = entryNodeMapRef.current.get(id);
+        if (!previousRect || !node) {
+          return;
+        }
+        const deltaY = previousRect.top - nextRect.top;
+        if (Math.abs(deltaY) < 1) {
+          return;
+        }
+        node.animate(
+          [
+            { transform: `translateY(${deltaY}px)` },
+            { transform: "translateY(0)" },
+          ],
+          { duration: 180, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" },
+        );
+      });
+    }
+
+    previousEntryRectsRef.current = nextRects;
+    previousEntryOrderRef.current = nextOrder;
+  }, [entries]);
+
+  function registerEntryNode(id: string, node: HTMLElement | null) {
+    if (node) {
+      entryNodeMapRef.current.set(id, node);
+    } else {
+      entryNodeMapRef.current.delete(id);
+    }
+  }
+
+  function closeOpenActionsOnScroll() {
+    if (openActionId) {
+      setOpenActionId(null);
+    }
+  }
+
+  async function loadTrash() {
+    const result = await invoke<ClipboardQueryResult>("clipboard_query", {
+      input: { scope: "trash", search: "", offset: 0, limit: 80 },
+    });
+    setTrashEntries(result.entries);
+  }
+
+  function toast(text: string) {
+    pushToast(text);
+  }
+
+  function closeClipboardDialog(dialog: "settings" | "trash" | "manual" | "detail" | "extract") {
+    setClosingDialog(dialog);
+    window.setTimeout(() => {
+      if (dialog === "settings") {
+        setSettingsOpen(false);
+      } else if (dialog === "trash") {
+        setTrashOpen(false);
+      } else if (dialog === "manual") {
+        setManualOpen(false);
+      } else if (dialog === "detail") {
+        setDetailEntry(null);
+      } else {
+        setExtractEntry(null);
+        setSelectedTokens([]);
+      }
+      setClosingDialog(null);
+    }, 180);
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds(allEntriesSelected ? new Set() : new Set(entries.map((entry) => entry.id)));
+  }
+
+  async function openTrash() {
+    await loadTrash();
+    setTrashOpen(true);
+  }
+
+  async function copyEntry(entry: ClipboardEntry) {
+    const result = await invoke<{ message: string }>("clipboard_copy", { id: entry.id });
+    toast(result.message || "已复制");
+    await loadClipboard();
+  }
+
+  async function togglePinned(entry: ClipboardEntry) {
+    await invoke("clipboard_update_entry", {
+      id: entry.id,
+      patch: { pinned: !entry.pinnedAt },
+    });
+    toast(entry.pinnedAt ? "已取消固定" : "已固定");
+    await loadClipboard();
+  }
+
+  async function pinSelected() {
+    await Promise.all(selectedEntries.map((entry) => invoke("clipboard_update_entry", {
+      id: entry.id,
+      patch: { pinned: tab !== "pinned" },
+    })));
+    setSelectedIds(new Set());
+    toast(tab === "pinned" ? "已取消固定选中" : "已固定选中");
+    await loadClipboard();
+  }
+
+  async function deleteEntry(entry: ClipboardEntry) {
+    await invoke("clipboard_delete", { ids: [entry.id] });
+    toast("已移入回收站");
+    await loadClipboard();
+  }
+
+  async function deleteSelected() {
+    await invoke("clipboard_delete", { ids: selectedEntries.map((entry) => entry.id) });
+    setSelectedIds(new Set());
+    toast("已删除选中");
+    await loadClipboard();
+  }
+
+  async function copyExtractedTokens() {
+    if (selectedTokens.length === 0) {
+      return;
+    }
+    const result = await invoke<{ message: string }>("clipboard_copy_text", { text: selectedTokens.join("") });
+    closeClipboardDialog("extract");
+    toast(result.message || "已复制提取内容");
+  }
+
+  async function createManual() {
+    if (!manualText.trim()) {
+      return;
+    }
+    await invoke("clipboard_create_manual", {
+      title: manualTitle.trim(),
+      text: manualText,
+    });
+    setManualTitle("");
+    setManualText("");
+    setTab("pinned");
+    closeClipboardDialog("manual");
+    toast("已新增固定文本");
+    await loadClipboard();
+  }
+
+  async function updateClipboardSettings(patch: Partial<ClipboardSettings>) {
+    setSnapshot(await invoke<ClipboardSnapshot>("clipboard_update_settings", { patch }));
+    await loadClipboard();
+  }
+
+  function closeOpenActionsFromOutside(event: React.PointerEvent<HTMLElement>) {
+    if (!openActionId) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      setOpenActionId(null);
+      return;
+    }
+    const openCard = target.closest(".clipboard-entry-card.actions-open");
+    if (!openCard) {
+      setOpenActionId(null);
+    }
+  }
+
+  return (
+    <section className="tool-page clipboard-page" onPointerDownCapture={closeOpenActionsFromOutside}>
+      <div className="clipboard-fixed-region">
+        <div className="clipboard-page-header">
+          <div>
+            <h1>剪贴板</h1>
+            <p>本地纯文本历史与固定片段。</p>
+          </div>
+          <div className={`clipboard-header-actions ${selectedEntries.length > 0 ? "selecting" : ""}`}>
+            {selectedEntries.length > 0 ? (
+              <div className="clipboard-bulk-actions">
+                <button className="clipboard-bulk-action" onClick={toggleSelectAll} type="button">
+                  {allEntriesSelected ? "取消全选" : "未全选"}
+                </button>
+                <button className="clipboard-bulk-action" onClick={() => void pinSelected()} type="button">
+                  <Pin size={12} />{tab === "pinned" ? "取消固定" : "固定选中"}
+                </button>
+                <button className="clipboard-bulk-action danger" onClick={() => void deleteSelected()} type="button">
+                  <Trash2 size={12} />删除选中
+                </button>
+              </div>
+            ) : tab === "pinned" ? (
+              <button className="clipboard-add-action" onClick={() => setManualOpen(true)} type="button">
+                <Plus size={12} />新增
+              </button>
+            ) : null}
+            <button className="clipboard-square-action" title="回收站" onClick={() => void openTrash()} type="button">
+              <Trash2 size={15} />
+              {(snapshot?.stats.trashCount ?? 0) > 0 ? <span>{snapshot?.stats.trashCount}</span> : null}
+            </button>
+            <button className="clipboard-square-action" title="设置" onClick={() => setSettingsOpen(true)} type="button">
+              <Settings size={15} />
+            </button>
+          </div>
+        </div>
+
+        <div className="clipboard-toolbar">
+          <div className={`clipboard-tabs ${tab === "pinned" ? "pinned" : "history"}`}>
+            <span className="clipboard-tab-indicator" />
+            <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")} type="button"><FileText size={13} />历史</button>
+            <button className={tab === "pinned" ? "active" : ""} onClick={() => setTab("pinned")} type="button"><Pin size={13} />固定</button>
+          </div>
+          <label className="clipboard-search">
+            <Search size={13} />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tab === "history" ? "搜索历史文本" : "搜索固定片段"} />
+          </label>
+        </div>
+      </div>
+
+      <div className="clipboard-entry-list" key={tab} onScroll={closeOpenActionsOnScroll}>
+        {entries.map((entry) => (
+          <ClipboardEntryCard
+            actionsOpen={openActionId === entry.id}
+            entry={entry}
+            key={entry.id}
+            onCopy={() => void copyEntry(entry)}
+            onDelete={() => void deleteEntry(entry)}
+            onOpenActions={(open) => setOpenActionId(open ? entry.id : null)}
+            onOpenDetail={() => setDetailEntry(entry)}
+            onOpenExtract={() => {
+              setSelectedTokens([]);
+              setExtractEntry(entry);
+              setOpenActionId(null);
+            }}
+            onSelect={() => toggleSelect(entry.id)}
+            onTogglePinned={() => void togglePinned(entry)}
+            registerNode={(node) => registerEntryNode(entry.id, node)}
+            selected={selectedIds.has(entry.id)}
+          />
+        ))}
+        {entries.length === 0 ? <p className="clipboard-empty">暂无内容</p> : null}
+      </div>
+
+      {settingsOpen && snapshot ? (
+        <ClipboardSettingsDialog
+          closing={closingDialog === "settings"}
+          snapshot={snapshot}
+          toolHotkey={formatHotkeyForDisplay(tool.hotkey)}
+          onClearHistory={() => void invoke("clipboard_clear_history").then(async () => {
+            toast("已移入回收站");
+            await loadClipboard();
+          })}
+          onClose={() => closeClipboardDialog("settings")}
+          onOpenPopup={() => void invoke("clipboard_open_panel")}
+          onUpdateSettings={updateClipboardSettings}
+        />
+      ) : null}
+
+      {trashOpen ? (
+        <ClipboardTrashDialog
+          closing={closingDialog === "trash"}
+          entries={trashEntries}
+          onClose={() => closeClipboardDialog("trash")}
+          onCopy={(entry) => void copyEntry(entry)}
+        />
+      ) : null}
+
+      {manualOpen ? (
+        <ClipboardManualDialog
+          closing={closingDialog === "manual"}
+          manualText={manualText}
+          manualTitle={manualTitle}
+          onChangeText={setManualText}
+          onChangeTitle={setManualTitle}
+          onClose={() => closeClipboardDialog("manual")}
+          onCreate={() => void createManual()}
+        />
+      ) : null}
+
+      {detailEntry ? (
+        <ClipboardDetailDialog
+          closing={closingDialog === "detail"}
+          entry={detailEntry}
+          onClose={() => closeClipboardDialog("detail")}
+        />
+      ) : null}
+
+      {extractEntry ? (
+        <ClipboardExtractDialog
+          closing={closingDialog === "extract"}
+          entry={extractEntry}
+          selectedTokens={selectedTokens}
+          tokens={extractTokens}
+          onClose={() => closeClipboardDialog("extract")}
+          onConfirm={() => void copyExtractedTokens()}
+          onToggle={(token) => setSelectedTokens((current) => current.includes(token) ? current.filter((item) => item !== token) : [...current, token])}
+        />
+      ) : null}
+
+      {currentToast ? <div className="app-toast clipboard-toast" key={currentToast.id}>{currentToast.text}</div> : null}
+    </section>
+  );
+}
+
+function ClipboardSettingsDialog({
+  closing,
+  snapshot,
+  toolHotkey,
+  onClearHistory,
+  onClose,
+  onOpenPopup,
+  onUpdateSettings,
+}: {
+  closing: boolean;
+  snapshot: ClipboardSnapshot;
+  toolHotkey: string;
+  onClearHistory: () => void;
+  onClose: () => void;
+  onOpenPopup: () => void;
+  onUpdateSettings: (patch: Partial<ClipboardSettings>) => Promise<void>;
+}) {
+  return createPortal(
+    <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
+      <section className={`update-dialog clipboard-modal ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="剪贴板设置">
+        <header className="update-dialog-header">
+          <div className="update-dialog-icon"><Settings size={16} /></div>
+          <div>
+            <h2>剪贴板设置</h2>
+            <p>监听、保留策略、快捷弹窗与本地数据。</p>
+          </div>
+          <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
+        </header>
+        <div className="clipboard-modal-body">
+          <ToggleRow
+            checked={snapshot.settings.listening}
+            description="关闭后不再记录外部复制，已有历史仍可使用"
+            label="全局监听"
+            onChange={(value) => void onUpdateSettings({ listening: value })}
+          />
+          <div className="clipboard-setting-grid">
+            <label>
+              保存天数
+              <select value={snapshot.settings.retentionDays} onChange={(event) => void onUpdateSettings({ retentionDays: Number(event.target.value) })}>
+                <option value={7}>7 天</option>
+                <option value={30}>30 天</option>
+                <option value={90}>90 天</option>
+                <option value={365}>365 天</option>
+              </select>
+            </label>
+            <label>
+              单条长度
+              <select value={snapshot.settings.maxTextBytes} onChange={(event) => void onUpdateSettings({ maxTextBytes: Number(event.target.value) })}>
+                <option value={10 * 1024}>10 KB</option>
+                <option value={100 * 1024}>100 KB</option>
+                <option value={1024 * 1024}>1 MB</option>
+              </select>
+            </label>
+            <label>
+              弹窗宽度
+              <input type="number" min={280} max={560} value={snapshot.settings.panelWidth} onChange={(event) => void onUpdateSettings({ panelWidth: Number(event.target.value) })} />
+            </label>
+            <label>
+              弹窗高度
+              <input type="number" min={300} max={640} value={snapshot.settings.panelHeight} onChange={(event) => void onUpdateSettings({ panelHeight: Number(event.target.value) })} />
+            </label>
+          </div>
+          <div className="clipboard-settings-summary">
+            监听状态：{snapshot.listeningActive ? "运行中" : "已停止"} · 快捷键 {toolHotkey} · 跳过过长内容 {snapshot.stats.skippedTooLong}
+          </div>
+        </div>
+        <footer className="update-dialog-actions">
+          <button className="secondary-action" onClick={onOpenPopup} type="button">打开弹窗</button>
+          <button className="secondary-action" onClick={onClearHistory} type="button">清空普通历史</button>
+          <button className="primary-action" onClick={onClose} type="button">完成</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function ClipboardTrashDialog({ closing, entries, onClose, onCopy }: { closing: boolean; entries: ClipboardEntry[]; onClose: () => void; onCopy: (entry: ClipboardEntry) => void }) {
+  return createPortal(
+    <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
+      <section className={`update-dialog clipboard-modal ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="剪贴板回收站">
+        <header className="update-dialog-header">
+          <div className="update-dialog-icon danger"><Trash2 size={16} /></div>
+          <div>
+            <h2>回收站</h2>
+            <p>删除记录最长保留 30 天。</p>
+          </div>
+          <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
+        </header>
+        <div className="clipboard-modal-body clipboard-trash-list">
+          {entries.map((entry) => (
+            <ClipboardEntryCard
+              compact
+              entry={entry}
+              key={entry.id}
+              onCopy={() => onCopy(entry)}
+              onDelete={() => undefined}
+              onTogglePinned={() => undefined}
+              showDelete={false}
+              showPin={false}
+            />
+          ))}
+          {entries.length === 0 ? <p className="clipboard-empty">回收站为空</p> : null}
+        </div>
+        <footer className="update-dialog-actions">
+          <button className="primary-action" onClick={onClose} type="button">完成</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function ClipboardManualDialog({
+  closing,
+  manualText,
+  manualTitle,
+  onChangeText,
+  onChangeTitle,
+  onClose,
+  onCreate,
+}: {
+  closing: boolean;
+  manualText: string;
+  manualTitle: string;
+  onChangeText: (value: string) => void;
+  onChangeTitle: (value: string) => void;
+  onClose: () => void;
+  onCreate: () => void;
+}) {
+  return createPortal(
+    <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
+      <section className={`update-dialog clipboard-modal ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="新增固定文本">
+        <header className="update-dialog-header">
+          <div className="update-dialog-icon"><Plus size={16} /></div>
+          <div>
+            <h2>新增固定文本</h2>
+            <p>固定后会显示在剪贴板固定页和快捷弹窗中。</p>
+          </div>
+          <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
+        </header>
+        <div className="clipboard-modal-body">
+          <label className="clipboard-modal-field">
+            标题，可选
+            <input value={manualTitle} onChange={(event) => onChangeTitle(event.target.value)} placeholder="标题，可选" />
+          </label>
+          <label className="clipboard-modal-field">
+            固定文本
+            <textarea autoFocus value={manualText} onChange={(event) => onChangeText(event.target.value)} placeholder="输入要固定的文本" />
+          </label>
+        </div>
+        <footer className="update-dialog-actions">
+          <button className="secondary-action" onClick={onClose} type="button">取消</button>
+          <button className="primary-action icon-text-action" onClick={onCreate} type="button"><Plus size={12} />新增</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function ClipboardPopup() {
+  const [entries, setEntries] = useState<ClipboardEntry[]>([]);
+  const [search, setSearch] = useState("");
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const { pushToast, toast: currentToast } = useToastQueue(1200);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const loadPopup = useCallback(async () => {
+    const [pinned, history] = await Promise.all([
+      invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "pinned", search, offset: 0, limit: 30 } }),
+      invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "history", search, offset: 0, limit: 50 } }),
+    ]);
+    setEntries(search.trim() ? [...pinned.entries, ...history.entries] : [...pinned.entries, ...history.entries]);
+    setSelectedIndex(0);
+  }, [search]);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    void loadPopup();
+    const timer = window.setInterval(() => void loadPopup(), 1200);
+    return () => window.clearInterval(timer);
+  }, [loadPopup]);
+
+  async function copyAndClose(entry: ClipboardEntry) {
+    const result = await invoke<{ message: string }>("clipboard_copy", { id: entry.id });
+    pushToast(result.message || "已复制");
+    window.setTimeout(() => void invoke("clipboard_close_panel"), 180);
+  }
+
+  async function copyOnly(entry: ClipboardEntry) {
+    const result = await invoke<{ message: string }>("clipboard_copy", { id: entry.id });
+    pushToast(result.message || "已复制");
+    await loadPopup();
+  }
+
+  async function togglePinned(entry: ClipboardEntry) {
+    await invoke("clipboard_update_entry", {
+      id: entry.id,
+      patch: { pinned: !entry.pinnedAt },
+    });
+    pushToast(entry.pinnedAt ? "已取消固定" : "已固定");
+    await loadPopup();
+  }
+
+  function onKeyDown(event: React.KeyboardEvent) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      void invoke("clipboard_close_panel");
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSelectedIndex((index) => Math.min(index + 1, entries.length - 1));
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSelectedIndex((index) => Math.max(index - 1, 0));
+      return;
+    }
+    if (event.key === "Enter" && entries[selectedIndex]) {
+      event.preventDefault();
+      void copyAndClose(entries[selectedIndex]);
+    }
+  }
+
+  const pinnedCount = useMemo(() => entries.filter((entry) => entry.pinnedAt).length, [entries]);
+
+  return (
+    <div className="clipboard-popup-shell" onContextMenu={(event) => event.preventDefault()} onKeyDown={onKeyDown}>
+      <div className="clipboard-popup-drag" />
+      <div className="clipboard-popup-toolbar">
+        <label className="clipboard-search">
+          <Search size={13} />
+          <input ref={inputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索剪贴板历史" />
+        </label>
+        <button className="popup-icon-button" title="打开管理页" onClick={() => void invoke("clipboard_open_management")} type="button">
+          <ExternalLinkIcon />
+        </button>
+      </div>
+      <div className="clipboard-popup-list">
+        {!search.trim() && pinnedCount > 0 ? <p className="clipboard-popup-label">固定</p> : null}
+        {entries.map((entry, index) => (
+          <ClipboardEntryCard
+            compact
+            entry={entry}
+            key={entry.id}
+            onCopy={() => void copyOnly(entry)}
+            onDelete={() => void invoke("clipboard_delete", { ids: [entry.id] }).then(() => loadPopup())}
+            onPrimary={() => void copyAndClose(entry)}
+            onTogglePinned={() => void togglePinned(entry)}
+            selected={index === selectedIndex}
+          />
+        ))}
+        {entries.length === 0 ? <p className="clipboard-empty">暂无剪贴板历史</p> : null}
+      </div>
+      {currentToast ? <div className="app-toast clipboard-toast popup" key={currentToast.id}>{currentToast.text}</div> : null}
+    </div>
+  );
+}
+
+function ClipboardEntryCard({
+  actionsOpen = false,
+  compact = false,
+  entry,
+  onCopy,
+  onDelete,
+  onOpenActions,
+  onOpenDetail,
+  onOpenExtract,
+  onPrimary,
+  onSelect,
+  onTogglePinned,
+  registerNode,
+  selected = false,
+  showDelete = true,
+  showPin = true,
+}: {
+  actionsOpen?: boolean;
+  compact?: boolean;
+  entry: ClipboardEntry;
+  onCopy: () => void;
+  onDelete: () => void;
+  onOpenActions?: (open: boolean) => void;
+  onOpenDetail?: () => void;
+  onOpenExtract?: () => void;
+  onPrimary?: () => void;
+  onSelect?: () => void;
+  onTogglePinned: () => void;
+  registerNode?: (node: HTMLElement | null) => void;
+  selected?: boolean;
+  showDelete?: boolean;
+  showPin?: boolean;
+}) {
+  const title = entry.title || entry.text.split(/\s+/).find(Boolean) || "文本条目";
+  const canShowWorkspace = !compact && showDelete && Boolean(onOpenActions);
+  const dragRef = useRef<{ x: number; y: number; pointerId: number; moved: boolean; dragging: boolean } | null>(null);
+  const suppressClickRef = useRef(false);
+  const [dragOffset, setDragOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const workspaceWidth = 110;
+  function handlePointerDown(event: React.PointerEvent) {
+    if (!canShowWorkspace || event.button !== 0) {
+      return;
+    }
+    dragRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId, moved: false, dragging: false };
+    setDragOffset(actionsOpen ? -workspaceWidth : 0);
+  }
+  function handlePointerMove(event: React.PointerEvent) {
+    const drag = dragRef.current;
+    if (!drag || !canShowWorkspace) {
+      return;
+    }
+    const deltaX = event.clientX - drag.x;
+    const deltaY = event.clientY - drag.y;
+    if (!drag.dragging && Math.abs(deltaX) < 5 && Math.abs(deltaY) < 5) {
+      return;
+    }
+    if (!drag.dragging && Math.abs(deltaY) > Math.abs(deltaX)) {
+      dragRef.current = null;
+      setDragging(false);
+      setDragOffset(actionsOpen ? -workspaceWidth : 0);
+      return;
+    }
+    drag.dragging = true;
+    if (!event.currentTarget.hasPointerCapture(drag.pointerId)) {
+      event.currentTarget.setPointerCapture(drag.pointerId);
+    }
+    setDragging(true);
+    drag.moved = Math.abs(deltaX) > 8;
+    const base = actionsOpen ? -workspaceWidth : 0;
+    setDragOffset(Math.max(-workspaceWidth, Math.min(0, base + deltaX)));
+  }
+  function handlePointerUp(event: React.PointerEvent) {
+    const drag = dragRef.current;
+    if (!drag) {
+      return;
+    }
+    const delta = event.clientX - drag.x;
+    const open = actionsOpen ? delta > 36 ? false : true : delta < -36;
+    suppressClickRef.current = drag.moved || drag.dragging;
+    dragRef.current = null;
+    setDragging(false);
+    setDragOffset(open ? -workspaceWidth : 0);
+    onOpenActions?.(open);
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 120);
+  }
+  function handlePointerCancel() {
+    dragRef.current = null;
+    setDragging(false);
+    setDragOffset(actionsOpen ? -workspaceWidth : 0);
+  }
+  function openDetailFromClick() {
+    if (suppressClickRef.current) {
+      return;
+    }
+    onPrimary?.() ?? onOpenDetail?.() ?? onCopy();
+  }
+  return (
+    <article ref={registerNode} className={`clipboard-entry-card ${compact ? "compact" : ""} ${selected ? "selected" : ""} ${actionsOpen ? "actions-open" : ""} ${dragging ? "dragging" : ""}`}>
+      <div
+        className="clipboard-entry-track"
+        onPointerCancel={handlePointerCancel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        style={canShowWorkspace ? { transform: `translateX(${dragging ? dragOffset : actionsOpen ? -workspaceWidth : 0}px)` } : undefined}
+      >
+        <div className="clipboard-entry-surface">
+          {!compact ? (
+            <label className="clipboard-entry-check" aria-label="选择条目">
+              <input checked={selected} onChange={onSelect} onClick={(event) => event.stopPropagation()} type="checkbox" />
+            </label>
+          ) : null}
+          <button className="clipboard-entry-main" onClick={openDetailFromClick} type="button">
+            <div className="clipboard-entry-title">
+              {entry.pinnedAt ? <Pin size={12} fill="currentColor" /> : null}
+              <strong>{title}</strong>
+              <span>{sourceLabel(entry.source)}</span>
+            </div>
+            <p>{entry.text}</p>
+            {!compact ? (
+              <div className="clipboard-entry-meta">
+                {formatClipboardDate(entry.createdAt)} · 复制 {entry.copyCount} 次 · 使用 {entry.useCount} 次
+              </div>
+            ) : null}
+          </button>
+        </div>
+        {canShowWorkspace ? (
+          <div className="clipboard-entry-workspace">
+            <button title="分词" onClick={onOpenExtract} type="button"><Scissors size={14} /></button>
+            <button className="danger" title="删除" onClick={onDelete} type="button"><Trash2 size={14} /></button>
+          </div>
+        ) : null}
+      </div>
+      <div className="clipboard-entry-actions">
+        <button title="复制" onClick={onCopy} type="button"><Copy size={13} /></button>
+        {showPin ? <button title={entry.pinnedAt ? "取消固定" : "固定"} onClick={onTogglePinned} type="button"><Pin size={13} fill={entry.pinnedAt ? "currentColor" : "none"} /></button> : null}
+        {showDelete && !canShowWorkspace ? <button title="删除" onClick={onDelete} type="button"><Trash2 size={13} /></button> : null}
+      </div>
+    </article>
+  );
+}
+
+function ClipboardDetailDialog({ closing, entry, onClose }: { closing: boolean; entry: ClipboardEntry; onClose: () => void }) {
+  return createPortal(
+    <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
+      <section className={`update-dialog clipboard-detail-dialog ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="条目详情">
+        <header className="update-dialog-header">
+          <div className="update-dialog-icon"><Info size={16} /></div>
+          <div>
+            <h2>条目详情</h2>
+          </div>
+          <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
+        </header>
+        <div className="clipboard-detail-body">
+          <pre>{entry.text}</pre>
+          <details>
+            <summary>查看元数据</summary>
+            <div className="clipboard-detail-meta">
+              <span>来源：{sourceLabel(entry.source)}</span>
+              <span>长度：{entry.text.length}</span>
+              <span>创建：{formatClipboardDateTime(entry.createdAt)}</span>
+              <span>复制：{formatClipboardDateTime(entry.lastCopiedAt)}</span>
+              <span>使用：{formatClipboardDateTime(entry.lastUsedAt)}</span>
+              <span>固定：{formatClipboardDateTime(entry.pinnedAt)}</span>
+              <span>删除：{formatClipboardDateTime(entry.deletedAt)}</span>
+              <span>ID：{entry.id.slice(0, 8)}</span>
+            </div>
+          </details>
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function ClipboardExtractDialog({
+  closing,
+  entry,
+  onClose,
+  onConfirm,
+  onToggle,
+  selectedTokens,
+  tokens,
+}: {
+  closing: boolean;
+  entry: ClipboardEntry;
+  onClose: () => void;
+  onConfirm: () => void;
+  onToggle: (token: string) => void;
+  selectedTokens: string[];
+  tokens: string[];
+}) {
+  return createPortal(
+    <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
+      <section className={`update-dialog clipboard-extract-dialog ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="分词提取">
+        <header className="update-dialog-header">
+          <div className="update-dialog-icon"><Scissors size={16} /></div>
+          <div>
+            <h2>分词提取</h2>
+            <p>{entry.title || "点击片段多选，提取后复制到系统剪贴板。"}</p>
+          </div>
+          <div className="clipboard-dialog-inline-actions">
+            <button className="secondary-action" disabled={selectedTokens.length === 0} onClick={onConfirm} type="button">提取</button>
+            <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
+          </div>
+        </header>
+        <div className="clipboard-token-grid">
+          {tokens.map((token, index) => (
+            <button className={selectedTokens.includes(token) ? "selected" : ""} key={`${token}-${index}`} onClick={() => onToggle(token)} type="button">
+              {token}
+            </button>
+          ))}
+          {tokens.length === 0 ? <p className="clipboard-empty">没有可提取片段</p> : null}
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function formatClipboardDate(value: number | null) {
+  if (!value) {
+    return "-";
+  }
+  return new Date(value).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatClipboardDateTime(value: number | null) {
+  if (!value) {
+    return "-";
+  }
+  return new Date(value).toLocaleString("zh-CN");
+}
+
+function sourceLabel(source: string) {
+  if (source === "manual") {
+    return "手动";
+  }
+  if (source === "derived") {
+    return "提取";
+  }
+  return "复制";
+}
+
+function extractClipboardTokens(text: string) {
+  const matches = text.match(/[a-zA-Z]+:\/\/[^\s"'<>]+|[a-zA-Z]:\\[^\r\n]+|\\\\[^\s]+|[\w.-]+@[\w.-]+\.[A-Za-z]{2,}|[\w.-]+\.[A-Za-z]{2,}(?:\/[^\s]*)?|--?[A-Za-z][\w-]*|v?\d+(?:\.\d+){1,}|[\u4e00-\u9fa5]{2,}|[A-Za-z0-9_./\\:-]{4,}/g) ?? [];
+  return Array.from(new Set(matches)).slice(0, 80);
+}
+
+function ExternalLinkIcon() {
+  return <span aria-hidden="true" className="external-link-glyph">↗</span>;
 }
 
 function normalizeHotkeyDraft(value: string) {

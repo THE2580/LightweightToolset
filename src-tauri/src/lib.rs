@@ -1,17 +1,29 @@
+mod clipboard;
 mod settings;
 mod tools;
 mod window_service;
 
-use std::{collections::VecDeque, fs, path::PathBuf, process::Command, sync::{Mutex, OnceLock}, time::{Instant, SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::VecDeque,
+    fs,
+    path::PathBuf,
+    process::Command,
+    sync::{Mutex, OnceLock},
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, State, WindowEvent,
+    AppHandle, Emitter, Manager, State, WindowEvent,
 };
-use tauri_plugin_global_shortcut::ShortcutState;
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_global_shortcut::ShortcutState;
 
+use clipboard::{
+    ClipboardEntry, ClipboardEntryPatch, ClipboardPasteResult, ClipboardQueryInput, ClipboardQueryResult,
+    ClipboardSettingsPatch, ClipboardSnapshot,
+};
 use settings::{AppSettings, CloseBehavior, ThemeMode};
 use tools::{ToolRegistry, ToolSnapshot};
 
@@ -179,6 +191,70 @@ fn resume_tool_hotkeys(app: AppHandle, state: State<'_, AppState>) -> Result<(),
 }
 
 #[tauri::command]
+fn clipboard_get_snapshot() -> Result<ClipboardSnapshot, String> {
+    clipboard::snapshot()
+}
+
+#[tauri::command]
+fn clipboard_query(input: ClipboardQueryInput) -> Result<ClipboardQueryResult, String> {
+    clipboard::query(input)
+}
+
+#[tauri::command]
+fn clipboard_update_settings(patch: ClipboardSettingsPatch) -> Result<ClipboardSnapshot, String> {
+    clipboard::update_settings(patch)
+}
+
+#[tauri::command]
+fn clipboard_create_manual(title: String, text: String) -> Result<Option<ClipboardEntry>, String> {
+    clipboard::create_manual(title, text)
+}
+
+#[tauri::command]
+fn clipboard_update_entry(id: String, patch: ClipboardEntryPatch) -> Result<Option<ClipboardEntry>, String> {
+    clipboard::update_entry(id, patch)
+}
+
+#[tauri::command]
+fn clipboard_copy(id: String) -> Result<ClipboardPasteResult, String> {
+    clipboard::copy_entry(id)
+}
+
+#[tauri::command]
+fn clipboard_copy_text(text: String) -> Result<ClipboardPasteResult, String> {
+    clipboard::copy_text(text)
+}
+
+#[tauri::command]
+fn clipboard_delete(ids: Vec<String>) -> Result<(), String> {
+    clipboard::delete_entries(ids)
+}
+
+#[tauri::command]
+fn clipboard_clear_history() -> Result<(), String> {
+    clipboard::clear_history()
+}
+
+#[tauri::command]
+fn clipboard_open_panel(app: AppHandle) -> Result<(), String> {
+    window_service::open_clipboard_popup(&app)
+}
+
+#[tauri::command]
+fn clipboard_close_panel(app: AppHandle) {
+    window_service::close_clipboard_popup(&app);
+}
+
+#[tauri::command]
+fn clipboard_open_management(app: AppHandle) {
+    window_service::close_clipboard_popup(&app);
+    show_main_window(&app);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("navigate-tool", "clipboard");
+    }
+}
+
+#[tauri::command]
 fn set_auto_start_enabled(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<AppSnapshot, String> {
     set_auto_start_plugin(&app, enabled)?;
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
@@ -263,7 +339,10 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
-            "quit" => app.exit(0),
+            "quit" => {
+                clipboard::stop();
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -288,10 +367,20 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::Builder::new().app_name("LightweightToolset").build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, shortcut, event| {
             if event.state() == ShortcutState::Pressed {
+                let mut handled = false;
                 if let Some(state) = app.try_state::<AppState>() {
                     push_debug_log(&state, "info", format!("工具快捷键已触发：{shortcut}"));
+                    if let Ok(registry) = state.registry.lock() {
+                        if registry.tool_for_shortcut(&shortcut.to_string()).as_deref() == Some("clipboard") {
+                            handled = true;
+                        }
+                    }
                 }
-                show_main_window(app);
+                if handled {
+                    let _ = window_service::open_clipboard_popup(app);
+                } else {
+                    show_main_window(app);
+                }
             }
         }).build())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main_window(app)))
@@ -313,6 +402,7 @@ pub fn run() {
             let _supported_window_kinds = window_service::reserved_window_kinds();
             let config_dir = app.path().app_config_dir()?;
             std::fs::create_dir_all(&config_dir)?;
+            clipboard::init(&config_dir)?;
             let settings_path = config_dir.join("settings.json");
             let settings = AppSettings::load(&settings_path)?;
             let mut registry = ToolRegistry::new(settings);
@@ -349,6 +439,18 @@ pub fn run() {
             suspend_tool_hotkeys,
             resume_tool_hotkeys,
             set_auto_start_enabled,
+            clipboard_get_snapshot,
+            clipboard_query,
+            clipboard_update_settings,
+            clipboard_create_manual,
+            clipboard_update_entry,
+            clipboard_copy,
+            clipboard_copy_text,
+            clipboard_delete,
+            clipboard_clear_history,
+            clipboard_open_panel,
+            clipboard_close_panel,
+            clipboard_open_management,
             get_default_storage_path,
             open_storage_path,
             update_app_settings
