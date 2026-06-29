@@ -34,13 +34,48 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, type ErrorInfo, type MouseEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./App.css";
 
 type ThemeMode = "system" | "light" | "dark";
 type CloseBehavior = "quit" | "tray";
 type SettingsTab = "general" | "hotkey" | "logs" | "about";
+
+type PopupErrorBoundaryProps = {
+  children: ReactNode;
+};
+
+type PopupErrorBoundaryState = {
+  error: string | null;
+};
+
+class PopupErrorBoundary extends Component<PopupErrorBoundaryProps, PopupErrorBoundaryState> {
+  state: PopupErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: unknown): PopupErrorBoundaryState {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error("Clipboard popup render failed", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="clipboard-popup-shell clipboard-popup-fallback">
+          <div className="clipboard-popup-error">
+            <strong>剪贴板弹窗加载失败</strong>
+            <span>{this.state.error}</span>
+            <button onClick={() => void invoke("clipboard_close_panel")} type="button">关闭</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type Tool = {
   id: string;
@@ -79,6 +114,7 @@ type ClipboardSnapshot = {
     historyCount: number;
     pinnedCount: number;
     trashCount: number;
+    storageBytes: number;
     skippedTooLong: number;
     lastCleanupAt: number | null;
   };
@@ -163,6 +199,7 @@ const AUTHOR_EMAILS = ["2021289500@qq.com", "liangneng20060725@gmail.com"];
 const toolIcons = [ClipboardList];
 const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SUPER", "CMD", "COMMAND"]);
 const TOAST_DURATION_MS = 1400;
+const CLIPBOARD_PAGE_SIZE = 10;
 
 function useUpdateChecker(settings?: AppSettings) {
   const [updateStatus, setUpdateStatus] = useState("当前已是最新版本");
@@ -310,8 +347,14 @@ function useToastQueue(durationMs = TOAST_DURATION_MS) {
 }
 
 function App() {
-  if (window.location.hash === "#/clipboard-popup") {
-    return <ClipboardPopup />;
+  const currentWindowLabel = getCurrentWindow().label;
+  const isClipboardPopup = currentWindowLabel === "tool-clipboard-popup" || window.location.hash === "#/clipboard-popup" || new URLSearchParams(window.location.search).get("popup") === "clipboard";
+  if (isClipboardPopup) {
+    return (
+      <PopupErrorBoundary>
+        <ClipboardPopup />
+      </PopupErrorBoundary>
+    );
   }
 
   const [view, setView] = useState<View>("home");
@@ -490,6 +533,16 @@ function App() {
       <header className="window-chrome">
         <div className="window-drag-area" onMouseDown={handleTitlebarMouseDown}>
           <span className="window-title">{windowTitle}</span>
+          {sidebarCollapsed ? (
+            <div className="title-history-controls" aria-label="浏览历史">
+              <button aria-label="后退" disabled={!isHistoryBackAvailable} onClick={() => navigateHistory(-1)} type="button">
+                <ChevronLeft size={14} />
+              </button>
+              <button aria-label="前进" disabled={!isHistoryForwardAvailable} onClick={() => navigateHistory(1)} type="button">
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="window-controls">
           <button aria-label="最小化" onClick={() => void getCurrentWindow().minimize()} type="button">
@@ -778,16 +831,6 @@ function SettingsView({
       .catch(() => setDefaultStoragePath(""));
   }, []);
 
-  useEffect(() => {
-    if (storagePathDraft.trim() === settings.storagePath) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      void updateSettings({ storagePath: storagePathDraft });
-    }, 450);
-    return () => window.clearTimeout(timer);
-  }, [settings.storagePath, storagePathDraft, updateSettings]);
-
   function openStoragePath() {
     void invoke("open_storage_path", { storagePath: storagePathDraft });
   }
@@ -803,10 +846,6 @@ function SettingsView({
       setStoragePathDraft(selected);
       void updateSettings({ storagePath: selected });
     }
-  }
-
-  function updateStoragePath(value: string) {
-    setStoragePathDraft(value);
   }
 
   function restoreDefaultStoragePath() {
@@ -887,7 +926,7 @@ function SettingsView({
                 <p>{defaultStoragePath ? `默认目录：${defaultStoragePath}` : "默认使用应用配置目录；可打开当前目录或恢复默认"}</p>
               </div>
               <div className="settings-inline wide">
-                <input className="settings-input mono" placeholder="默认应用配置目录" value={storagePathDraft} onChange={(event) => updateStoragePath(event.target.value)} />
+                <input className="settings-input mono" placeholder="默认应用配置目录" readOnly value={storagePathDraft} />
                 <button className="secondary-action icon-text-action" onClick={() => void changeStoragePath()} type="button"><FolderOpen size={13} />更改</button>
                 <button className="secondary-action" onClick={openStoragePath} type="button">打开</button>
                 {settings.storagePath ? (
@@ -1096,11 +1135,16 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
   const [entries, setEntries] = useState<ClipboardEntry[]>([]);
   const [trashEntries, setTrashEntries] = useState<ClipboardEntry[]>([]);
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
+  const [pageAnimating, setPageAnimating] = useState(false);
+  const [entryTotal, setEntryTotal] = useState(0);
   const { pushToast, toast: currentToast } = useToastQueue();
   const [manualTitle, setManualTitle] = useState("");
   const [manualText, setManualText] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
+  const [trashPage, setTrashPage] = useState(0);
+  const [trashTotal, setTrashTotal] = useState(0);
   const [manualOpen, setManualOpen] = useState(false);
   const [detailEntry, setDetailEntry] = useState<ClipboardEntry | null>(null);
   const [extractEntry, setExtractEntry] = useState<ClipboardEntry | null>(null);
@@ -1111,20 +1155,26 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
   const entryNodeMapRef = useRef(new Map<string, HTMLElement>());
   const previousEntryRectsRef = useRef(new Map<string, DOMRect>());
   const previousEntryOrderRef = useRef<string[]>([]);
+  const listTransitionRef = useRef(false);
+  const listTransitionFrameRef = useRef<number | null>(null);
+  const listTransitionTimerRef = useRef<number | null>(null);
+  const listTransitionFallbackTimerRef = useRef<number | null>(null);
   const selectedEntries = useMemo(() => entries.filter((entry) => selectedIds.has(entry.id)), [entries, selectedIds]);
   const allEntriesSelected = entries.length > 0 && entries.every((entry) => selectedIds.has(entry.id));
+  const pageCount = Math.max(1, Math.ceil(entryTotal / CLIPBOARD_PAGE_SIZE));
   const extractTokens = useMemo(() => extractClipboardTokens(extractEntry?.text ?? ""), [extractEntry]);
 
   const loadClipboard = useCallback(async () => {
     const [nextSnapshot, result] = await Promise.all([
       invoke<ClipboardSnapshot>("clipboard_get_snapshot"),
       invoke<ClipboardQueryResult>("clipboard_query", {
-        input: { scope: tab, search, offset: 0, limit: 80 },
+        input: { scope: tab, search, offset: page * CLIPBOARD_PAGE_SIZE, limit: CLIPBOARD_PAGE_SIZE },
       }),
     ]);
     setSnapshot(nextSnapshot);
     setEntries(result.entries);
-  }, [search, tab]);
+    setEntryTotal(result.total);
+  }, [page, search, tab]);
 
   useEffect(() => {
     void loadClipboard();
@@ -1135,7 +1185,28 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
   useEffect(() => {
     setSelectedIds(new Set());
     setOpenActionId(null);
+    setPage(0);
   }, [tab, search]);
+
+  useEffect(() => {
+    if (page > 0 && page >= pageCount) {
+      setPage(pageCount - 1);
+    }
+  }, [page, pageCount]);
+
+  useEffect(() => {
+    return () => {
+      if (listTransitionFrameRef.current !== null) {
+        window.cancelAnimationFrame(listTransitionFrameRef.current);
+      }
+      if (listTransitionTimerRef.current !== null) {
+        window.clearTimeout(listTransitionTimerRef.current);
+      }
+      if (listTransitionFallbackTimerRef.current !== null) {
+        window.clearTimeout(listTransitionFallbackTimerRef.current);
+      }
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const previousRects = previousEntryRectsRef.current;
@@ -1147,6 +1218,13 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
     entryNodeMapRef.current.forEach((node, id) => {
       nextRects.set(id, node.getBoundingClientRect());
     });
+
+    if (listTransitionRef.current) {
+      previousEntryRectsRef.current = nextRects;
+      previousEntryOrderRef.current = nextOrder;
+      listTransitionRef.current = false;
+      return;
+    }
 
     if (orderChanged) {
       nextRects.forEach((nextRect, id) => {
@@ -1187,11 +1265,12 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
     }
   }
 
-  async function loadTrash() {
+  async function loadTrash(page = trashPage) {
     const result = await invoke<ClipboardQueryResult>("clipboard_query", {
-      input: { scope: "trash", search: "", offset: 0, limit: 80 },
+      input: { scope: "trash", search: "", offset: page * CLIPBOARD_PAGE_SIZE, limit: CLIPBOARD_PAGE_SIZE },
     });
     setTrashEntries(result.entries);
+    setTrashTotal(result.total);
   }
 
   function toast(text: string) {
@@ -1233,9 +1312,81 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
     setSelectedIds(allEntriesSelected ? new Set() : new Set(entries.map((entry) => entry.id)));
   }
 
+  function playListTransition() {
+    listTransitionRef.current = true;
+    if (listTransitionFrameRef.current !== null) {
+      window.cancelAnimationFrame(listTransitionFrameRef.current);
+    }
+    if (listTransitionTimerRef.current !== null) {
+      window.clearTimeout(listTransitionTimerRef.current);
+    }
+    if (listTransitionFallbackTimerRef.current !== null) {
+      window.clearTimeout(listTransitionFallbackTimerRef.current);
+    }
+    setPageAnimating(false);
+    listTransitionFrameRef.current = window.requestAnimationFrame(() => {
+      setPageAnimating(true);
+      listTransitionTimerRef.current = window.setTimeout(() => {
+        setPageAnimating(false);
+      }, 180);
+      listTransitionFallbackTimerRef.current = window.setTimeout(() => {
+        listTransitionRef.current = false;
+      }, 700);
+    });
+  }
+
+  function changePage(nextPage: number) {
+    const safePage = Math.max(0, Math.min(nextPage, pageCount - 1));
+    if (safePage === page) {
+      return;
+    }
+    playListTransition();
+    setPage(safePage);
+    setSelectedIds(new Set());
+    setOpenActionId(null);
+  }
+
+  function changeTab(nextTab: "history" | "pinned") {
+    if (nextTab === tab) {
+      return;
+    }
+    playListTransition();
+    setTab(nextTab);
+    setPage(0);
+    setSelectedIds(new Set());
+    setOpenActionId(null);
+  }
+
   async function openTrash() {
-    await loadTrash();
+    setTrashPage(0);
+    await loadTrash(0);
     setTrashOpen(true);
+  }
+
+  async function restoreTrashEntries(ids: string[]) {
+    if (ids.length === 0) {
+      return;
+    }
+    await invoke("clipboard_restore", { ids });
+    toast(`已恢复${ids.length}个记录`);
+    await loadTrash(trashPage);
+    await loadClipboard();
+  }
+
+  async function purgeTrashEntries(ids: string[]) {
+    if (ids.length === 0) {
+      return;
+    }
+    await invoke("clipboard_purge", { ids });
+    toast(`已彻底删除${ids.length}个记录`);
+    await loadTrash(trashPage);
+    await loadClipboard();
+  }
+
+  async function changeTrashPage(page: number) {
+    const safePage = Math.max(0, Math.min(page, Math.max(0, Math.ceil(trashTotal / CLIPBOARD_PAGE_SIZE) - 1)));
+    setTrashPage(safePage);
+    await loadTrash(safePage);
   }
 
   async function copyEntry(entry: ClipboardEntry) {
@@ -1254,12 +1405,13 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
   }
 
   async function pinSelected() {
+    const count = selectedEntries.length;
     await Promise.all(selectedEntries.map((entry) => invoke("clipboard_update_entry", {
       id: entry.id,
       patch: { pinned: tab !== "pinned" },
     })));
     setSelectedIds(new Set());
-    toast(tab === "pinned" ? "已取消固定选中" : "已固定选中");
+    toast(tab === "pinned" ? `已取消固定${count}个记录` : `已固定${count}个记录`);
     await loadClipboard();
   }
 
@@ -1270,9 +1422,10 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
   }
 
   async function deleteSelected() {
+    const count = selectedEntries.length;
     await invoke("clipboard_delete", { ids: selectedEntries.map((entry) => entry.id) });
     setSelectedIds(new Set());
-    toast("已删除选中");
+    toast(`已删除${count}个记录`);
     await loadClipboard();
   }
 
@@ -1333,7 +1486,7 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
             {selectedEntries.length > 0 ? (
               <div className="clipboard-bulk-actions">
                 <button className="clipboard-bulk-action" onClick={toggleSelectAll} type="button">
-                  {allEntriesSelected ? "取消全选" : "未全选"}
+                  {allEntriesSelected ? "取消全选" : `全选 [${selectedEntries.length}/${entries.length}]`}
                 </button>
                 <button className="clipboard-bulk-action" onClick={() => void pinSelected()} type="button">
                   <Pin size={12} />{tab === "pinned" ? "取消固定" : "固定选中"}
@@ -1360,17 +1513,33 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
         <div className="clipboard-toolbar">
           <div className={`clipboard-tabs ${tab === "pinned" ? "pinned" : "history"}`}>
             <span className="clipboard-tab-indicator" />
-            <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")} type="button"><FileText size={13} />历史</button>
-            <button className={tab === "pinned" ? "active" : ""} onClick={() => setTab("pinned")} type="button"><Pin size={13} />固定</button>
+            <button className={tab === "history" ? "active" : ""} onClick={() => changeTab("history")} type="button"><FileText size={13} />历史</button>
+            <button className={tab === "pinned" ? "active" : ""} onClick={() => changeTab("pinned")} type="button"><Pin size={13} />固定</button>
+            {snapshot ? (
+              <div className="clipboard-stats-popover" role="tooltip">
+                <div className="clipboard-stats-title"><Info size={13} />剪贴板统计</div>
+                <dl>
+                  <div><dt>历史</dt><dd>{snapshot.stats.historyCount}</dd></div>
+                  <div><dt>固定</dt><dd>{snapshot.stats.pinnedCount}</dd></div>
+                  <div><dt>回收站</dt><dd>{snapshot.stats.trashCount}</dd></div>
+                  <div><dt>实际使用量</dt><dd>{formatStorageSize(snapshot.stats.storageBytes)}</dd></div>
+                </dl>
+              </div>
+            ) : null}
           </div>
           <label className="clipboard-search">
             <Search size={13} />
             <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tab === "history" ? "搜索历史文本" : "搜索固定片段"} />
           </label>
+          <div className="clipboard-pagination">
+            <button aria-label="上一页" disabled={page <= 0} onClick={() => changePage(page - 1)} type="button"><ChevronLeft size={13} /></button>
+            <span>{page + 1} / {pageCount}</span>
+            <button aria-label="下一页" disabled={page >= pageCount - 1} onClick={() => changePage(page + 1)} type="button"><ChevronRight size={13} /></button>
+          </div>
         </div>
       </div>
 
-      <div className="clipboard-entry-list" key={tab} onScroll={closeOpenActionsOnScroll}>
+      <div className={`clipboard-entry-list ${pageAnimating ? "page-switching" : ""}`} onScroll={closeOpenActionsOnScroll}>
         {entries.map((entry) => (
           <ClipboardEntryCard
             actionsOpen={openActionId === entry.id}
@@ -1385,9 +1554,11 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
               setExtractEntry(entry);
               setOpenActionId(null);
             }}
+            onPrimary={() => setDetailEntry(entry)}
             onSelect={() => toggleSelect(entry.id)}
             onTogglePinned={() => void togglePinned(entry)}
             registerNode={(node) => registerEntryNode(entry.id, node)}
+            selectMode={selectedEntries.length > 0}
             selected={selectedIds.has(entry.id)}
           />
         ))}
@@ -1413,8 +1584,13 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
         <ClipboardTrashDialog
           closing={closingDialog === "trash"}
           entries={trashEntries}
+          page={trashPage}
+          total={trashTotal}
           onClose={() => closeClipboardDialog("trash")}
-          onCopy={(entry) => void copyEntry(entry)}
+          onOpenDetail={(entry) => setDetailEntry(entry)}
+          onPageChange={(page) => void changeTrashPage(page)}
+          onPurge={(ids) => void purgeTrashEntries(ids)}
+          onRestore={(ids) => void restoreTrashEntries(ids)}
         />
       ) : null}
 
@@ -1450,7 +1626,7 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
         />
       ) : null}
 
-      {currentToast ? <div className="app-toast clipboard-toast" key={currentToast.id}>{currentToast.text}</div> : null}
+      {currentToast ? createPortal(<div className="app-toast clipboard-toast" key={currentToast.id}>{currentToast.text}</div>, document.body) : null}
     </section>
   );
 }
@@ -1532,10 +1708,68 @@ function ClipboardSettingsDialog({
   );
 }
 
-function ClipboardTrashDialog({ closing, entries, onClose, onCopy }: { closing: boolean; entries: ClipboardEntry[]; onClose: () => void; onCopy: (entry: ClipboardEntry) => void }) {
+function ClipboardTrashDialog({
+  closing,
+  entries,
+  page,
+  total,
+  onClose,
+  onOpenDetail,
+  onPageChange,
+  onPurge,
+  onRestore,
+}: {
+  closing: boolean;
+  entries: ClipboardEntry[];
+  page: number;
+  total: number;
+  onClose: () => void;
+  onOpenDetail: (entry: ClipboardEntry) => void;
+  onPageChange: (page: number) => void;
+  onPurge: (ids: string[]) => void;
+  onRestore: (ids: string[]) => void;
+}) {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const selectedEntries = useMemo(() => entries.filter((entry) => selectedIds.has(entry.id)), [entries, selectedIds]);
+  const selecting = selectedEntries.length > 0;
+  const allSelected = entries.length > 0 && entries.every((entry) => selectedIds.has(entry.id));
+  const pageCount = Math.max(1, Math.ceil(total / CLIPBOARD_PAGE_SIZE));
+
+  useEffect(() => {
+    setSelectedIds((current) => new Set(entries.filter((entry) => current.has(entry.id)).map((entry) => entry.id)));
+  }, [entries]);
+
+  function toggleSelected(id: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  function restoreSelected() {
+    const ids = selectedEntries.map((entry) => entry.id);
+    setSelectedIds(new Set());
+    onRestore(ids);
+  }
+
+  function purgeSelected() {
+    const ids = selectedEntries.map((entry) => entry.id);
+    setSelectedIds(new Set());
+    onPurge(ids);
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds(allSelected ? new Set() : new Set(entries.map((entry) => entry.id)));
+  }
+
   return createPortal(
     <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
-      <section className={`update-dialog clipboard-modal ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="剪贴板回收站">
+      <section className={`update-dialog clipboard-modal clipboard-trash-dialog ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="剪贴板回收站">
         <header className="update-dialog-header">
           <div className="update-dialog-icon danger"><Trash2 size={16} /></div>
           <div>
@@ -1544,23 +1778,41 @@ function ClipboardTrashDialog({ closing, entries, onClose, onCopy }: { closing: 
           </div>
           <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
         </header>
-        <div className="clipboard-modal-body clipboard-trash-list">
+        <div className="clipboard-modal-body clipboard-trash-list" key={page}>
           {entries.map((entry) => (
-            <ClipboardEntryCard
-              compact
-              entry={entry}
-              key={entry.id}
-              onCopy={() => onCopy(entry)}
-              onDelete={() => undefined}
-              onTogglePinned={() => undefined}
-              showDelete={false}
-              showPin={false}
-            />
+            <article className={`clipboard-trash-entry ${selectedIds.has(entry.id) ? "selected" : ""}`} key={entry.id}>
+              <label className="clipboard-entry-check" aria-label="选择回收站条目">
+                <input checked={selectedIds.has(entry.id)} onChange={() => toggleSelected(entry.id)} type="checkbox" />
+              </label>
+              <button className="clipboard-trash-main" onClick={() => (selecting ? toggleSelected(entry.id) : onOpenDetail(entry))} type="button">
+                <div className="clipboard-entry-title">
+                  <strong>{entry.title || entry.text.split(/\s+/).find(Boolean) || "文本条目"}</strong>
+                  <span>{sourceLabel(entry.source)}</span>
+                </div>
+                <p>{entry.text}</p>
+              </button>
+              <button className="clipboard-trash-restore" title="恢复" onClick={() => onRestore([entry.id])} type="button">
+                <RotateCcw size={13} />
+              </button>
+            </article>
           ))}
           {entries.length === 0 ? <p className="clipboard-empty">回收站为空</p> : null}
         </div>
-        <footer className="update-dialog-actions">
-          <button className="primary-action" onClick={onClose} type="button">完成</button>
+        <footer className={`update-dialog-actions clipboard-trash-actions ${selecting ? "selecting" : ""}`}>
+          <div className="clipboard-trash-bulk-actions">
+            {selecting ? (
+              <>
+              <button className="secondary-action icon-text-action" onClick={toggleSelectAll} type="button"><Check size={12} />{allSelected ? "取消全选" : `全选 [${selectedEntries.length}/${entries.length}]`}</button>
+              <button className="secondary-action icon-text-action" onClick={restoreSelected} type="button"><RotateCcw size={12} />恢复选中</button>
+              <button className="secondary-action icon-text-action danger" onClick={purgeSelected} type="button"><Trash2 size={12} />彻底删除选中</button>
+              </>
+            ) : null}
+          </div>
+          <div className="clipboard-trash-pagination">
+            <button aria-label="上一页" disabled={page <= 0} onClick={() => onPageChange(page - 1)} type="button"><ChevronLeft size={13} /></button>
+            <span>{page + 1} / {pageCount}</span>
+            <button aria-label="下一页" disabled={page >= pageCount - 1} onClick={() => onPageChange(page + 1)} type="button"><ChevronRight size={13} /></button>
+          </div>
         </footer>
       </section>
     </div>,
@@ -1620,23 +1872,37 @@ function ClipboardPopup() {
   const [entries, setEntries] = useState<ClipboardEntry[]>([]);
   const [search, setSearch] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [popupError, setPopupError] = useState<string | null>(null);
   const { pushToast, toast: currentToast } = useToastQueue(1200);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const loadPopup = useCallback(async () => {
-    const [pinned, history] = await Promise.all([
-      invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "pinned", search, offset: 0, limit: 30 } }),
-      invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "history", search, offset: 0, limit: 50 } }),
-    ]);
-    setEntries(search.trim() ? [...pinned.entries, ...history.entries] : [...pinned.entries, ...history.entries]);
-    setSelectedIndex(0);
+    try {
+      const [pinned, history] = await Promise.all([
+        invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "pinned", search, offset: 0, limit: 30 } }),
+        invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "history", search, offset: 0, limit: 50 } }),
+      ]);
+      setEntries(search.trim() ? [...pinned.entries, ...history.entries] : [...pinned.entries, ...history.entries]);
+      setSelectedIndex(0);
+      setPopupError(null);
+    } catch (reason) {
+      setPopupError(String(reason));
+    } finally {
+      setLoading(false);
+    }
   }, [search]);
 
   useEffect(() => {
-    inputRef.current?.focus();
-    void loadPopup();
-    const timer = window.setInterval(() => void loadPopup(), 1200);
-    return () => window.clearInterval(timer);
+    void invoke("push_frontend_debug_log", { level: "info", message: "clipboard popup: frontend mounted" });
+    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 0);
+    const loadTimer = window.setTimeout(() => void loadPopup(), 60);
+    const refreshTimer = window.setInterval(() => void loadPopup(), 1600);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.clearTimeout(loadTimer);
+      window.clearInterval(refreshTimer);
+    };
   }, [loadPopup]);
 
   async function copyAndClose(entry: ClipboardEntry) {
@@ -1698,21 +1964,29 @@ function ClipboardPopup() {
       </div>
       <div className="clipboard-popup-list">
         {!search.trim() && pinnedCount > 0 ? <p className="clipboard-popup-label">固定</p> : null}
-        {entries.map((entry, index) => (
+        {loading ? <p className="clipboard-empty">加载中...</p> : null}
+        {popupError ? (
+          <div className="clipboard-popup-error">
+            <strong>剪贴板弹窗加载失败</strong>
+            <span>{popupError}</span>
+            <button onClick={() => void invoke("clipboard_close_panel")} type="button">关闭</button>
+          </div>
+        ) : null}
+        {!loading && !popupError ? entries.map((entry, index) => (
           <ClipboardEntryCard
             compact
             entry={entry}
             key={entry.id}
             onCopy={() => void copyOnly(entry)}
             onDelete={() => void invoke("clipboard_delete", { ids: [entry.id] }).then(() => loadPopup())}
-            onPrimary={() => void copyAndClose(entry)}
+            onOpenDetail={() => undefined}
             onTogglePinned={() => void togglePinned(entry)}
             selected={index === selectedIndex}
           />
-        ))}
-        {entries.length === 0 ? <p className="clipboard-empty">暂无剪贴板历史</p> : null}
+        )) : null}
+        {!loading && !popupError && entries.length === 0 ? <p className="clipboard-empty">暂无剪贴板历史</p> : null}
       </div>
-      {currentToast ? <div className="app-toast clipboard-toast popup" key={currentToast.id}>{currentToast.text}</div> : null}
+      {currentToast ? createPortal(<div className="app-toast clipboard-toast popup" key={currentToast.id}>{currentToast.text}</div>, document.body) : null}
     </div>
   );
 }
@@ -1730,6 +2004,7 @@ function ClipboardEntryCard({
   onSelect,
   onTogglePinned,
   registerNode,
+  selectMode = false,
   selected = false,
   showDelete = true,
   showPin = true,
@@ -1746,6 +2021,7 @@ function ClipboardEntryCard({
   onSelect?: () => void;
   onTogglePinned: () => void;
   registerNode?: (node: HTMLElement | null) => void;
+  selectMode?: boolean;
   selected?: boolean;
   showDelete?: boolean;
   showPin?: boolean;
@@ -1814,7 +2090,11 @@ function ClipboardEntryCard({
     if (suppressClickRef.current) {
       return;
     }
-    onPrimary?.() ?? onOpenDetail?.() ?? onCopy();
+    if (selectMode && onSelect) {
+      onSelect();
+      return;
+    }
+    onPrimary?.() ?? onOpenDetail?.();
   }
   return (
     <article ref={registerNode} className={`clipboard-entry-card ${compact ? "compact" : ""} ${selected ? "selected" : ""} ${actionsOpen ? "actions-open" : ""} ${dragging ? "dragging" : ""}`}>
@@ -1958,6 +2238,20 @@ function formatClipboardDateTime(value: number | null) {
     return "-";
   }
   return new Date(value).toLocaleString("zh-CN");
+}
+
+function formatStorageSize(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
 function sourceLabel(source: string) {

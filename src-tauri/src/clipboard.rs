@@ -123,6 +123,7 @@ pub struct ClipboardStats {
     pub history_count: usize,
     pub pinned_count: usize,
     pub trash_count: usize,
+    pub storage_bytes: u64,
     pub skipped_too_long: u32,
     pub last_cleanup_at: Option<u128>,
 }
@@ -150,12 +151,7 @@ pub fn init(config_dir: &Path) -> Result<(), String> {
     let dir = config_dir.join(CLIPBOARD_DIR);
     fs::create_dir_all(&dir).map_err(|error| format!("创建剪贴板目录失败: {error}"))?;
     let path = dir.join(CLIPBOARD_FILE);
-    let store = if path.exists() {
-        let raw = fs::read_to_string(&path).map_err(|error| format!("读取剪贴板数据失败: {error}"))?;
-        serde_json::from_str(&raw).unwrap_or_default()
-    } else {
-        ClipboardStore::default()
-    };
+    let store = load_store(&path)?;
     let manager = ClipboardManager {
         path,
         store: Arc::new(Mutex::new(store)),
@@ -164,6 +160,27 @@ pub fn init(config_dir: &Path) -> Result<(), String> {
     CLIPBOARD
         .set(Mutex::new(manager))
         .map_err(|_| "剪贴板服务已初始化".to_owned())
+}
+
+pub fn relocate(config_dir: &Path) -> Result<(), String> {
+    let manager_lock = CLIPBOARD.get().ok_or("剪贴板服务未初始化")?;
+    let mut manager = manager_lock.lock().map_err(|_| "剪贴板服务不可用")?;
+    let was_running = manager.worker.is_some();
+    if let Some(worker) = manager.worker.take() {
+        let _ = worker.stop.send(());
+        let _ = worker.thread.join();
+    }
+
+    let dir = config_dir.join(CLIPBOARD_DIR);
+    fs::create_dir_all(&dir).map_err(|error| format!("创建剪贴板目录失败: {error}"))?;
+    manager.path = dir.join(CLIPBOARD_FILE);
+    save_store(&manager.path, &manager.store)?;
+    drop(manager);
+
+    if was_running {
+        start()?;
+    }
+    Ok(())
 }
 
 pub fn start() -> Result<(), String> {
@@ -235,9 +252,10 @@ pub fn snapshot() -> Result<ClipboardSnapshot, String> {
     let manager_lock = CLIPBOARD.get().ok_or("剪贴板服务未初始化")?;
     let manager = manager_lock.lock().map_err(|_| "剪贴板服务不可用")?;
     let store = manager.store.lock().map_err(|_| "剪贴板数据不可用")?;
+    let storage_bytes = fs::metadata(&manager.path).map(|metadata| metadata.len()).unwrap_or(0);
     Ok(ClipboardSnapshot {
         settings: store.settings.clone(),
-        stats: stats_for(&store),
+        stats: stats_for(&store, storage_bytes),
         listening_active: manager.worker.is_some() && store.settings.listening,
     })
 }
@@ -275,6 +293,7 @@ pub fn update_settings(patch: ClipboardSettingsPatch) -> Result<ClipboardSnapsho
         if let Some(listening) = patch.listening {
             store.settings.listening = listening;
         }
+        let should_cleanup = patch.retention_days.is_some();
         if let Some(retention_days) = patch.retention_days {
             store.settings.retention_days = retention_days.clamp(1, 3650);
         }
@@ -286,6 +305,9 @@ pub fn update_settings(patch: ClipboardSettingsPatch) -> Result<ClipboardSnapsho
         }
         if let Some(panel_height) = patch.panel_height {
             store.settings.panel_height = panel_height.clamp(300, 640);
+        }
+        if should_cleanup {
+            cleanup_store(&mut store);
         }
     }
     save_store(&manager.path, &manager.store)?;
@@ -399,6 +421,30 @@ pub fn delete_entries(ids: Vec<String>) -> Result<(), String> {
     save_store(&manager.path, &manager.store)
 }
 
+pub fn restore_entries(ids: Vec<String>) -> Result<(), String> {
+    let manager_lock = CLIPBOARD.get().ok_or("剪贴板服务未初始化")?;
+    let manager = manager_lock.lock().map_err(|_| "剪贴板服务不可用")?;
+    {
+        let mut store = manager.store.lock().map_err(|_| "剪贴板数据不可用")?;
+        let now = now_ms();
+        for entry in store.entries.iter_mut().filter(|entry| ids.contains(&entry.id)) {
+            entry.deleted_at = None;
+            entry.last_used_at = Some(now);
+        }
+    }
+    save_store(&manager.path, &manager.store)
+}
+
+pub fn purge_entries(ids: Vec<String>) -> Result<(), String> {
+    let manager_lock = CLIPBOARD.get().ok_or("剪贴板服务未初始化")?;
+    let manager = manager_lock.lock().map_err(|_| "剪贴板服务不可用")?;
+    {
+        let mut store = manager.store.lock().map_err(|_| "剪贴板数据不可用")?;
+        store.entries.retain(|entry| !ids.contains(&entry.id));
+    }
+    save_store(&manager.path, &manager.store)
+}
+
 pub fn clear_history() -> Result<(), String> {
     let manager_lock = CLIPBOARD.get().ok_or("剪贴板服务未初始化")?;
     let manager = manager_lock.lock().map_err(|_| "剪贴板服务不可用")?;
@@ -476,11 +522,12 @@ fn cleanup_store(store: &mut ClipboardStore) {
     store.last_cleanup_at = Some(now);
 }
 
-fn stats_for(store: &ClipboardStore) -> ClipboardStats {
+fn stats_for(store: &ClipboardStore, storage_bytes: u64) -> ClipboardStats {
     ClipboardStats {
         history_count: store.entries.iter().filter(|entry| entry.deleted_at.is_none() && entry.pinned_at.is_none()).count(),
         pinned_count: store.entries.iter().filter(|entry| entry.deleted_at.is_none() && entry.pinned_at.is_some()).count(),
         trash_count: store.entries.iter().filter(|entry| entry.deleted_at.is_some()).count(),
+        storage_bytes,
         skipped_too_long: store.skipped_too_long,
         last_cleanup_at: store.last_cleanup_at,
     }
@@ -498,6 +545,14 @@ fn save_store(path: &Path, store: &Arc<Mutex<ClipboardStore>>) -> Result<(), Str
     let store = store.lock().map_err(|_| "剪贴板数据不可用")?;
     let raw = serde_json::to_string_pretty(&*store).map_err(|error| format!("序列化剪贴板数据失败: {error}"))?;
     fs::write(path, raw).map_err(|error| format!("保存剪贴板数据失败: {error}"))
+}
+
+fn load_store(path: &Path) -> Result<ClipboardStore, String> {
+    if !path.exists() {
+        return Ok(ClipboardStore::default());
+    }
+    let raw = fs::read_to_string(path).map_err(|error| format!("读取剪贴板数据失败: {error}"))?;
+    Ok(serde_json::from_str(&raw).unwrap_or_default())
 }
 
 fn hash_text(text: &str) -> u64 {

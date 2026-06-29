@@ -27,9 +27,13 @@ use clipboard::{
 use settings::{AppSettings, CloseBehavior, ThemeMode};
 use tools::{ToolRegistry, ToolSnapshot};
 
+const SETTINGS_FILE: &str = "settings.json";
+const STORAGE_POINTER_FILE: &str = "storage_path.txt";
+
 pub struct AppState {
     registry: Mutex<ToolRegistry>,
-    settings_path: PathBuf,
+    default_config_dir: PathBuf,
+    settings_path: Mutex<PathBuf>,
     process_started_at: Instant,
     cold_start_ms: Mutex<Option<u128>>,
     debug_logs: Mutex<VecDeque<DebugLogEntry>>,
@@ -82,7 +86,12 @@ fn app_snapshot(state: &AppState, registry: &ToolRegistry) -> Result<AppSnapshot
     })
 }
 
-fn push_debug_log(state: &AppState, level: &'static str, message: impl Into<String>) {
+fn save_app_settings(state: &AppState, settings: &AppSettings) -> Result<(), String> {
+    let settings_path = state.settings_path.lock().map_err(|_| "设置路径不可用")?;
+    AppSettings::save(&settings_path, settings)
+}
+
+pub(crate) fn push_debug_log(state: &AppState, level: &'static str, message: impl Into<String>) {
     let timestamp_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
@@ -100,11 +109,7 @@ fn push_debug_log(state: &AppState, level: &'static str, message: impl Into<Stri
 }
 
 fn default_storage_path(state: &AppState) -> Result<PathBuf, String> {
-    state
-        .settings_path
-        .parent()
-        .map(PathBuf::from)
-        .ok_or_else(|| "默认存储目录不可用".to_owned())
+    Ok(state.default_config_dir.clone())
 }
 
 fn resolve_storage_path(state: &AppState, storage_path: Option<String>) -> Result<PathBuf, String> {
@@ -114,6 +119,72 @@ fn resolve_storage_path(state: &AppState, storage_path: Option<String>) -> Resul
         default_storage_path(state)
     } else {
         Ok(PathBuf::from(trimmed))
+    }
+}
+
+fn pointer_path(default_config_dir: &PathBuf) -> PathBuf {
+    default_config_dir.join(STORAGE_POINTER_FILE)
+}
+
+fn settings_path_for(storage_dir: &PathBuf) -> PathBuf {
+    storage_dir.join(SETTINGS_FILE)
+}
+
+fn read_storage_pointer(default_config_dir: &PathBuf) -> Option<PathBuf> {
+    let raw = fs::read_to_string(pointer_path(default_config_dir)).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
+fn write_storage_pointer(default_config_dir: &PathBuf, storage_dir: &PathBuf) -> Result<(), String> {
+    let pointer = pointer_path(default_config_dir);
+    if storage_dir == default_config_dir {
+        if pointer.exists() {
+            fs::remove_file(&pointer).map_err(|error| format!("删除存储定位文件失败: {error}"))?;
+        }
+        return Ok(());
+    }
+    fs::write(&pointer, storage_dir.display().to_string()).map_err(|error| format!("保存存储定位文件失败: {error}"))
+}
+
+fn migrate_storage_files(default_config_dir: &PathBuf, storage_dir: &PathBuf) -> Result<(), String> {
+    if storage_dir == default_config_dir {
+        return Ok(());
+    }
+    fs::create_dir_all(storage_dir).map_err(|error| format!("创建存储目录失败: {error}"))?;
+
+    let source_settings = settings_path_for(default_config_dir);
+    let target_settings = settings_path_for(storage_dir);
+    if source_settings.exists() && !target_settings.exists() {
+        fs::copy(&source_settings, &target_settings).map_err(|error| format!("迁移设置文件失败: {error}"))?;
+    }
+
+    let source_clipboard = default_config_dir.join("clipboard").join("clipboard.json");
+    let target_clipboard = storage_dir.join("clipboard").join("clipboard.json");
+    if source_clipboard.exists() && !target_clipboard.exists() {
+        if let Some(parent) = target_clipboard.parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("创建剪贴板存储目录失败: {error}"))?;
+        }
+        fs::copy(&source_clipboard, &target_clipboard).map_err(|error| format!("迁移剪贴板数据失败: {error}"))?;
+    }
+    Ok(())
+}
+
+fn initial_storage_dir(default_config_dir: &PathBuf) -> Result<PathBuf, String> {
+    if let Some(storage_dir) = read_storage_pointer(default_config_dir) {
+        return Ok(storage_dir);
+    }
+    let settings_path = settings_path_for(default_config_dir);
+    let settings = AppSettings::load(&settings_path)?;
+    let storage_path = settings.storage_path.trim();
+    if storage_path.is_empty() {
+        Ok(default_config_dir.clone())
+    } else {
+        Ok(PathBuf::from(storage_path))
     }
 }
 
@@ -147,6 +218,12 @@ fn clear_debug_logs(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn push_frontend_debug_log(state: State<'_, AppState>, level: String, message: String) {
+    let level = if level == "error" { "error" } else { "info" };
+    push_debug_log(&state, level, message);
+}
+
+#[tauri::command]
 fn set_tool_enabled(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -155,7 +232,7 @@ fn set_tool_enabled(
 ) -> Result<AppSnapshot, String> {
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.set_enabled(&app, &tool_id, enabled)?;
-    AppSettings::save(&state.settings_path, registry.settings())?;
+    save_app_settings(&state, registry.settings())?;
     push_debug_log(&state, "info", format!("工具 {tool_id} {}", if enabled { "已启用" } else { "已禁用" }));
     app_snapshot(&state, &registry)
 }
@@ -169,7 +246,7 @@ fn set_tool_hotkey(
 ) -> Result<AppSnapshot, String> {
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.set_hotkey(&app, &tool_id, hotkey.clone())?;
-    AppSettings::save(&state.settings_path, registry.settings())?;
+    save_app_settings(&state, registry.settings())?;
     push_debug_log(&state, "info", format!("工具 {tool_id} 快捷键已更新为 {hotkey}"));
     app_snapshot(&state, &registry)
 }
@@ -231,6 +308,16 @@ fn clipboard_delete(ids: Vec<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn clipboard_restore(ids: Vec<String>) -> Result<(), String> {
+    clipboard::restore_entries(ids)
+}
+
+#[tauri::command]
+fn clipboard_purge(ids: Vec<String>) -> Result<(), String> {
+    clipboard::purge_entries(ids)
+}
+
+#[tauri::command]
 fn clipboard_clear_history() -> Result<(), String> {
     clipboard::clear_history()
 }
@@ -259,7 +346,7 @@ fn set_auto_start_enabled(app: AppHandle, state: State<'_, AppState>, enabled: b
     set_auto_start_plugin(&app, enabled)?;
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.settings_mut().auto_start = enabled;
-    AppSettings::save(&state.settings_path, registry.settings())?;
+    save_app_settings(&state, registry.settings())?;
     push_debug_log(&state, "info", format!("开机自启{}", if enabled { "已开启" } else { "已关闭" }));
     app_snapshot(&state, &registry)
 }
@@ -314,9 +401,19 @@ fn update_app_settings(
         settings.developer_mode = developer_mode;
     }
     if let Some(storage_path) = patch.storage_path {
+        let next_storage_dir = resolve_storage_path(&state, Some(storage_path.clone()))?;
+        fs::create_dir_all(&next_storage_dir).map_err(|error| format!("创建存储目录失败: {error}"))?;
         settings.storage_path = storage_path;
+        let next_settings_path = settings_path_for(&next_storage_dir);
+        AppSettings::save(&next_settings_path, settings)?;
+        {
+            let mut active_settings_path = state.settings_path.lock().map_err(|_| "设置路径不可用")?;
+            *active_settings_path = next_settings_path;
+        }
+        write_storage_pointer(&state.default_config_dir, &next_storage_dir)?;
+        clipboard::relocate(&next_storage_dir)?;
     }
-    AppSettings::save(&state.settings_path, registry.settings())?;
+    save_app_settings(&state, registry.settings())?;
     push_debug_log(&state, "info", "应用设置已保存");
     app_snapshot(&state, &registry)
 }
@@ -340,6 +437,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
             "quit" => {
+                window_service::close_clipboard_popup(app);
                 clipboard::stop();
                 app.exit(0);
             }
@@ -377,7 +475,11 @@ pub fn run() {
                     }
                 }
                 if handled {
-                    let _ = window_service::open_clipboard_popup(app);
+                    if let Err(error) = window_service::open_clipboard_popup(app) {
+                        if let Some(state) = app.try_state::<AppState>() {
+                            push_debug_log(&state, "error", format!("剪贴板快捷窗口启动命令失败：{error}"));
+                        }
+                    }
                 } else {
                     show_main_window(app);
                 }
@@ -402,8 +504,11 @@ pub fn run() {
             let _supported_window_kinds = window_service::reserved_window_kinds();
             let config_dir = app.path().app_config_dir()?;
             std::fs::create_dir_all(&config_dir)?;
-            clipboard::init(&config_dir)?;
-            let settings_path = config_dir.join("settings.json");
+            let storage_dir = initial_storage_dir(&config_dir)?;
+            migrate_storage_files(&config_dir, &storage_dir)?;
+            write_storage_pointer(&config_dir, &storage_dir)?;
+            clipboard::init(&storage_dir)?;
+            let settings_path = settings_path_for(&storage_dir);
             let settings = AppSettings::load(&settings_path)?;
             let mut registry = ToolRegistry::new(settings);
             if registry.settings().auto_start {
@@ -415,7 +520,8 @@ pub fn run() {
             }
             app.manage(AppState {
                 registry: Mutex::new(registry),
-                settings_path,
+                default_config_dir: config_dir,
+                settings_path: Mutex::new(settings_path),
                 process_started_at: *PROCESS_STARTED_AT.get_or_init(Instant::now),
                 cold_start_ms: Mutex::new(None),
                 debug_logs: Mutex::new(VecDeque::from([DebugLogEntry {
@@ -434,6 +540,7 @@ pub fn run() {
             get_app_snapshot,
             get_debug_logs,
             clear_debug_logs,
+            push_frontend_debug_log,
             set_tool_enabled,
             set_tool_hotkey,
             suspend_tool_hotkeys,
@@ -447,6 +554,8 @@ pub fn run() {
             clipboard_copy,
             clipboard_copy_text,
             clipboard_delete,
+            clipboard_restore,
+            clipboard_purge,
             clipboard_clear_history,
             clipboard_open_panel,
             clipboard_close_panel,
