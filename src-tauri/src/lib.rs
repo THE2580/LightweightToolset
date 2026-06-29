@@ -267,69 +267,139 @@ fn resume_tool_hotkeys(app: AppHandle, state: State<'_, AppState>) -> Result<(),
     Ok(())
 }
 
+fn ensure_tool_enabled(state: &State<'_, AppState>, tool_id: &str) -> Result<(), String> {
+    let registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+    if registry.is_enabled(tool_id) {
+        Ok(())
+    } else {
+        Err("工具已禁用".to_owned())
+    }
+}
+
+fn ensure_clipboard_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    ensure_tool_enabled(state, "clipboard")
+}
+
 #[tauri::command]
-fn clipboard_get_snapshot() -> Result<ClipboardSnapshot, String> {
+fn clipboard_get_snapshot(state: State<'_, AppState>) -> Result<ClipboardSnapshot, String> {
+    ensure_clipboard_enabled(&state)?;
     clipboard::snapshot()
 }
 
 #[tauri::command]
-fn clipboard_query(input: ClipboardQueryInput) -> Result<ClipboardQueryResult, String> {
+fn clipboard_query(state: State<'_, AppState>, input: ClipboardQueryInput) -> Result<ClipboardQueryResult, String> {
+    ensure_clipboard_enabled(&state)?;
     clipboard::query(input)
 }
 
 #[tauri::command]
-fn clipboard_update_settings(patch: ClipboardSettingsPatch) -> Result<ClipboardSnapshot, String> {
+fn clipboard_update_settings(state: State<'_, AppState>, patch: ClipboardSettingsPatch) -> Result<ClipboardSnapshot, String> {
+    ensure_clipboard_enabled(&state)?;
     clipboard::update_settings(patch)
 }
 
 #[tauri::command]
-fn clipboard_create_manual(title: String, text: String) -> Result<Option<ClipboardEntry>, String> {
+fn clipboard_create_manual(state: State<'_, AppState>, title: String, text: String) -> Result<Option<ClipboardEntry>, String> {
+    ensure_clipboard_enabled(&state)?;
     clipboard::create_manual(title, text)
 }
 
 #[tauri::command]
-fn clipboard_update_entry(id: String, patch: ClipboardEntryPatch) -> Result<Option<ClipboardEntry>, String> {
+fn clipboard_update_entry(state: State<'_, AppState>, id: String, patch: ClipboardEntryPatch) -> Result<Option<ClipboardEntry>, String> {
+    ensure_clipboard_enabled(&state)?;
     clipboard::update_entry(id, patch)
 }
 
 #[tauri::command]
-fn clipboard_copy(id: String) -> Result<ClipboardPasteResult, String> {
+fn clipboard_copy(state: State<'_, AppState>, id: String) -> Result<ClipboardPasteResult, String> {
+    ensure_clipboard_enabled(&state)?;
     clipboard::copy_entry(id)
 }
 
 #[tauri::command]
-fn clipboard_copy_text(text: String) -> Result<ClipboardPasteResult, String> {
+fn clipboard_paste(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<ClipboardPasteResult, String> {
+    ensure_clipboard_enabled(&state)?;
+    let result = clipboard::paste_entry(id)?;
+    if result.copied {
+        if window_service::is_clipboard_popup_pinned() {
+            window_service::refocus_clipboard_popup_after_paste(&app);
+        } else {
+            window_service::close_clipboard_popup(&app);
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn clipboard_copy_text(state: State<'_, AppState>, text: String) -> Result<ClipboardPasteResult, String> {
+    ensure_clipboard_enabled(&state)?;
     clipboard::copy_text(text)
 }
 
 #[tauri::command]
-fn clipboard_delete(ids: Vec<String>) -> Result<(), String> {
+fn clipboard_copy_derived_text(state: State<'_, AppState>, text: String) -> Result<ClipboardPasteResult, String> {
+    ensure_clipboard_enabled(&state)?;
+    clipboard::copy_derived_text(text)
+}
+
+#[tauri::command]
+fn clipboard_paste_text(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<ClipboardPasteResult, String> {
+    ensure_clipboard_enabled(&state)?;
+    let result = clipboard::paste_text(text)?;
+    if result.copied {
+        window_service::refocus_clipboard_popup_after_paste(&app);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn clipboard_delete(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
+    ensure_clipboard_enabled(&state)?;
     clipboard::delete_entries(ids)
 }
 
 #[tauri::command]
-fn clipboard_restore(ids: Vec<String>) -> Result<(), String> {
+fn clipboard_restore(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
+    ensure_clipboard_enabled(&state)?;
     clipboard::restore_entries(ids)
 }
 
 #[tauri::command]
-fn clipboard_purge(ids: Vec<String>) -> Result<(), String> {
+fn clipboard_purge(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
+    ensure_clipboard_enabled(&state)?;
     clipboard::purge_entries(ids)
 }
 
 #[tauri::command]
-fn clipboard_clear_history() -> Result<(), String> {
+fn clipboard_clear_history(state: State<'_, AppState>) -> Result<(), String> {
+    ensure_clipboard_enabled(&state)?;
     clipboard::clear_history()
 }
 
 #[tauri::command]
-fn clipboard_open_panel(app: AppHandle) -> Result<(), String> {
+fn clipboard_open_panel(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    ensure_clipboard_enabled(&state)?;
     window_service::open_clipboard_popup(&app)
 }
 
 #[tauri::command]
 fn clipboard_close_panel(app: AppHandle) {
     window_service::close_clipboard_popup(&app);
+}
+
+#[tauri::command]
+fn clipboard_set_panel_pinned(pinned: bool) {
+    window_service::set_clipboard_popup_pinned(pinned);
+}
+
+#[tauri::command]
+fn clipboard_set_panel_dragging(dragging: bool) {
+    window_service::set_clipboard_popup_dragging(dragging);
+}
+
+#[tauri::command]
+fn clipboard_start_panel_drag(app: AppHandle) {
+    window_service::start_clipboard_popup_drag(&app);
 }
 
 #[tauri::command]
@@ -469,7 +539,10 @@ pub fn run() {
                 if let Some(state) = app.try_state::<AppState>() {
                     push_debug_log(&state, "info", format!("工具快捷键已触发：{shortcut}"));
                     if let Ok(registry) = state.registry.lock() {
-                        if registry.tool_for_shortcut(&shortcut.to_string()).as_deref() == Some("clipboard") {
+                        let shortcut_text = shortcut.to_string();
+                        if registry.tool_for_shortcut(&shortcut_text).as_deref() == Some("clipboard")
+                            || registry.only_enabled_tool().as_deref() == Some("clipboard")
+                        {
                             handled = true;
                         }
                     }
@@ -552,13 +625,19 @@ pub fn run() {
             clipboard_create_manual,
             clipboard_update_entry,
             clipboard_copy,
+            clipboard_paste,
             clipboard_copy_text,
+            clipboard_copy_derived_text,
+            clipboard_paste_text,
             clipboard_delete,
             clipboard_restore,
             clipboard_purge,
             clipboard_clear_history,
             clipboard_open_panel,
             clipboard_close_panel,
+            clipboard_set_panel_pinned,
+            clipboard_set_panel_dragging,
+            clipboard_start_panel_drag,
             clipboard_open_management,
             get_default_storage_path,
             open_storage_path,

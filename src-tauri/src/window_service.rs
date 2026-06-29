@@ -1,9 +1,19 @@
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::Duration,
+};
+
 use tauri::{
     AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
-    WebviewWindowBuilder,
+    WebviewWindowBuilder, WindowEvent,
 };
 
 use crate::{clipboard, push_debug_log, AppState};
+
+static CLIPBOARD_POPUP_PINNED: AtomicBool = AtomicBool::new(false);
+static CLIPBOARD_POPUP_DRAGGING: AtomicBool = AtomicBool::new(false);
+static CLIPBOARD_POPUP_AUTO_CLOSE_SUSPENDED: AtomicBool = AtomicBool::new(false);
 
 pub enum ToolWindowKind {
     QuickPopup,
@@ -24,6 +34,8 @@ pub fn close_tool_window(app: &AppHandle, tool_id: &str) {
 
 pub fn open_clipboard_popup(app: &AppHandle) -> Result<(), String> {
     log_popup(app, "info", "clipboard popup: open requested");
+    CLIPBOARD_POPUP_PINNED.store(false, Ordering::Relaxed);
+    clipboard::remember_paste_target_window();
     let result = open_clipboard_popup_inner(app);
     match &result {
         Ok(()) => log_popup(app, "info", "clipboard popup: open flow finished"),
@@ -75,18 +87,17 @@ fn open_clipboard_popup_inner(app: &AppHandle) -> Result<(), String> {
         ),
     );
 
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App("popup.html".into()))
         .title("Clipboard")
         .inner_size(width as f64, height as f64)
-        .position(x as f64, y as f64)
         .decorations(false)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
-        .always_on_top(false)
+        .always_on_top(true)
         .skip_taskbar(true)
-        .focused(true)
-        .visible(true)
+        .focused(false)
+        .visible(false)
         .build()
         .map_err(|error| format!("build clipboard popup failed: {error}"))?;
     log_popup(app, "info", "clipboard popup: webview created");
@@ -103,14 +114,76 @@ fn open_clipboard_popup_inner(app: &AppHandle) -> Result<(), String> {
     window.set_focus().map_err(|error| format!("focus clipboard popup failed: {error}"))?;
     log_popup(app, "info", "clipboard popup: shown and focused");
 
+    let app_for_focus = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, WindowEvent::Focused(false)) && !CLIPBOARD_POPUP_DRAGGING.load(Ordering::Relaxed) {
+            let app_for_close = app_for_focus.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                if CLIPBOARD_POPUP_PINNED.load(Ordering::Relaxed) {
+                    if !CLIPBOARD_POPUP_DRAGGING.load(Ordering::Relaxed)
+                        && !CLIPBOARD_POPUP_AUTO_CLOSE_SUSPENDED.load(Ordering::Relaxed)
+                    {
+                        clipboard::remember_paste_target_window();
+                        log_popup(&app_for_close, "info", "clipboard popup: paste target updated after pinned focus loss");
+                    }
+                } else if !CLIPBOARD_POPUP_DRAGGING.load(Ordering::Relaxed)
+                    && !CLIPBOARD_POPUP_AUTO_CLOSE_SUSPENDED.load(Ordering::Relaxed)
+                {
+                    log_popup(&app_for_close, "info", "clipboard popup: lost focus, closing");
+                    close_clipboard_popup(&app_for_close);
+                }
+            });
+        }
+    });
+
     Ok(())
 }
 
 pub fn close_clipboard_popup(app: &AppHandle) {
+    CLIPBOARD_POPUP_PINNED.store(false, Ordering::Relaxed);
+    CLIPBOARD_POPUP_DRAGGING.store(false, Ordering::Relaxed);
+    CLIPBOARD_POPUP_AUTO_CLOSE_SUSPENDED.store(false, Ordering::Relaxed);
     if let Some(window) = app.get_webview_window("tool-clipboard-popup") {
         log_popup(app, "info", "clipboard popup: close requested");
         let _ = window.close();
     }
+}
+
+pub fn set_clipboard_popup_pinned(pinned: bool) {
+    CLIPBOARD_POPUP_PINNED.store(pinned, Ordering::Relaxed);
+}
+
+pub fn is_clipboard_popup_pinned() -> bool {
+    CLIPBOARD_POPUP_PINNED.load(Ordering::Relaxed)
+}
+
+pub fn set_clipboard_popup_dragging(dragging: bool) {
+    CLIPBOARD_POPUP_DRAGGING.store(dragging, Ordering::Relaxed);
+}
+
+pub fn start_clipboard_popup_drag(app: &AppHandle) {
+    CLIPBOARD_POPUP_DRAGGING.store(true, Ordering::Relaxed);
+    if let Some(window) = app.get_webview_window("tool-clipboard-popup") {
+        let _ = window.start_dragging();
+    }
+    thread::spawn(|| {
+        thread::sleep(Duration::from_millis(900));
+        CLIPBOARD_POPUP_DRAGGING.store(false, Ordering::Relaxed);
+    });
+}
+
+pub fn refocus_clipboard_popup_after_paste(app: &AppHandle) {
+    CLIPBOARD_POPUP_AUTO_CLOSE_SUSPENDED.store(true, Ordering::Relaxed);
+    let app = app.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(260));
+        if let Some(window) = app.get_webview_window("tool-clipboard-popup") {
+            let _ = window.set_focus();
+        }
+        thread::sleep(Duration::from_millis(160));
+        CLIPBOARD_POPUP_AUTO_CLOSE_SUSPENDED.store(false, Ordering::Relaxed);
+    });
 }
 
 fn log_popup(app: &AppHandle, level: &'static str, message: impl Into<String>) {

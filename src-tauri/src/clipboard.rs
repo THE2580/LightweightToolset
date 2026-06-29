@@ -3,7 +3,10 @@ use std::{
     fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
-    sync::{mpsc, Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicIsize, AtomicU64, Ordering},
+        mpsc, Arc, Mutex, OnceLock,
+    },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -19,6 +22,8 @@ pub const DEFAULT_PANEL_WIDTH: u32 = 320;
 pub const DEFAULT_PANEL_HEIGHT: u32 = 360;
 
 static CLIPBOARD: OnceLock<Mutex<ClipboardManager>> = OnceLock::new();
+static SUPPRESS_NEXT_CLIPBOARD_HASH: AtomicU64 = AtomicU64::new(0);
+static PASTE_TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -213,6 +218,12 @@ pub fn start() -> Result<(), String> {
                     continue;
                 }
                 last_hash = Some(next_hash);
+                if SUPPRESS_NEXT_CLIPBOARD_HASH
+                    .compare_exchange(next_hash, 0, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    continue;
+                }
                 let changed = {
                     let mut guard = match store.lock() {
                         Ok(guard) => guard,
@@ -304,7 +315,7 @@ pub fn update_settings(patch: ClipboardSettingsPatch) -> Result<ClipboardSnapsho
             store.settings.panel_width = panel_width.clamp(280, 560);
         }
         if let Some(panel_height) = patch.panel_height {
-            store.settings.panel_height = panel_height.clamp(300, 640);
+            store.settings.panel_height = panel_height.clamp(300, 900);
         }
         if should_cleanup {
             cleanup_store(&mut store);
@@ -407,6 +418,72 @@ pub fn copy_text(text: String) -> Result<ClipboardPasteResult, String> {
         message: "已复制到剪贴板".to_owned(),
     })
 }
+
+pub fn copy_derived_text(text: String) -> Result<ClipboardPasteResult, String> {
+    if text.trim().is_empty() {
+        return Ok(ClipboardPasteResult {
+            copied: false,
+            pasted: false,
+            message: "没有可复制内容".to_owned(),
+        });
+    }
+    let manager_lock = CLIPBOARD.get().ok_or("剪贴板服务未初始化")?;
+    let manager = manager_lock.lock().map_err(|_| "剪贴板服务不可用")?;
+    {
+        let mut store = manager.store.lock().map_err(|_| "剪贴板数据不可用")?;
+        add_text_to_store(&mut store, text.clone(), "derived");
+    }
+    write_clipboard_text(&text)?;
+    save_store(&manager.path, &manager.store)?;
+    Ok(ClipboardPasteResult {
+        copied: true,
+        pasted: false,
+        message: "已复制提取内容".to_owned(),
+    })
+}
+
+pub fn paste_entry(id: String) -> Result<ClipboardPasteResult, String> {
+    let mut result = copy_entry(id)?;
+    if !result.copied {
+        return Ok(result);
+    }
+    thread::spawn(|| {
+        thread::sleep(Duration::from_millis(90));
+        send_paste_shortcut();
+    });
+    result.pasted = true;
+    result.message = "已输入".to_owned();
+    Ok(result)
+}
+
+pub fn paste_text(text: String) -> Result<ClipboardPasteResult, String> {
+    if !text.trim().is_empty() {
+        SUPPRESS_NEXT_CLIPBOARD_HASH.store(hash_text(&text), Ordering::Relaxed);
+    }
+    let mut result = copy_text(text)?;
+    if !result.copied {
+        SUPPRESS_NEXT_CLIPBOARD_HASH.store(0, Ordering::Relaxed);
+        return Ok(result);
+    }
+    thread::spawn(|| {
+        thread::sleep(Duration::from_millis(90));
+        send_paste_shortcut();
+    });
+    result.pasted = true;
+    result.message = "已输入".to_owned();
+    Ok(result)
+}
+
+#[cfg(target_os = "windows")]
+pub fn remember_paste_target_window() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    unsafe {
+        PASTE_TARGET_HWND.store(GetForegroundWindow() as isize, Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn remember_paste_target_window() {}
 
 pub fn delete_entries(ids: Vec<String>) -> Result<(), String> {
     let manager_lock = CLIPBOARD.get().ok_or("剪贴板服务未初始化")?;
@@ -674,6 +751,54 @@ fn write_clipboard_text(text: &str) -> Result<(), String> {
         Ok(())
     }
 }
+
+#[cfg(target_os = "windows")]
+fn send_paste_shortcut() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
+    };
+    use windows_sys::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{IsWindow, SetForegroundWindow},
+    };
+
+    let mut inputs = [
+        keyboard_input(VK_CONTROL, 0),
+        keyboard_input(VK_V, 0),
+        keyboard_input(VK_V, KEYEVENTF_KEYUP),
+        keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
+    ];
+    unsafe {
+        let target = PASTE_TARGET_HWND.load(Ordering::Relaxed);
+        if target != 0 && IsWindow(target as HWND) != 0 {
+            let _ = SetForegroundWindow(target as HWND);
+            thread::sleep(Duration::from_millis(70));
+        }
+        let _ = SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        );
+    }
+
+    fn keyboard_input(vk: u16, flags: u32) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn send_paste_shortcut() {}
 
 #[cfg(not(target_os = "windows"))]
 fn read_clipboard_text() -> Result<String, String> {

@@ -34,48 +34,13 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { Component, type ErrorInfo, type MouseEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./App.css";
 
 type ThemeMode = "system" | "light" | "dark";
 type CloseBehavior = "quit" | "tray";
 type SettingsTab = "general" | "hotkey" | "logs" | "about";
-
-type PopupErrorBoundaryProps = {
-  children: ReactNode;
-};
-
-type PopupErrorBoundaryState = {
-  error: string | null;
-};
-
-class PopupErrorBoundary extends Component<PopupErrorBoundaryProps, PopupErrorBoundaryState> {
-  state: PopupErrorBoundaryState = { error: null };
-
-  static getDerivedStateFromError(error: unknown): PopupErrorBoundaryState {
-    return { error: error instanceof Error ? error.message : String(error) };
-  }
-
-  componentDidCatch(error: unknown, info: ErrorInfo) {
-    console.error("Clipboard popup render failed", error, info.componentStack);
-  }
-
-  render() {
-    if (this.state.error) {
-      return (
-        <div className="clipboard-popup-shell clipboard-popup-fallback">
-          <div className="clipboard-popup-error">
-            <strong>剪贴板弹窗加载失败</strong>
-            <span>{this.state.error}</span>
-            <button onClick={() => void invoke("clipboard_close_panel")} type="button">关闭</button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
 
 type Tool = {
   id: string;
@@ -201,6 +166,14 @@ const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SU
 const TOAST_DURATION_MS = 1400;
 const CLIPBOARD_PAGE_SIZE = 10;
 
+function isTextInputTarget(target: EventTarget | null) {
+  const element = target instanceof HTMLElement ? target : null;
+  if (!element) {
+    return false;
+  }
+  return element.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName);
+}
+
 function useUpdateChecker(settings?: AppSettings) {
   const [updateStatus, setUpdateStatus] = useState("当前已是最新版本");
   const [checkingUpdates, setCheckingUpdates] = useState(false);
@@ -312,30 +285,24 @@ function useUpdateChecker(settings?: AppSettings) {
 
 function useToastQueue(durationMs = TOAST_DURATION_MS) {
   const [current, setCurrent] = useState<ToastMessage | null>(null);
-  const queueRef = useRef<ToastMessage[]>([]);
   const timerRef = useRef<number | null>(null);
   const nextIdRef = useRef(1);
 
-  const playNext = useCallback(() => {
-    const next = queueRef.current.shift() ?? null;
-    setCurrent(next);
-    if (next) {
-      timerRef.current = window.setTimeout(playNext, durationMs);
-    } else {
-      timerRef.current = null;
-    }
-  }, [durationMs]);
+  const clearCurrent = useCallback(() => {
+    setCurrent(null);
+    timerRef.current = null;
+  }, []);
 
   const pushToast = useCallback((text: string) => {
     const next = { id: nextIdRef.current, text };
     nextIdRef.current += 1;
-    if (!current && timerRef.current === null) {
-      setCurrent(next);
-      timerRef.current = window.setTimeout(playNext, durationMs);
-      return;
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
     }
-    queueRef.current.push(next);
-  }, [current, durationMs, playNext]);
+    setCurrent(next);
+    timerRef.current = window.setTimeout(clearCurrent, durationMs);
+  }, [clearCurrent, durationMs]);
 
   useEffect(() => () => {
     if (timerRef.current !== null) {
@@ -347,16 +314,6 @@ function useToastQueue(durationMs = TOAST_DURATION_MS) {
 }
 
 function App() {
-  const currentWindowLabel = getCurrentWindow().label;
-  const isClipboardPopup = currentWindowLabel === "tool-clipboard-popup" || window.location.hash === "#/clipboard-popup" || new URLSearchParams(window.location.search).get("popup") === "clipboard";
-  if (isClipboardPopup) {
-    return (
-      <PopupErrorBoundary>
-        <ClipboardPopup />
-      </PopupErrorBoundary>
-    );
-  }
-
   const [view, setView] = useState<View>("home");
   const [activeTool, setActiveTool] = useState<Tool | null>(null);
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
@@ -366,13 +323,22 @@ function App() {
   const [history, setHistory] = useState<NavigationTarget[]>([{ view: "home" }]);
   const [historyIndex, setHistoryIndex] = useState(0);
   const [contentScrolled, setContentScrolled] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("general");
 
   const tools = snapshot?.tools ?? [];
   const settings = snapshot?.settings;
   const updateChecker = useUpdateChecker(settings);
+  const { pushToast: pushAppToast, toast: appToast } = useToastQueue();
   const windowTitle = settings?.windowTitle || DEFAULT_TITLE;
   const isHistoryBackAvailable = canNavigateHistory(-1);
   const isHistoryForwardAvailable = canNavigateHistory(1);
+  const sidebarTargets = useMemo(() => {
+    const targets: Array<{ label: string; target: NavigationTarget }> = [{ label: "首页", target: { view: "home" } }];
+    const enabledTools = tools.filter((tool) => tool.enabled);
+    targets.push(...enabledTools.map((tool) => ({ label: tool.name, target: { view: "tool", toolId: tool.id } as NavigationTarget })));
+    targets.push({ label: "设置", target: { view: "settings" } });
+    return targets;
+  }, [tools]);
 
   const loadSnapshot = useCallback(async () => {
     try {
@@ -506,6 +472,59 @@ function App() {
     navigate({ view: "tool", toolId: tool.id });
   }
 
+  function openSettingsTab(tab: SettingsTab) {
+    setSettingsInitialTab(tab);
+    navigate({ view: "settings" });
+  }
+
+  useEffect(() => {
+    function currentSidebarIndex() {
+      if (view === "tool" && activeTool) {
+        const index = sidebarTargets.findIndex((item) => item.target.view === "tool" && item.target.toolId === activeTool.id);
+        return index === -1 ? 0 : index;
+      }
+      const index = sidebarTargets.findIndex((item) => item.target.view === view);
+      return index === -1 ? 0 : index;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || isTextInputTarget(event.target)) {
+        return;
+      }
+      const element = event.target instanceof HTMLElement ? event.target : null;
+      if (element?.closest('[role="dialog"]')) {
+        return;
+      }
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+        return;
+      }
+      if (sidebarTargets.length === 0) {
+        return;
+      }
+
+      const direction = event.key === "ArrowUp" ? -1 : 1;
+      const currentIndex = currentSidebarIndex();
+      const nextIndex = Math.max(0, Math.min(currentIndex + direction, sidebarTargets.length - 1));
+      if (nextIndex === currentIndex) {
+        return;
+      }
+      const next = sidebarTargets[nextIndex];
+      if (!next) {
+        return;
+      }
+
+      event.preventDefault();
+      if (next.target.view === "settings") {
+        setSettingsInitialTab("general");
+      }
+      navigate(next.target);
+      pushAppToast(`${event.key === "ArrowUp" ? "↑" : "↓"} ${next.label}`);
+    }
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [activeTool, history, historyIndex, pushAppToast, sidebarTargets, view]);
+
   useEffect(() => {
     let dispose: (() => void) | undefined;
     void listen<string>("navigate-tool", (event) => {
@@ -627,7 +646,7 @@ function App() {
           <div className="sidebar-footer">
             <button
               className={`nav-item ${view === "settings" ? "active" : ""}`}
-              onClick={() => navigate({ view: "settings" })}
+              onClick={() => openSettingsTab("general")}
               title="设置"
               type="button"
             >
@@ -678,6 +697,7 @@ function App() {
             <div className="page-enter" key="settings">
               <SettingsView
                 coldStartupMs={snapshot?.coldStartMs ?? 0}
+                initialTab={settingsInitialTab}
                 settings={settings}
                 setAutoStartEnabled={setAutoStartEnabled}
                 setSnapshot={setSnapshot}
@@ -687,7 +707,7 @@ function App() {
               />
             </div>
           ) : activeTool ? (
-            <div className="page-enter" key={activeTool.id}><ToolPage tool={activeTool} /></div>
+            <div className="page-enter" key={activeTool.id}><ToolPage onOpenSettingsTab={openSettingsTab} tool={activeTool} /></div>
           ) : null}
         </main>
       </div>
@@ -710,6 +730,7 @@ function App() {
           }}
         />
       ) : null}
+      {appToast ? createPortal(<div className="app-toast" key={appToast.id}>{appToast.text}</div>, document.body) : null}
     </div>
   );
 }
@@ -777,9 +798,9 @@ function formatLogTime(timestampMs: number) {
   return new Date(timestampMs).toLocaleTimeString("zh-CN", { hour12: false });
 }
 
-function ToolPage({ tool }: { tool: Tool }) {
+function ToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: SettingsTab) => void; tool: Tool }) {
   if (tool.id === "clipboard") {
-    return <ClipboardToolPage tool={tool} />;
+    return <ClipboardToolPage onOpenSettingsTab={onOpenSettingsTab} tool={tool} />;
   }
 
   return (
@@ -796,6 +817,7 @@ function ToolPage({ tool }: { tool: Tool }) {
 
 function SettingsView({
   coldStartupMs,
+  initialTab,
   settings,
   setAutoStartEnabled,
   setSnapshot,
@@ -804,6 +826,7 @@ function SettingsView({
   updateSettings,
 }: {
   coldStartupMs: number;
+  initialTab: SettingsTab;
   settings: AppSettings;
   setAutoStartEnabled: (enabled: boolean) => Promise<void>;
   setSnapshot: React.Dispatch<React.SetStateAction<AppSnapshot | null>>;
@@ -811,7 +834,7 @@ function SettingsView({
   updateChecker: ReturnType<typeof useUpdateChecker>;
   updateSettings: (patch: SettingsPatch) => Promise<void>;
 }) {
-  const [activeTab, setActiveTab] = useState<SettingsTab>("general");
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [titleDraft, setTitleDraft] = useState(settings.windowTitle);
   const [storagePathDraft, setStoragePathDraft] = useState(settings.storagePath);
   const [defaultStoragePath, setDefaultStoragePath] = useState("");
@@ -820,6 +843,7 @@ function SettingsView({
 
   useEffect(() => setTitleDraft(settings.windowTitle), [settings.windowTitle]);
   useEffect(() => setStoragePathDraft(settings.storagePath), [settings.storagePath]);
+  useEffect(() => setActiveTab(initialTab), [initialTab]);
   useEffect(() => {
     if (activeTab === "logs" && !settings.developerMode) {
       setActiveTab("general");
@@ -1129,7 +1153,7 @@ function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<Re
   );
 }
 
-function ClipboardToolPage({ tool }: { tool: Tool }) {
+function ClipboardToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: SettingsTab) => void; tool: Tool }) {
   const [snapshot, setSnapshot] = useState<ClipboardSnapshot | null>(null);
   const [tab, setTab] = useState<"history" | "pinned">("history");
   const [entries, setEntries] = useState<ClipboardEntry[]>([]);
@@ -1162,6 +1186,7 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
   const selectedEntries = useMemo(() => entries.filter((entry) => selectedIds.has(entry.id)), [entries, selectedIds]);
   const allEntriesSelected = entries.length > 0 && entries.every((entry) => selectedIds.has(entry.id));
   const pageCount = Math.max(1, Math.ceil(entryTotal / CLIPBOARD_PAGE_SIZE));
+  const trashPageCount = Math.max(1, Math.ceil(trashTotal / CLIPBOARD_PAGE_SIZE));
   const extractTokens = useMemo(() => extractClipboardTokens(extractEntry?.text ?? ""), [extractEntry]);
 
   const loadClipboard = useCallback(async () => {
@@ -1251,6 +1276,39 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
     previousEntryOrderRef.current = nextOrder;
   }, [entries]);
 
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || isTextInputTarget(event.target)) {
+        return;
+      }
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+        return;
+      }
+      if (settingsOpen || manualOpen || detailEntry || extractEntry) {
+        return;
+      }
+
+      const direction = event.key === "ArrowLeft" ? -1 : 1;
+      const currentPage = trashOpen ? trashPage : page;
+      const currentPageCount = trashOpen ? trashPageCount : pageCount;
+      const nextPage = Math.max(0, Math.min(currentPage + direction, currentPageCount - 1));
+      if (nextPage === currentPage) {
+        return;
+      }
+
+      event.preventDefault();
+      toast(`${event.key === "ArrowLeft" ? "←" : "→"} ${event.key === "ArrowLeft" ? "上一页" : "下一页"}`);
+      if (trashOpen) {
+        void changeTrashPage(nextPage);
+      } else {
+        changePage(nextPage);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [detailEntry, extractEntry, manualOpen, page, pageCount, settingsOpen, trashOpen, trashPage, trashPageCount]);
+
   function registerEntryNode(id: string, node: HTMLElement | null) {
     if (node) {
       entryNodeMapRef.current.set(id, node);
@@ -1294,6 +1352,11 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
       }
       setClosingDialog(null);
     }, 180);
+  }
+
+  function openHotkeySettingsFromClipboardSettings() {
+    closeClipboardDialog("settings");
+    window.setTimeout(() => onOpenSettingsTab("hotkey"), 180);
   }
 
   function toggleSelect(id: string) {
@@ -1433,7 +1496,7 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
     if (selectedTokens.length === 0) {
       return;
     }
-    const result = await invoke<{ message: string }>("clipboard_copy_text", { text: selectedTokens.join("") });
+    const result = await invoke<{ message: string }>("clipboard_copy_derived_text", { text: selectedTokens.join("") });
     closeClipboardDialog("extract");
     toast(result.message || "已复制提取内容");
   }
@@ -1575,7 +1638,7 @@ function ClipboardToolPage({ tool }: { tool: Tool }) {
             await loadClipboard();
           })}
           onClose={() => closeClipboardDialog("settings")}
-          onOpenPopup={() => void invoke("clipboard_open_panel")}
+          onOpenHotkeySettings={openHotkeySettingsFromClipboardSettings}
           onUpdateSettings={updateClipboardSettings}
         />
       ) : null}
@@ -1637,7 +1700,7 @@ function ClipboardSettingsDialog({
   toolHotkey,
   onClearHistory,
   onClose,
-  onOpenPopup,
+  onOpenHotkeySettings,
   onUpdateSettings,
 }: {
   closing: boolean;
@@ -1645,7 +1708,7 @@ function ClipboardSettingsDialog({
   toolHotkey: string;
   onClearHistory: () => void;
   onClose: () => void;
-  onOpenPopup: () => void;
+  onOpenHotkeySettings: () => void;
   onUpdateSettings: (patch: Partial<ClipboardSettings>) => Promise<void>;
 }) {
   return createPortal(
@@ -1686,11 +1749,17 @@ function ClipboardSettingsDialog({
             </label>
             <label>
               弹窗宽度
-              <input type="number" min={280} max={560} value={snapshot.settings.panelWidth} onChange={(event) => void onUpdateSettings({ panelWidth: Number(event.target.value) })} />
+              <span className="clipboard-range-control">
+                <input type="range" min={280} max={560} step={10} value={snapshot.settings.panelWidth} onChange={(event) => void onUpdateSettings({ panelWidth: Number(event.target.value) })} />
+                <span>{snapshot.settings.panelWidth}px</span>
+              </span>
             </label>
             <label>
               弹窗高度
-              <input type="number" min={300} max={640} value={snapshot.settings.panelHeight} onChange={(event) => void onUpdateSettings({ panelHeight: Number(event.target.value) })} />
+              <span className="clipboard-range-control">
+                <input type="range" min={300} max={900} step={10} value={snapshot.settings.panelHeight} onChange={(event) => void onUpdateSettings({ panelHeight: Number(event.target.value) })} />
+                <span>{snapshot.settings.panelHeight}px</span>
+              </span>
             </label>
           </div>
           <div className="clipboard-settings-summary">
@@ -1698,7 +1767,7 @@ function ClipboardSettingsDialog({
           </div>
         </div>
         <footer className="update-dialog-actions">
-          <button className="secondary-action" onClick={onOpenPopup} type="button">打开弹窗</button>
+          <button className="secondary-action icon-text-action" onClick={onOpenHotkeySettings} type="button"><Keyboard size={12} />快捷键设置</button>
           <button className="secondary-action" onClick={onClearHistory} type="button">清空普通历史</button>
           <button className="primary-action" onClick={onClose} type="button">完成</button>
         </footer>
@@ -1865,129 +1934,6 @@ function ClipboardManualDialog({
       </section>
     </div>,
     document.body,
-  );
-}
-
-function ClipboardPopup() {
-  const [entries, setEntries] = useState<ClipboardEntry[]>([]);
-  const [search, setSearch] = useState("");
-  const [selectedIndex, setSelectedIndex] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [popupError, setPopupError] = useState<string | null>(null);
-  const { pushToast, toast: currentToast } = useToastQueue(1200);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const loadPopup = useCallback(async () => {
-    try {
-      const [pinned, history] = await Promise.all([
-        invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "pinned", search, offset: 0, limit: 30 } }),
-        invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "history", search, offset: 0, limit: 50 } }),
-      ]);
-      setEntries(search.trim() ? [...pinned.entries, ...history.entries] : [...pinned.entries, ...history.entries]);
-      setSelectedIndex(0);
-      setPopupError(null);
-    } catch (reason) {
-      setPopupError(String(reason));
-    } finally {
-      setLoading(false);
-    }
-  }, [search]);
-
-  useEffect(() => {
-    void invoke("push_frontend_debug_log", { level: "info", message: "clipboard popup: frontend mounted" });
-    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 0);
-    const loadTimer = window.setTimeout(() => void loadPopup(), 60);
-    const refreshTimer = window.setInterval(() => void loadPopup(), 1600);
-    return () => {
-      window.clearTimeout(focusTimer);
-      window.clearTimeout(loadTimer);
-      window.clearInterval(refreshTimer);
-    };
-  }, [loadPopup]);
-
-  async function copyAndClose(entry: ClipboardEntry) {
-    const result = await invoke<{ message: string }>("clipboard_copy", { id: entry.id });
-    pushToast(result.message || "已复制");
-    window.setTimeout(() => void invoke("clipboard_close_panel"), 180);
-  }
-
-  async function copyOnly(entry: ClipboardEntry) {
-    const result = await invoke<{ message: string }>("clipboard_copy", { id: entry.id });
-    pushToast(result.message || "已复制");
-    await loadPopup();
-  }
-
-  async function togglePinned(entry: ClipboardEntry) {
-    await invoke("clipboard_update_entry", {
-      id: entry.id,
-      patch: { pinned: !entry.pinnedAt },
-    });
-    pushToast(entry.pinnedAt ? "已取消固定" : "已固定");
-    await loadPopup();
-  }
-
-  function onKeyDown(event: React.KeyboardEvent) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void invoke("clipboard_close_panel");
-      return;
-    }
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setSelectedIndex((index) => Math.min(index + 1, entries.length - 1));
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setSelectedIndex((index) => Math.max(index - 1, 0));
-      return;
-    }
-    if (event.key === "Enter" && entries[selectedIndex]) {
-      event.preventDefault();
-      void copyAndClose(entries[selectedIndex]);
-    }
-  }
-
-  const pinnedCount = useMemo(() => entries.filter((entry) => entry.pinnedAt).length, [entries]);
-
-  return (
-    <div className="clipboard-popup-shell" onContextMenu={(event) => event.preventDefault()} onKeyDown={onKeyDown}>
-      <div className="clipboard-popup-drag" />
-      <div className="clipboard-popup-toolbar">
-        <label className="clipboard-search">
-          <Search size={13} />
-          <input ref={inputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索剪贴板历史" />
-        </label>
-        <button className="popup-icon-button" title="打开管理页" onClick={() => void invoke("clipboard_open_management")} type="button">
-          <ExternalLinkIcon />
-        </button>
-      </div>
-      <div className="clipboard-popup-list">
-        {!search.trim() && pinnedCount > 0 ? <p className="clipboard-popup-label">固定</p> : null}
-        {loading ? <p className="clipboard-empty">加载中...</p> : null}
-        {popupError ? (
-          <div className="clipboard-popup-error">
-            <strong>剪贴板弹窗加载失败</strong>
-            <span>{popupError}</span>
-            <button onClick={() => void invoke("clipboard_close_panel")} type="button">关闭</button>
-          </div>
-        ) : null}
-        {!loading && !popupError ? entries.map((entry, index) => (
-          <ClipboardEntryCard
-            compact
-            entry={entry}
-            key={entry.id}
-            onCopy={() => void copyOnly(entry)}
-            onDelete={() => void invoke("clipboard_delete", { ids: [entry.id] }).then(() => loadPopup())}
-            onOpenDetail={() => undefined}
-            onTogglePinned={() => void togglePinned(entry)}
-            selected={index === selectedIndex}
-          />
-        )) : null}
-        {!loading && !popupError && entries.length === 0 ? <p className="clipboard-empty">暂无剪贴板历史</p> : null}
-      </div>
-      {currentToast ? createPortal(<div className="app-toast clipboard-toast popup" key={currentToast.id}>{currentToast.text}</div>, document.body) : null}
-    </div>
   );
 }
 
@@ -2259,7 +2205,7 @@ function sourceLabel(source: string) {
     return "手动";
   }
   if (source === "derived") {
-    return "提取";
+    return "分词提取";
   }
   return "复制";
 }
@@ -2267,10 +2213,6 @@ function sourceLabel(source: string) {
 function extractClipboardTokens(text: string) {
   const matches = text.match(/[a-zA-Z]+:\/\/[^\s"'<>]+|[a-zA-Z]:\\[^\r\n]+|\\\\[^\s]+|[\w.-]+@[\w.-]+\.[A-Za-z]{2,}|[\w.-]+\.[A-Za-z]{2,}(?:\/[^\s]*)?|--?[A-Za-z][\w-]*|v?\d+(?:\.\d+){1,}|[\u4e00-\u9fa5]{2,}|[A-Za-z0-9_./\\:-]{4,}/g) ?? [];
   return Array.from(new Set(matches)).slice(0, 80);
-}
-
-function ExternalLinkIcon() {
-  return <span aria-hidden="true" className="external-link-glyph">↗</span>;
 }
 
 function normalizeHotkeyDraft(value: string) {

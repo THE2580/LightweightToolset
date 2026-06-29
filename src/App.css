@@ -244,6 +244,9 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .clipboard-setting-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .clipboard-setting-grid label { display: grid; gap: 5px; padding: 8px; border: 1px solid var(--soft-border); border-radius: 7px; color: var(--muted-text); font-size: 8px; }
 .clipboard-setting-grid input, .clipboard-setting-grid select { width: 100%; height: 26px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--panel-bg); font: inherit; font-size: 8px; outline: none; }
+.clipboard-range-control { display: grid; grid-template-columns: minmax(0, 1fr) 42px; align-items: center; gap: 8px; min-height: 26px; }
+.clipboard-setting-grid .clipboard-range-control input[type="range"] { height: 18px; padding: 0; border: 0; border-radius: 0; accent-color: var(--primary); background: transparent; cursor: pointer; }
+.clipboard-range-control span { color: var(--text); font-size: 8px; line-height: 1; text-align: right; white-space: nowrap; }
 .clipboard-entry-list { display: flex; flex-direction: column; gap: 8px; height: calc(100vh - 160px); min-height: 252px; overflow-x: hidden; overflow-y: auto; padding: 2px 8px 2px 0; scrollbar-width: none; }
 .clipboard-entry-list.page-switching { animation: clipboard-page-swap 180ms ease-out both; }
 .clipboard-entry-list::-webkit-scrollbar { width: 0; height: 0; }
@@ -325,24 +328,6 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
   72% { opacity: 1; transform: translateY(0); }
   100% { opacity: 0; transform: translateY(6px); }
 }
-.clipboard-popup-shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; color: var(--text); background: var(--app-bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 18px 40px rgba(15, 23, 42, 0.24); animation: dialog-pop 160ms ease-out both; }
-.clipboard-popup-drag { display: flex; height: 28px; flex: 0 0 28px; align-items: center; justify-content: space-between; padding: 0 8px 0 10px; border-bottom: 1px solid var(--soft-border); color: var(--muted-text); background: var(--muted-bg); font-size: 10px; -webkit-app-region: drag; }
-.clipboard-popup-drag strong { color: var(--text); font-size: 11px; }
-.clipboard-popup-drag button { -webkit-app-region: no-drag; }
-.clipboard-popup-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; padding: 8px; border-bottom: 1px solid var(--soft-border); }
-.clipboard-popup-toolbar .clipboard-search input { height: 28px; }
-.popup-icon-button { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--panel-bg); cursor: pointer; transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease; }
-.popup-icon-button:hover { color: var(--primary); border-color: #aac1f1; background: var(--primary-soft); }
-.clipboard-popup-list { display: grid; align-content: start; gap: 7px; min-height: 0; flex: 1; overflow: auto; padding: 8px; }
-.clipboard-popup-list .clipboard-entry-card { padding: 8px; border-radius: 6px; cursor: pointer; }
-.clipboard-popup-list .clipboard-entry-main p { -webkit-line-clamp: 3; }
-.clipboard-popup-label { padding: 0 2px 6px; color: var(--muted-text); font-size: 8px; }
-.clipboard-popup-fallback { padding: 10px; }
-.clipboard-popup-error { display: grid; gap: 8px; padding: 10px; border: 1px solid #f0c4c4; border-radius: 7px; color: #9f2a2a; background: #fff7f7; font-size: 10px; line-height: 1.45; user-select: text; }
-.clipboard-popup-error span { color: #7c2d2d; word-break: break-word; }
-.clipboard-popup-error button { width: fit-content; height: 26px; padding: 0 10px; border: 1px solid #e7b8b8; border-radius: 6px; color: #9f2a2a; background: #fff; cursor: pointer; font: inherit; }
-.clipboard-popup-error button:hover { background: #fff0f0; }
-.external-link-glyph { font-size: 11px; line-height: 1; }
 .log-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0 10px; }
 .log-heading h2 { margin: 0; font-size: 13px; }
 .log-heading p { margin: 4px 0 0; color: var(--muted-text); font-size: 10px; }

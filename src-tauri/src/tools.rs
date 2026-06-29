@@ -165,6 +165,16 @@ impl ToolRegistry {
             .map(|tool| tool.id.to_owned())
     }
 
+    pub fn only_enabled_tool(&self) -> Option<String> {
+        let mut enabled_tools = TOOLS.iter().filter(|tool| self.is_enabled(tool.id));
+        let tool = enabled_tools.next()?;
+        if enabled_tools.next().is_none() {
+            Some(tool.id.to_owned())
+        } else {
+            None
+        }
+    }
+
     pub fn suspend_shortcuts(&mut self, app: &AppHandle) -> Result<(), String> {
         if self.shortcuts_suspended {
             return Ok(());
@@ -202,7 +212,7 @@ impl ToolRegistry {
         Ok(())
     }
 
-    fn is_enabled(&self, tool_id: &str) -> bool {
+    pub fn is_enabled(&self, tool_id: &str) -> bool {
         self.enabled.get(tool_id).copied().unwrap_or(false)
     }
 
@@ -252,9 +262,7 @@ impl ToolRegistry {
     fn stop(&mut self, app: &AppHandle, tool: &ToolDefinition) -> Result<(), String> {
         if !self.shortcuts_suspended {
             let shortcut: Shortcut = self.hotkey_for(tool.id).parse().map_err(|error| format!("解析快捷键失败: {error}"))?;
-            app.global_shortcut()
-                .unregister(shortcut)
-                .map_err(|error| format!("注销快捷键失败: {error}"))?;
+            let _ = app.global_shortcut().unregister(shortcut);
         }
         window_service::close_tool_window(app, tool.id);
         if tool.id == "clipboard" {
