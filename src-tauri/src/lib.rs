@@ -18,6 +18,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, WindowEvent,
 };
+#[cfg(not(debug_assertions))]
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::ShortcutState;
 
@@ -212,6 +213,15 @@ fn initial_storage_dir(default_config_dir: &PathBuf) -> Result<PathBuf, String> 
 }
 
 fn set_auto_start_plugin(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        let _ = app;
+        let _ = enabled;
+        return Ok(());
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
     let autostart = app.autolaunch();
     if enabled {
         autostart
@@ -223,6 +233,7 @@ fn set_auto_start_plugin(app: &AppHandle, enabled: bool) -> Result<(), String> {
             .map_err(|error| format!("关闭开机自启失败: {error}"))?;
     }
     Ok(())
+    }
 }
 
 #[tauri::command]
