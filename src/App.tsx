@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Check,
+  ChartNoAxesColumn,
   ClipboardList,
   Copy,
   FileText,
@@ -48,6 +49,8 @@ type Tool = {
   description: string;
   hotkey: string;
   enabled: boolean;
+  implemented: boolean;
+  supportsHotkey: boolean;
   workerRunning: boolean;
 };
 
@@ -89,6 +92,29 @@ type ClipboardSnapshot = {
 type ClipboardQueryResult = {
   entries: ClipboardEntry[];
   total: number;
+};
+
+type AppUsageRange = "day" | "week" | "month" | "year";
+
+type AppUsageSettings = {
+  afkThresholdSec: number;
+};
+
+type AppUsageSnapshot = {
+  today: string;
+  activeProcess: string | null;
+  isAfk: boolean;
+  running: boolean;
+  storageBytes: number;
+  settings: AppUsageSettings;
+  aliases: Record<string, string>;
+  days: Record<string, Record<string, number>>;
+};
+
+type AppUsageTrendPoint = {
+  label: string;
+  seconds: number;
+  topApps: Array<{ displayName: string; seconds: number }>;
 };
 
 type ToastMessage = {
@@ -161,7 +187,10 @@ const APP_VERSION = "0.1.2";
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const AUTHOR_EMAILS = ["2021289500@qq.com", "liangneng20060725@gmail.com"];
-const toolIcons = [ClipboardList];
+const toolIcons = {
+  clipboard: ClipboardList,
+  app_usage: ChartNoAxesColumn,
+};
 const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SUPER", "CMD", "COMMAND"]);
 const TOAST_DURATION_MS = 1400;
 const CLIPBOARD_PAGE_SIZE = 10;
@@ -604,8 +633,8 @@ function App() {
               <Home size={15} />
               <span>首页</span>
             </button>
-            {tools.map((tool, index) => {
-              const Icon = toolIcons[index] ?? Wrench;
+            {tools.map((tool) => {
+              const Icon = toolIcons[tool.id as keyof typeof toolIcons] ?? Wrench;
               const isActive = view === "tool" && activeTool?.id === tool.id;
               return (
                 <div
@@ -629,7 +658,7 @@ function App() {
                   <button
                     aria-label={`${tool.enabled ? "禁用" : "启用"}${tool.name}`}
                     className={`switch ${tool.enabled ? "on" : ""}`}
-                    disabled={busyToolId === tool.id}
+                    disabled={busyToolId === tool.id || !tool.implemented}
                     onClick={(event) => {
                       event.stopPropagation();
                       void setToolEnabled(tool, !tool.enabled);
@@ -671,9 +700,9 @@ function App() {
               {error ? <div className="error-banner">{error}</div> : null}
 
               <section className="tool-grid" aria-label="已注册工具">
-                {tools.map((tool, index) => {
-                  const Icon = toolIcons[index] ?? Wrench;
-                  const badge = tool.enabled ? null : "已禁用";
+                {tools.map((tool) => {
+                  const Icon = toolIcons[tool.id as keyof typeof toolIcons] ?? Wrench;
+                  const badge = !tool.implemented ? "待实现" : tool.enabled ? null : "已禁用";
                   return (
                     <button className={`tool-card ${tool.enabled ? "" : "disabled"}`} disabled={!tool.enabled} key={tool.id} onClick={() => openTool(tool)} type="button">
                       {badge ? <span className="tool-card-badge">{badge}</span> : null}
@@ -802,6 +831,9 @@ function ToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: Settin
   if (tool.id === "clipboard") {
     return <ClipboardToolPage onOpenSettingsTab={onOpenSettingsTab} tool={tool} />;
   }
+  if (tool.id === "app_usage") {
+    return <AppUsageToolPage tool={tool} />;
+  }
 
   return (
     <section className="tool-page">
@@ -809,7 +841,7 @@ function ToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: Settin
       <p>{tool.description}</p>
       <div className="tool-page-status">
         <span className={tool.workerRunning ? "state-running" : "state-stopped"}>{tool.workerRunning ? "后台 worker 已启动" : "后台 worker 已停止"}</span>
-        <kbd>{tool.hotkey}</kbd>
+        {tool.supportsHotkey ? <kbd>{tool.hotkey}</kbd> : <span className="state-stopped">无需快捷键</span>}
       </div>
     </section>
   );
@@ -1076,7 +1108,7 @@ function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<Re
       });
       return;
     }
-    const conflictTool = tools.find((tool) => tool.id !== editingToolId && normalizeHotkeyDraft(tool.hotkey) === normalizedDraft);
+    const conflictTool = tools.find((tool) => tool.supportsHotkey && tool.id !== editingToolId && normalizeHotkeyDraft(tool.hotkey) === normalizedDraft);
     if (conflictTool) {
       showNotice({
         phase: "error",
@@ -1120,10 +1152,12 @@ function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<Re
           <div className="settings-row hotkey-row" key={tool.id}>
             <div>
               <h2>{tool.name}</h2>
-              <p>{tool.enabled ? "当前快捷键已注册；保存后会立即重新注册并检查冲突" : "工具已禁用；快捷键会保存，启用后注册"}</p>
+              <p>{tool.supportsHotkey ? (tool.enabled ? "当前快捷键已注册；保存后会立即重新注册并检查冲突" : "工具已禁用；快捷键会保存，启用后注册") : "该工具不需要快捷键"}</p>
             </div>
             <div className="hotkey-controls">
-              {isEditing ? (
+              {!tool.supportsHotkey ? (
+                <span className="state-stopped">无快捷键</span>
+              ) : isEditing ? (
                 <>
                   <button
                     autoFocus
@@ -1150,6 +1184,313 @@ function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<Re
       <p className="settings-note">点击捕获框后直接按下组合键；同一工具集内会在保存瞬间检查重复，系统级冲突会在保存注册时弹窗提示。</p>
       {notice ? <HotkeyNoticeDialog closing={noticeClosing} notice={notice} onClose={closeNotice} /> : null}
     </div>
+  );
+}
+
+function AppUsageToolPage({ tool }: { tool: Tool }) {
+  const [snapshot, setSnapshot] = useState<AppUsageSnapshot | null>(null);
+  const [range, setRange] = useState<AppUsageRange>("day");
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearClosing, setClearClosing] = useState(false);
+  const { pushToast, toast: currentToast } = useToastQueue();
+
+  const loadSnapshot = useCallback(async () => {
+    setSnapshot(await invoke<AppUsageSnapshot>("app_usage_get_snapshot"));
+  }, []);
+
+  useEffect(() => {
+    void loadSnapshot();
+    const timer = window.setInterval(() => void loadSnapshot(), 2000);
+    return () => window.clearInterval(timer);
+  }, [loadSnapshot]);
+
+  useEffect(() => {
+    const ranges: AppUsageRange[] = ["day", "week", "month", "year"];
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || isTextInputTarget(event.target)) {
+        return;
+      }
+      const element = event.target instanceof HTMLElement ? event.target : null;
+      if (element?.closest('[role="dialog"]')) {
+        return;
+      }
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+        return;
+      }
+      const currentIndex = ranges.indexOf(range);
+      const nextIndex = event.key === "ArrowLeft"
+        ? (currentIndex - 1 + ranges.length) % ranges.length
+        : (currentIndex + 1) % ranges.length;
+      event.preventDefault();
+      setRange(ranges[nextIndex]);
+      toast(`${event.key === "ArrowLeft" ? "←" : "→"} ${formatAppUsageRangeSubtitle(ranges[nextIndex])}`);
+    }
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [range]);
+
+  const rangeData = useMemo(() => buildAppUsageRangeData(snapshot, range), [range, snapshot]);
+  const activeName = snapshot?.activeProcess ? appUsageDisplayName(snapshot.activeProcess, snapshot.aliases) : "";
+
+  function toast(text: string) {
+    pushToast(text);
+  }
+
+  function closeClearDialog() {
+    setClearClosing(true);
+    window.setTimeout(() => {
+      setClearOpen(false);
+      setClearClosing(false);
+    }, 180);
+  }
+
+  async function clearUsage() {
+    const nextSnapshot = await invoke<AppUsageSnapshot>("app_usage_clear");
+    setSnapshot(nextSnapshot);
+    toast("统计数据已清空");
+    closeClearDialog();
+  }
+
+  async function updateAfkThreshold(afkThresholdSec: number) {
+    const nextSnapshot = await invoke<AppUsageSnapshot>("app_usage_update_settings", {
+      patch: { afkThresholdSec },
+    });
+    setSnapshot(nextSnapshot);
+    toast(`离开判定已设为${formatShortMinutes(afkThresholdSec)}`);
+  }
+
+  return (
+    <section className="tool-page app-usage-page">
+      <header className="app-usage-header">
+        <div>
+          <h1>{tool.name}</h1>
+          <p className={snapshot?.running && !snapshot.isAfk ? "state-running" : "state-stopped"}>
+            {snapshot?.running ? (snapshot.isAfk ? "空闲中" : `正在统计：${activeName || "未检测到活跃应用"}`) : "统计未运行"}
+          </p>
+        </div>
+        <div className="segmented app-usage-range" role="tablist" aria-label="统计范围">
+          {([
+            ["day", "日"],
+            ["week", "周"],
+            ["month", "月"],
+            ["year", "年"],
+          ] as Array<[AppUsageRange, string]>).map(([value, label]) => (
+            <button className={range === value ? "active" : ""} key={value} onClick={() => setRange(value)} role="tab" type="button">
+              {label}
+            </button>
+          ))}
+        </div>
+      </header>
+
+      <div className="app-usage-summary">
+        <article>
+          <div><Gauge size={14} />{rangeLabel(range)}总时长</div>
+          <strong>{formatUsageDuration(rangeData.totalSeconds)}</strong>
+        </article>
+        <article>
+          <div><Monitor size={14} />{rangeLabel(range)}软件数</div>
+          <strong>{rangeData.appRows.length}</strong>
+        </article>
+        <article>
+          <div><ChartNoAxesColumn size={14} />统计状态</div>
+          <strong>{snapshot?.isAfk ? "空闲中" : snapshot?.running ? "进行中" : "已停止"}</strong>
+        </article>
+      </div>
+
+      <div className="app-usage-main-grid">
+        <section className="app-usage-panel app-usage-chart-panel">
+          <div className="app-usage-panel-title">
+            <h2>总使用时长趋势</h2>
+            <span>{formatAppUsageRangeSubtitle(range)}</span>
+          </div>
+          <AppUsageTrendChart points={rangeData.trend} />
+        </section>
+
+        <section className="app-usage-panel app-usage-ranking-panel">
+          <div className="app-usage-panel-title">
+            <h2>{rangeLabel(range)}软件排行 TOP 20</h2>
+          </div>
+          <div className="app-usage-ranking">
+            {rangeData.appRows.map((row, index) => (
+              <div className="app-usage-rank-row" key={row.processName}>
+                <div>
+                  <span>{index + 1}. {row.displayName}</span>
+                  <strong>{formatUsageDuration(row.seconds)}</strong>
+                </div>
+                <i style={{ "--progress": `${rangeData.maxAppSeconds > 0 ? Math.max(4, (row.seconds / rangeData.maxAppSeconds) * 100) : 0}%` } as React.CSSProperties} />
+              </div>
+            ))}
+            {rangeData.appRows.length === 0 ? <p className="app-usage-empty">暂无统计数据</p> : null}
+          </div>
+        </section>
+      </div>
+
+      <section className="app-usage-setting-card">
+        <div>
+          <h2>离开状态判定</h2>
+          <p>连续无输入达到阈值后暂停累计</p>
+        </div>
+        <div className="segmented app-usage-afk">
+          {[60, 180, 300, 600, 900, 1800].map((value) => (
+            <button
+              className={snapshot?.settings.afkThresholdSec === value ? "active" : ""}
+              key={value}
+              onClick={() => void updateAfkThreshold(value)}
+              type="button"
+            >
+              {formatShortMinutes(value)}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="app-usage-setting-card">
+        <div>
+          <h2>本地数据管理</h2>
+          <p>仅记录进程名和累计时长，不记录窗口标题或文件路径</p>
+          <p>存储占用：{formatStorageSize(snapshot?.storageBytes ?? 0)}</p>
+        </div>
+        <button className="secondary-action icon-text-action danger-action" onClick={() => setClearOpen(true)} type="button">
+          <Trash2 size={13} />清除统计
+        </button>
+      </section>
+
+      {clearOpen ? <AppUsageClearDialog closing={clearClosing} onClose={closeClearDialog} onConfirm={() => void clearUsage()} /> : null}
+      {currentToast ? createPortal(<div className="app-toast" key={currentToast.id}>{currentToast.text}</div>, document.body) : null}
+    </section>
+  );
+}
+
+function AppUsageTrendChart({ points }: { points: AppUsageTrendPoint[] }) {
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ active: boolean; scrollLeft: number; x: number }>({ active: false, scrollLeft: 0, x: 0 });
+  const [hoverPoint, setHoverPoint] = useState<{ point: AppUsageTrendPoint; x: number; y: number } | null>(null);
+  const maxSeconds = Math.max(1, ...points.map((point) => point.seconds));
+  const barWidth = points.length <= 1 ? 58 : points.length <= 7 ? 38 : points.length <= 12 ? 30 : 16;
+  const canvasWidth = Math.max(300, points.length * barWidth);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const target = canvas;
+    function handleWheel(event: WheelEvent) {
+      event.preventDefault();
+      event.stopPropagation();
+      target.scrollLeft += event.deltaY || event.deltaX;
+    }
+    target.addEventListener("wheel", handleWheel, { passive: false });
+    return () => target.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  function startDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    dragRef.current = {
+      active: true,
+      scrollLeft: canvas.scrollLeft,
+      x: event.clientX,
+    };
+    canvas.setPointerCapture(event.pointerId);
+  }
+
+  function dragCanvas(event: React.PointerEvent<HTMLDivElement>) {
+    const canvas = canvasRef.current;
+    if (!canvas || !dragRef.current.active) {
+      return;
+    }
+    canvas.scrollLeft = dragRef.current.scrollLeft - (event.clientX - dragRef.current.x);
+  }
+
+  function stopDrag(event: React.PointerEvent<HTMLDivElement>) {
+    dragRef.current.active = false;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+
+  function moveTooltip(event: React.MouseEvent<HTMLDivElement>, point: AppUsageTrendPoint) {
+    setHoverPoint({ point, x: event.clientX, y: event.clientY });
+  }
+
+  return (
+    <div
+      className="app-usage-chart-canvas"
+      onPointerCancel={stopDrag}
+      onPointerDown={startDrag}
+      onPointerLeave={(event) => {
+        if (dragRef.current.active) {
+          stopDrag(event);
+        }
+      }}
+      onPointerMove={dragCanvas}
+      onPointerUp={stopDrag}
+      ref={canvasRef}
+    >
+      <div className="app-usage-chart" style={{ minWidth: `${canvasWidth}px` }}>
+        <div className={`app-usage-chart-bars ${points.length === 1 ? "single" : ""}`}>
+          {points.map((point) => {
+            const height = `${Math.max(3, (point.seconds / maxSeconds) * 86)}%`;
+            return (
+            <div
+              className="app-usage-chart-bar"
+              key={point.label}
+              onMouseEnter={(event) => moveTooltip(event, point)}
+              onMouseLeave={() => setHoverPoint(null)}
+              onMouseMove={(event) => moveTooltip(event, point)}
+              style={{ "--bar-height": height } as React.CSSProperties}
+            >
+                <span style={{ height }} />
+                <small>{point.label}</small>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      {hoverPoint ? <AppUsageChartTooltip hover={hoverPoint} /> : null}
+    </div>
+  );
+}
+
+function AppUsageChartTooltip({ hover }: { hover: { point: AppUsageTrendPoint; x: number; y: number } }) {
+  return createPortal(
+    <div className="app-usage-chart-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
+      <strong>{hover.point.label}：{formatUsageDuration(hover.point.seconds)}</strong>
+      {hover.point.topApps.length > 0 ? (
+        <div>
+          {hover.point.topApps.map((app, index) => (
+            <span key={`${app.displayName}-${index}`}>
+              <em>{index + 1}. {app.displayName}</em>
+              <b>{formatUsageDuration(app.seconds)}</b>
+            </span>
+          ))}
+        </div>
+      ) : <span>暂无软件记录</span>}
+    </div>,
+    document.body,
+  );
+}
+
+function AppUsageClearDialog({ closing, onClose, onConfirm }: { closing: boolean; onClose: () => void; onConfirm: () => void }) {
+  return createPortal(
+    <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
+      <section aria-label="清除软件统计" aria-modal="true" className={`update-dialog ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog">
+        <header className="update-dialog-header">
+          <div className="update-dialog-icon danger"><Trash2 size={16} /></div>
+          <div>
+            <h2>清除统计</h2>
+            <p>将清空所有软件使用时长记录，设置会保留。</p>
+          </div>
+          <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
+        </header>
+        <footer className="update-dialog-actions">
+          <button className="secondary-action" onClick={onClose} type="button">取消</button>
+          <button className="primary-action" onClick={onConfirm} type="button">确认清除</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
   );
 }
 
@@ -2184,6 +2525,168 @@ function formatClipboardDateTime(value: number | null) {
     return "-";
   }
   return new Date(value).toLocaleString("zh-CN");
+}
+
+function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsageRange) {
+  const aliases = snapshot?.aliases ?? {};
+  const days = snapshot?.days ?? {};
+  const trendDays = appUsageTrendKeys(range);
+  const includedDays = range === "year"
+    ? Object.keys(days).filter((day) => day.startsWith(`${new Date().getFullYear()}-`))
+    : trendDays.map((point) => point.key);
+  const appTotals = new Map<string, number>();
+  let totalSeconds = 0;
+
+  for (const day of includedDays) {
+    const apps = days[day] ?? {};
+    for (const [processName, seconds] of Object.entries(apps)) {
+      totalSeconds += seconds;
+      appTotals.set(processName, (appTotals.get(processName) ?? 0) + seconds);
+    }
+  }
+
+  const appRows = Array.from(appTotals.entries())
+    .map(([processName, seconds]) => ({
+      processName,
+      displayName: appUsageDisplayName(processName, aliases),
+      seconds,
+    }))
+    .sort((a, b) => b.seconds - a.seconds || a.processName.localeCompare(b.processName))
+    .slice(0, 20);
+
+  const trend = trendDays.map((point) => {
+    if (range === "year") {
+      const monthApps = mergeAppUsage(
+        Object.entries(days)
+          .filter(([day]) => day.startsWith(`${point.key}-`))
+          .map(([, apps]) => apps),
+      );
+      const seconds = Object.values(monthApps)
+        .reduce((sum, value) => sum + value, 0);
+      return { label: point.label, seconds, topApps: topAppUsageRows(monthApps, aliases, 5) };
+    }
+    const apps = days[point.key] ?? {};
+    return { label: point.label, seconds: sumAppUsageSeconds(apps), topApps: topAppUsageRows(apps, aliases, 5) };
+  });
+
+  return {
+    appRows,
+    maxAppSeconds: Math.max(0, ...appRows.map((row) => row.seconds)),
+    totalSeconds,
+    trend,
+  };
+}
+
+function mergeAppUsage(appRecords: Array<Record<string, number>>) {
+  const merged: Record<string, number> = {};
+  for (const apps of appRecords) {
+    for (const [processName, seconds] of Object.entries(apps)) {
+      merged[processName] = (merged[processName] ?? 0) + seconds;
+    }
+  }
+  return merged;
+}
+
+function topAppUsageRows(apps: Record<string, number>, aliases: Record<string, string>, limit: number) {
+  return Object.entries(apps)
+    .map(([processName, seconds]) => ({
+      displayName: appUsageDisplayName(processName, aliases),
+      processName,
+      seconds,
+    }))
+    .sort((a, b) => b.seconds - a.seconds || a.processName.localeCompare(b.processName))
+    .slice(0, limit)
+    .map(({ displayName, seconds }) => ({ displayName, seconds }));
+}
+
+function appUsageTrendKeys(range: AppUsageRange) {
+  const today = new Date();
+  if (range === "day") {
+    return [{ key: formatLocalDayKey(today), label: "今日" }];
+  }
+  if (range === "week") {
+    const start = new Date(today);
+    const day = start.getDay() || 7;
+    start.setDate(start.getDate() - day + 1);
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = new Date(start);
+      date.setDate(start.getDate() + index);
+      return { key: formatLocalDayKey(date), label: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][index] };
+    });
+  }
+  if (range === "month") {
+    const year = today.getFullYear();
+    const month = today.getMonth();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    return Array.from({ length: daysInMonth }, (_, index) => {
+      const date = new Date(year, month, index + 1);
+      return { key: formatLocalDayKey(date), label: String(index + 1).padStart(2, "0") };
+    });
+  }
+  const year = today.getFullYear();
+  return Array.from({ length: 12 }, (_, index) => ({
+    key: `${year}-${String(index + 1).padStart(2, "0")}`,
+    label: `${index + 1}月`,
+  }));
+}
+
+function sumAppUsageSeconds(apps: Record<string, number> | undefined) {
+  return Object.values(apps ?? {}).reduce((sum, seconds) => sum + seconds, 0);
+}
+
+function appUsageDisplayName(processName: string, aliases: Record<string, string>) {
+  const alias = aliases[processName]?.trim();
+  return alias || processName;
+}
+
+function formatLocalDayKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatUsageDuration(seconds: number) {
+  const totalSeconds = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const restSeconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}小时${minutes}分`;
+  }
+  if (minutes > 0) {
+    return `${minutes}分${restSeconds}秒`;
+  }
+  return `${restSeconds}秒`;
+}
+
+function formatShortMinutes(seconds: number) {
+  return `${Math.round(seconds / 60)}分`;
+}
+
+function rangeLabel(range: AppUsageRange) {
+  return ({ day: "今日", week: "本周", month: "本月", year: "本年" } as Record<AppUsageRange, string>)[range];
+}
+
+function formatAppUsageRangeSubtitle(range: AppUsageRange) {
+  const today = new Date();
+  if (range === "day") {
+    return today.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+  }
+  if (range === "week") {
+    const start = new Date(today);
+    const day = start.getDay() || 7;
+    start.setDate(start.getDate() - day + 1);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    const startText = start.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+    const endText = end.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+    return `${startText} - ${endText}`;
+  }
+  if (range === "month") {
+    return today.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit" });
+  }
+  return `${today.getFullYear()}年`;
 }
 
 function formatStorageSize(bytes: number) {

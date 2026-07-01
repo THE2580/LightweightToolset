@@ -1,3 +1,4 @@
+mod app_usage;
 mod clipboard;
 mod settings;
 mod tools;
@@ -20,9 +21,10 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::ShortcutState;
 
+use app_usage::{AppUsageSettingsPatch, AppUsageSnapshot};
 use clipboard::{
-    ClipboardEntry, ClipboardEntryPatch, ClipboardPasteResult, ClipboardQueryInput, ClipboardQueryResult,
-    ClipboardSettingsPatch, ClipboardSnapshot,
+    ClipboardEntry, ClipboardEntryPatch, ClipboardPasteResult, ClipboardQueryInput,
+    ClipboardQueryResult, ClipboardSettingsPatch, ClipboardSnapshot,
 };
 use settings::{AppSettings, CloseBehavior, ThemeMode};
 use tools::{ToolRegistry, ToolSnapshot};
@@ -140,7 +142,10 @@ fn read_storage_pointer(default_config_dir: &PathBuf) -> Option<PathBuf> {
     }
 }
 
-fn write_storage_pointer(default_config_dir: &PathBuf, storage_dir: &PathBuf) -> Result<(), String> {
+fn write_storage_pointer(
+    default_config_dir: &PathBuf,
+    storage_dir: &PathBuf,
+) -> Result<(), String> {
     let pointer = pointer_path(default_config_dir);
     if storage_dir == default_config_dir {
         if pointer.exists() {
@@ -148,10 +153,14 @@ fn write_storage_pointer(default_config_dir: &PathBuf, storage_dir: &PathBuf) ->
         }
         return Ok(());
     }
-    fs::write(&pointer, storage_dir.display().to_string()).map_err(|error| format!("保存存储定位文件失败: {error}"))
+    fs::write(&pointer, storage_dir.display().to_string())
+        .map_err(|error| format!("保存存储定位文件失败: {error}"))
 }
 
-fn migrate_storage_files(default_config_dir: &PathBuf, storage_dir: &PathBuf) -> Result<(), String> {
+fn migrate_storage_files(
+    default_config_dir: &PathBuf,
+    storage_dir: &PathBuf,
+) -> Result<(), String> {
     if storage_dir == default_config_dir {
         return Ok(());
     }
@@ -160,16 +169,30 @@ fn migrate_storage_files(default_config_dir: &PathBuf, storage_dir: &PathBuf) ->
     let source_settings = settings_path_for(default_config_dir);
     let target_settings = settings_path_for(storage_dir);
     if source_settings.exists() && !target_settings.exists() {
-        fs::copy(&source_settings, &target_settings).map_err(|error| format!("迁移设置文件失败: {error}"))?;
+        fs::copy(&source_settings, &target_settings)
+            .map_err(|error| format!("迁移设置文件失败: {error}"))?;
     }
 
     let source_clipboard = default_config_dir.join("clipboard").join("clipboard.json");
     let target_clipboard = storage_dir.join("clipboard").join("clipboard.json");
     if source_clipboard.exists() && !target_clipboard.exists() {
         if let Some(parent) = target_clipboard.parent() {
-            fs::create_dir_all(parent).map_err(|error| format!("创建剪贴板存储目录失败: {error}"))?;
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建剪贴板存储目录失败: {error}"))?;
         }
-        fs::copy(&source_clipboard, &target_clipboard).map_err(|error| format!("迁移剪贴板数据失败: {error}"))?;
+        fs::copy(&source_clipboard, &target_clipboard)
+            .map_err(|error| format!("迁移剪贴板数据失败: {error}"))?;
+    }
+
+    let source_app_usage = default_config_dir.join("app_usage").join("app_usage.json");
+    let target_app_usage = storage_dir.join("app_usage").join("app_usage.json");
+    if source_app_usage.exists() && !target_app_usage.exists() {
+        if let Some(parent) = target_app_usage.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建软件统计存储目录失败: {error}"))?;
+        }
+        fs::copy(&source_app_usage, &target_app_usage)
+            .map_err(|error| format!("迁移软件统计数据失败: {error}"))?;
     }
     Ok(())
 }
@@ -191,9 +214,13 @@ fn initial_storage_dir(default_config_dir: &PathBuf) -> Result<PathBuf, String> 
 fn set_auto_start_plugin(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let autostart = app.autolaunch();
     if enabled {
-        autostart.enable().map_err(|error| format!("启用开机自启失败: {error}"))?;
+        autostart
+            .enable()
+            .map_err(|error| format!("启用开机自启失败: {error}"))?;
     } else {
-        autostart.disable().map_err(|error| format!("关闭开机自启失败: {error}"))?;
+        autostart
+            .disable()
+            .map_err(|error| format!("关闭开机自启失败: {error}"))?;
     }
     Ok(())
 }
@@ -233,7 +260,14 @@ fn set_tool_enabled(
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.set_enabled(&app, &tool_id, enabled)?;
     save_app_settings(&state, registry.settings())?;
-    push_debug_log(&state, "info", format!("工具 {tool_id} {}", if enabled { "已启用" } else { "已禁用" }));
+    push_debug_log(
+        &state,
+        "info",
+        format!(
+            "工具 {tool_id} {}",
+            if enabled { "已启用" } else { "已禁用" }
+        ),
+    );
     app_snapshot(&state, &registry)
 }
 
@@ -247,7 +281,11 @@ fn set_tool_hotkey(
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.set_hotkey(&app, &tool_id, hotkey.clone())?;
     save_app_settings(&state, registry.settings())?;
-    push_debug_log(&state, "info", format!("工具 {tool_id} 快捷键已更新为 {hotkey}"));
+    push_debug_log(
+        &state,
+        "info",
+        format!("工具 {tool_id} 快捷键已更新为 {hotkey}"),
+    );
     app_snapshot(&state, &registry)
 }
 
@@ -280,6 +318,31 @@ fn ensure_clipboard_enabled(state: &State<'_, AppState>) -> Result<(), String> {
     ensure_tool_enabled(state, "clipboard")
 }
 
+fn ensure_app_usage_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    ensure_tool_enabled(state, "app_usage")
+}
+
+#[tauri::command]
+fn app_usage_get_snapshot(state: State<'_, AppState>) -> Result<AppUsageSnapshot, String> {
+    ensure_app_usage_enabled(&state)?;
+    app_usage::snapshot()
+}
+
+#[tauri::command]
+fn app_usage_update_settings(
+    state: State<'_, AppState>,
+    patch: AppUsageSettingsPatch,
+) -> Result<AppUsageSnapshot, String> {
+    ensure_app_usage_enabled(&state)?;
+    app_usage::update_settings(patch)
+}
+
+#[tauri::command]
+fn app_usage_clear(state: State<'_, AppState>) -> Result<AppUsageSnapshot, String> {
+    ensure_app_usage_enabled(&state)?;
+    app_usage::clear()
+}
+
 #[tauri::command]
 fn clipboard_get_snapshot(state: State<'_, AppState>) -> Result<ClipboardSnapshot, String> {
     ensure_clipboard_enabled(&state)?;
@@ -287,25 +350,39 @@ fn clipboard_get_snapshot(state: State<'_, AppState>) -> Result<ClipboardSnapsho
 }
 
 #[tauri::command]
-fn clipboard_query(state: State<'_, AppState>, input: ClipboardQueryInput) -> Result<ClipboardQueryResult, String> {
+fn clipboard_query(
+    state: State<'_, AppState>,
+    input: ClipboardQueryInput,
+) -> Result<ClipboardQueryResult, String> {
     ensure_clipboard_enabled(&state)?;
     clipboard::query(input)
 }
 
 #[tauri::command]
-fn clipboard_update_settings(state: State<'_, AppState>, patch: ClipboardSettingsPatch) -> Result<ClipboardSnapshot, String> {
+fn clipboard_update_settings(
+    state: State<'_, AppState>,
+    patch: ClipboardSettingsPatch,
+) -> Result<ClipboardSnapshot, String> {
     ensure_clipboard_enabled(&state)?;
     clipboard::update_settings(patch)
 }
 
 #[tauri::command]
-fn clipboard_create_manual(state: State<'_, AppState>, title: String, text: String) -> Result<Option<ClipboardEntry>, String> {
+fn clipboard_create_manual(
+    state: State<'_, AppState>,
+    title: String,
+    text: String,
+) -> Result<Option<ClipboardEntry>, String> {
     ensure_clipboard_enabled(&state)?;
     clipboard::create_manual(title, text)
 }
 
 #[tauri::command]
-fn clipboard_update_entry(state: State<'_, AppState>, id: String, patch: ClipboardEntryPatch) -> Result<Option<ClipboardEntry>, String> {
+fn clipboard_update_entry(
+    state: State<'_, AppState>,
+    id: String,
+    patch: ClipboardEntryPatch,
+) -> Result<Option<ClipboardEntry>, String> {
     ensure_clipboard_enabled(&state)?;
     clipboard::update_entry(id, patch)
 }
@@ -317,7 +394,11 @@ fn clipboard_copy(state: State<'_, AppState>, id: String) -> Result<ClipboardPas
 }
 
 #[tauri::command]
-fn clipboard_paste(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<ClipboardPasteResult, String> {
+fn clipboard_paste(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ClipboardPasteResult, String> {
     ensure_clipboard_enabled(&state)?;
     let result = clipboard::paste_entry(id)?;
     if result.copied {
@@ -331,19 +412,29 @@ fn clipboard_paste(app: AppHandle, state: State<'_, AppState>, id: String) -> Re
 }
 
 #[tauri::command]
-fn clipboard_copy_text(state: State<'_, AppState>, text: String) -> Result<ClipboardPasteResult, String> {
+fn clipboard_copy_text(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<ClipboardPasteResult, String> {
     ensure_clipboard_enabled(&state)?;
     clipboard::copy_text(text)
 }
 
 #[tauri::command]
-fn clipboard_copy_derived_text(state: State<'_, AppState>, text: String) -> Result<ClipboardPasteResult, String> {
+fn clipboard_copy_derived_text(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<ClipboardPasteResult, String> {
     ensure_clipboard_enabled(&state)?;
     clipboard::copy_derived_text(text)
 }
 
 #[tauri::command]
-fn clipboard_paste_text(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<ClipboardPasteResult, String> {
+fn clipboard_paste_text(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<ClipboardPasteResult, String> {
     ensure_clipboard_enabled(&state)?;
     let result = clipboard::paste_text(text)?;
     if result.copied {
@@ -412,12 +503,20 @@ fn clipboard_open_management(app: AppHandle) {
 }
 
 #[tauri::command]
-fn set_auto_start_enabled(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<AppSnapshot, String> {
+fn set_auto_start_enabled(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<AppSnapshot, String> {
     set_auto_start_plugin(&app, enabled)?;
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.settings_mut().auto_start = enabled;
     save_app_settings(&state, registry.settings())?;
-    push_debug_log(&state, "info", format!("开机自启{}", if enabled { "已开启" } else { "已关闭" }));
+    push_debug_log(
+        &state,
+        "info",
+        format!("开机自启{}", if enabled { "已开启" } else { "已关闭" }),
+    );
     app_snapshot(&state, &registry)
 }
 
@@ -427,7 +526,10 @@ fn get_default_storage_path(state: State<'_, AppState>) -> Result<String, String
 }
 
 #[tauri::command]
-fn open_storage_path(state: State<'_, AppState>, storage_path: Option<String>) -> Result<(), String> {
+fn open_storage_path(
+    state: State<'_, AppState>,
+    storage_path: Option<String>,
+) -> Result<(), String> {
     let path = resolve_storage_path(&state, storage_path)?;
     fs::create_dir_all(&path).map_err(|error| format!("创建存储目录失败: {error}"))?;
     Command::new("explorer")
@@ -472,16 +574,19 @@ fn update_app_settings(
     }
     if let Some(storage_path) = patch.storage_path {
         let next_storage_dir = resolve_storage_path(&state, Some(storage_path.clone()))?;
-        fs::create_dir_all(&next_storage_dir).map_err(|error| format!("创建存储目录失败: {error}"))?;
+        fs::create_dir_all(&next_storage_dir)
+            .map_err(|error| format!("创建存储目录失败: {error}"))?;
         settings.storage_path = storage_path;
         let next_settings_path = settings_path_for(&next_storage_dir);
         AppSettings::save(&next_settings_path, settings)?;
         {
-            let mut active_settings_path = state.settings_path.lock().map_err(|_| "设置路径不可用")?;
+            let mut active_settings_path =
+                state.settings_path.lock().map_err(|_| "设置路径不可用")?;
             *active_settings_path = next_settings_path;
         }
         write_storage_pointer(&state.default_config_dir, &next_storage_dir)?;
         clipboard::relocate(&next_storage_dir)?;
+        app_usage::relocate(&next_storage_dir)?;
     }
     save_app_settings(&state, registry.settings())?;
     push_debug_log(&state, "info", "应用设置已保存");
@@ -509,6 +614,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "quit" => {
                 window_service::close_clipboard_popup(app);
                 clipboard::stop();
+                app_usage::stop();
                 app.exit(0);
             }
             _ => {}
@@ -532,39 +638,58 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_autostart::Builder::new().app_name("LightweightToolset").build())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, shortcut, event| {
-            if event.state() == ShortcutState::Pressed {
-                let mut handled = false;
-                if let Some(state) = app.try_state::<AppState>() {
-                    push_debug_log(&state, "info", format!("工具快捷键已触发：{shortcut}"));
-                    if let Ok(registry) = state.registry.lock() {
-                        let shortcut_text = shortcut.to_string();
-                        if registry.tool_for_shortcut(&shortcut_text).as_deref() == Some("clipboard")
-                            || registry.only_enabled_tool().as_deref() == Some("clipboard")
-                        {
-                            handled = true;
-                        }
-                    }
-                }
-                if handled {
-                    if let Err(error) = window_service::open_clipboard_popup(app) {
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("LightweightToolset")
+                .build(),
+        )
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        let mut handled = false;
                         if let Some(state) = app.try_state::<AppState>() {
-                            push_debug_log(&state, "error", format!("剪贴板快捷窗口启动命令失败：{error}"));
+                            push_debug_log(&state, "info", format!("工具快捷键已触发：{shortcut}"));
+                            if let Ok(registry) = state.registry.lock() {
+                                let shortcut_text = shortcut.to_string();
+                                if registry.tool_for_shortcut(&shortcut_text).as_deref()
+                                    == Some("clipboard")
+                                    || registry.only_enabled_tool().as_deref() == Some("clipboard")
+                                {
+                                    handled = true;
+                                }
+                            }
+                        }
+                        if handled {
+                            if let Err(error) = window_service::open_clipboard_popup(app) {
+                                if let Some(state) = app.try_state::<AppState>() {
+                                    push_debug_log(
+                                        &state,
+                                        "error",
+                                        format!("剪贴板快捷窗口启动命令失败：{error}"),
+                                    );
+                                }
+                            }
+                        } else {
+                            show_main_window(app);
                         }
                     }
-                } else {
-                    show_main_window(app);
-                }
-            }
-        }).build())
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main_window(app)))
+                })
+                .build(),
+        )
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            show_main_window(app)
+        }))
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     let should_hide = window
                         .try_state::<AppState>()
-                        .and_then(|state| state.registry.lock().ok().map(|registry| registry.settings().close_behavior == CloseBehavior::Tray))
+                        .and_then(|state| {
+                            state.registry.lock().ok().map(|registry| {
+                                registry.settings().close_behavior == CloseBehavior::Tray
+                            })
+                        })
                         .unwrap_or(true);
                     if should_hide {
                         api.prevent_close();
@@ -581,6 +706,7 @@ pub fn run() {
             migrate_storage_files(&config_dir, &storage_dir)?;
             write_storage_pointer(&config_dir, &storage_dir)?;
             clipboard::init(&storage_dir)?;
+            app_usage::init(&storage_dir)?;
             let settings_path = settings_path_for(&storage_dir);
             let settings = AppSettings::load(&settings_path)?;
             let mut registry = ToolRegistry::new(settings);
@@ -619,6 +745,9 @@ pub fn run() {
             suspend_tool_hotkeys,
             resume_tool_hotkeys,
             set_auto_start_enabled,
+            app_usage_get_snapshot,
+            app_usage_update_settings,
+            app_usage_clear,
             clipboard_get_snapshot,
             clipboard_query,
             clipboard_update_settings,

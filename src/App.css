@@ -181,6 +181,58 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .tool-page h1 { margin: 0 0 4px; font-size: 20px; }
 .tool-page > p { margin: 0; color: #687896; font-size: 10px; }
 .tool-page-status { display: flex; align-items: center; gap: 12px; margin-top: 18px; font-size: 9px; }
+.content:has(.app-usage-page) { overflow: hidden; padding: 18px 12px 10px 18px; scrollbar-gutter: auto; }
+.app-usage-page { display: flex; min-height: 0; height: calc(100vh - 55px); max-height: calc(100vh - 55px); flex-direction: column; gap: 8px; overflow-x: hidden; overflow-y: auto; padding-right: 4px; scrollbar-gutter: stable; }
+.app-usage-page, .app-usage-ranking, .app-usage-chart-canvas { scrollbar-width: none; }
+.app-usage-page::-webkit-scrollbar, .app-usage-ranking::-webkit-scrollbar, .app-usage-chart-canvas::-webkit-scrollbar { width: 0; height: 0; }
+.app-usage-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-height: 42px; flex: 0 0 auto; }
+.app-usage-header h1 { margin: 0; font-size: 17px; line-height: 1.1; }
+.app-usage-header p { margin: 4px 0 0; font-size: 9px; line-height: 1.3; }
+.app-usage-range button { min-width: 30px; height: 24px; justify-content: center; font-size: 10px; }
+.app-usage-range, .app-usage-afk { background: #edf2f8; }
+.app-usage-range button:focus, .app-usage-afk button:focus { outline: none; }
+.app-usage-range button:focus-visible, .app-usage-afk button:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent); }
+.app-usage-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; flex: 0 0 auto; }
+.app-usage-summary article { display: grid; gap: 8px; min-height: 58px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-bg); }
+.app-usage-summary article, .app-usage-panel, .app-usage-setting-card { transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease, transform 150ms ease; }
+.app-usage-summary article:hover, .app-usage-panel:hover, .app-usage-setting-card:hover { border-color: #9fb8e2; background: color-mix(in srgb, var(--panel-bg) 78%, var(--primary-soft)); box-shadow: inset 0 0 0 1px rgba(43, 99, 232, 0.08), 0 4px 12px rgba(27, 66, 134, 0.07); }
+.app-usage-summary div { display: inline-flex; align-items: center; gap: 5px; min-width: 0; color: var(--muted-text); font-size: 9px; }
+.app-usage-summary strong { color: var(--text); font-size: 14px; line-height: 1; }
+.app-usage-main-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 9px; min-height: 165px; flex: 0 0 185px; }
+.app-usage-panel { min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-bg); }
+.app-usage-panel-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px 0; }
+.app-usage-ranking-panel .app-usage-panel-title { min-height: 33px; padding: 6px 13px 3px; }
+.app-usage-panel-title h2 { margin: 0; font-size: 11px; font-weight: 600; }
+.app-usage-panel-title span { color: var(--muted-text); font-size: 9px; white-space: nowrap; }
+.app-usage-chart-panel { display: flex; flex-direction: column; }
+.app-usage-chart-canvas { min-height: 0; flex: 1; overflow: auto hidden; margin: 8px 12px 10px; border: 1px solid var(--soft-border); border-radius: 6px; background: var(--muted-bg); cursor: grab; user-select: none; touch-action: pan-x; }
+.app-usage-chart-canvas:active { cursor: grabbing; }
+.app-usage-chart { position: relative; height: 100%; min-height: 0; padding: 8px 10px 0; }
+.app-usage-chart-bars { position: absolute; inset: 12px 10px 0; display: grid; grid-auto-columns: minmax(8px, 1fr); grid-auto-flow: column; align-items: end; gap: 0; }
+.app-usage-chart-bars.single { left: 42%; right: 42%; }
+.app-usage-chart-bar { position: relative; display: grid; height: 100%; min-width: 0; grid-template-rows: minmax(0, 1fr) 18px; align-items: end; justify-items: center; }
+.app-usage-chart-bar span { width: 100%; border-radius: 3px 3px 0 0; background: color-mix(in srgb, var(--primary) 28%, transparent); transition: background-color 140ms ease, transform 140ms ease, box-shadow 140ms ease; transform-origin: bottom; }
+.app-usage-chart-bar:hover span { background: color-mix(in srgb, var(--primary) 62%, transparent); box-shadow: 0 5px 12px rgba(43, 99, 232, 0.18); transform: scaleY(1.04); }
+.app-usage-chart-bar small { align-self: center; overflow: hidden; max-width: 38px; color: var(--muted-text); font-size: 7px; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
+.app-usage-ranking-panel { display: flex; flex-direction: column; }
+.app-usage-ranking { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 7px; overflow: auto; padding: 11px 13px 12px; }
+.app-usage-rank-row { display: grid; gap: 4px; }
+.app-usage-rank-row div { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; color: var(--muted-text); font-size: 9px; }
+.app-usage-rank-row span { min-width: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.app-usage-rank-row strong { color: var(--muted-text); font-size: 9px; font-weight: 500; white-space: nowrap; }
+.app-usage-rank-row i { position: relative; display: block; width: 100%; height: 5px; overflow: hidden; border-radius: 999px; background: #d9e3f3; }
+.app-usage-rank-row i::before { position: absolute; inset: 0 auto 0 0; width: var(--progress, 0%); border-radius: inherit; background: var(--primary); content: ""; }
+.app-usage-empty { display: grid; flex: 1; place-items: center; margin: 0; color: var(--muted-text); font-size: 10px; }
+.app-usage-setting-card { display: flex; min-height: 48px; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-bg); }
+.app-usage-setting-card h2 { margin: 0; font-size: 11px; }
+.app-usage-setting-card p { margin: 2px 0 0; color: var(--muted-text); font-size: 9px; line-height: 1.3; }
+.danger-action { border-color: #fecaca; color: #b42318; background: #fff0ed; }
+.app-usage-chart-tooltip { position: fixed; z-index: 10020; max-width: 190px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--panel-bg); box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18); font-size: 9px; line-height: 1.35; pointer-events: none; }
+.app-usage-chart-tooltip strong { display: block; margin-bottom: 5px; font-size: 9px; line-height: 1.2; }
+.app-usage-chart-tooltip div { display: grid; gap: 3px; }
+.app-usage-chart-tooltip span { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; overflow: hidden; color: var(--text); white-space: nowrap; }
+.app-usage-chart-tooltip em { min-width: 0; overflow: hidden; color: var(--text); font-style: normal; text-overflow: ellipsis; }
+.app-usage-chart-tooltip b { color: #355b9d; font-weight: 700; }
 .content:has(.clipboard-page) { display: flex; flex-direction: column; overflow: hidden; padding-right: 8px; scrollbar-gutter: auto; }
 .content:has(.clipboard-page)::-webkit-scrollbar { width: 0; height: 0; }
 .clipboard-page { position: relative; display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden; }
