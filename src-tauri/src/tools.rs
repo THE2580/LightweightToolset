@@ -369,7 +369,7 @@ impl ToolRegistry {
 fn normalize_hotkey(value: &str) -> Result<String, String> {
     let parts: Vec<String> = value
         .split('+')
-        .map(|part| part.trim().to_uppercase())
+        .map(|part| normalize_hotkey_part(part.trim()))
         .filter(|part| !part.is_empty())
         .collect();
     if parts.len() < 2 {
@@ -434,4 +434,27 @@ fn normalize_hotkey(value: &str) -> Result<String, String> {
         .ok_or_else(|| "快捷键缺少主按键".to_owned())?;
     normalized.push(key);
     Ok(normalized.join("+"))
+}
+
+fn normalize_hotkey_part(part: &str) -> String {
+    let upper = part.trim().to_uppercase();
+    if upper.len() == 4 && upper.starts_with("KEY") {
+        return upper[3..].to_owned();
+    }
+    if upper.len() == 6 && upper.starts_with("DIGIT") {
+        return upper[5..].to_owned();
+    }
+    upper
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_hotkey;
+
+    #[test]
+    fn normalizes_tauri_shortcut_callback_text() {
+        assert_eq!(normalize_hotkey("control+alt+KeyZ").unwrap(), "CTRL+ALT+Z");
+        assert_eq!(normalize_hotkey("control+alt+KeyV").unwrap(), "CTRL+ALT+V");
+        assert_eq!(normalize_hotkey("control+shift+Digit1").unwrap(), "CTRL+SHIFT+1");
+    }
 }
