@@ -188,6 +188,7 @@ pub fn refocus_clipboard_popup_after_paste(app: &AppHandle) {
 
 fn log_popup(app: &AppHandle, level: &'static str, message: impl Into<String>) {
     if let Some(state) = app.try_state::<AppState>() {
+        let level = if level == "error" { "error" } else { "clipboard" };
         push_debug_log(&state, level, message);
     }
 }

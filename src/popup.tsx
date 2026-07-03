@@ -124,7 +124,7 @@ function PopupApp() {
   }, [search]);
 
   useEffect(() => {
-    void invoke("push_frontend_debug_log", { level: "info", message: "clipboard popup rewrite: mounted" });
+    void invoke("push_frontend_debug_log", { level: "frontend", message: "clipboard_popup.mounted" });
     inputRef.current?.focus();
     return () => {
       if (toastTimerRef.current) {

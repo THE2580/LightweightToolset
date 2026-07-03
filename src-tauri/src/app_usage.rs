@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex, OnceLock},
@@ -42,6 +42,8 @@ struct AppUsageStore {
     #[serde(default)]
     aliases: BTreeMap<String, String>,
     #[serde(default)]
+    disabled_processes: BTreeSet<String>,
+    #[serde(default)]
     days: BTreeMap<String, BTreeMap<String, f64>>,
     #[serde(skip)]
     dirty: bool,
@@ -53,6 +55,7 @@ impl Default for AppUsageStore {
             version: store_version(),
             settings: AppUsageSettings::default(),
             aliases: BTreeMap::new(),
+            disabled_processes: BTreeSet::new(),
             days: BTreeMap::new(),
             dirty: false,
         }
@@ -65,6 +68,14 @@ pub struct AppUsageSettingsPatch {
     pub afk_threshold_sec: Option<u32>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUsageProcessPatch {
+    pub process_name: String,
+    pub alias: Option<String>,
+    pub monitored: Option<bool>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppUsageSnapshot {
@@ -75,6 +86,7 @@ pub struct AppUsageSnapshot {
     pub storage_bytes: u64,
     pub settings: AppUsageSettings,
     pub aliases: BTreeMap<String, String>,
+    pub disabled_processes: Vec<String>,
     pub days: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
@@ -165,13 +177,19 @@ pub fn start() -> Result<(), String> {
                 let elapsed_sec = now.duration_since(last_sample_at).as_secs_f64();
                 last_sample_at = now;
 
+                let active_process = get_foreground_process_name()
+                    .filter(|name| !ignored.contains(&name.to_ascii_lowercase()))
+                    .filter(|name| {
+                        store
+                            .lock()
+                            .map(|guard| !guard.disabled_processes.contains(name))
+                            .unwrap_or(true)
+                    });
                 let afk_threshold_sec = store
                     .lock()
                     .map(|guard| guard.settings.afk_threshold_sec)
                     .unwrap_or(DEFAULT_AFK_THRESHOLD_SEC);
                 let is_afk = get_idle_seconds() >= afk_threshold_sec;
-                let active_process = get_foreground_process_name()
-                    .filter(|name| !ignored.contains(&name.to_ascii_lowercase()));
 
                 if let Ok(mut state) = runtime.lock() {
                     state.active_process = active_process.clone();
@@ -234,6 +252,7 @@ pub fn snapshot() -> Result<AppUsageSnapshot, String> {
         storage_bytes,
         settings: store.settings.clone(),
         aliases: store.aliases.clone(),
+        disabled_processes: store.disabled_processes.iter().cloned().collect(),
         days: store.days.clone(),
     })
 }
@@ -246,6 +265,53 @@ pub fn update_settings(patch: AppUsageSettingsPatch) -> Result<AppUsageSnapshot,
         if let Some(afk_threshold_sec) = patch.afk_threshold_sec {
             store.settings.afk_threshold_sec = afk_threshold_sec.clamp(30, 3600);
             store.dirty = true;
+        }
+    }
+    save_store(&manager.path, &manager.store, true)?;
+    drop(manager);
+    snapshot()
+}
+
+pub fn update_process(patch: AppUsageProcessPatch) -> Result<AppUsageSnapshot, String> {
+    let process_name = patch.process_name.trim().to_owned();
+    if process_name.is_empty() {
+        return Err("process name cannot be empty".to_owned());
+    }
+
+    let manager_lock = APP_USAGE
+        .get()
+        .ok_or("app usage service is not initialized")?;
+    let manager = manager_lock
+        .lock()
+        .map_err(|_| "app usage service is unavailable")?;
+    {
+        let mut store = manager
+            .store
+            .lock()
+            .map_err(|_| "app usage data is unavailable")?;
+        if let Some(alias) = patch.alias {
+            let alias = alias.trim();
+            if alias.is_empty() {
+                store.aliases.remove(&process_name);
+            } else {
+                store.aliases.insert(process_name.clone(), alias.to_owned());
+            }
+            store.dirty = true;
+        }
+        if let Some(monitored) = patch.monitored {
+            if monitored {
+                store.disabled_processes.remove(&process_name);
+            } else {
+                store.disabled_processes.insert(process_name.clone());
+            }
+            store.dirty = true;
+        }
+    }
+    if patch.monitored == Some(false) {
+        if let Ok(mut state) = manager.runtime.lock() {
+            if state.active_process.as_deref() == Some(process_name.as_str()) {
+                state.active_process = None;
+            }
         }
     }
     save_store(&manager.path, &manager.store, true)?;

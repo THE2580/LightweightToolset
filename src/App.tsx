@@ -35,7 +35,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type FocusEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./App.css";
 
@@ -95,6 +95,7 @@ type ClipboardQueryResult = {
 };
 
 type AppUsageRange = "day" | "week" | "month" | "year";
+type AppUsageProcessFilter = "all" | "mapped" | "unmapped" | "monitored" | "ignored";
 
 type AppUsageSettings = {
   afkThresholdSec: number;
@@ -108,6 +109,7 @@ type AppUsageSnapshot = {
   storageBytes: number;
   settings: AppUsageSettings;
   aliases: Record<string, string>;
+  disabledProcesses: string[];
   days: Record<string, Record<string, number>>;
 };
 
@@ -115,6 +117,14 @@ type AppUsageTrendPoint = {
   label: string;
   seconds: number;
   topApps: Array<{ displayName: string; seconds: number }>;
+};
+
+type AppUsageProcessRow = {
+  processName: string;
+  displayName: string;
+  alias: string;
+  monitored: boolean;
+  seconds: number;
 };
 
 type ToastMessage = {
@@ -183,7 +193,7 @@ type NavigationTarget = {
 const DEFAULT_TITLE = "轻量化工具集";
 const APP_NAME = "LightweightToolset";
 const APP_SUBTITLE = "Windows 桌面工具集";
-const APP_VERSION = "0.1.3";
+const APP_VERSION = "0.1.4";
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const AUTHOR_EMAILS = ["2021289500@qq.com", "liangneng20060725@gmail.com"];
@@ -194,6 +204,30 @@ const toolIcons = {
 const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SUPER", "CMD", "COMMAND"]);
 const TOAST_DURATION_MS = 1400;
 const CLIPBOARD_PAGE_SIZE = 10;
+const LOG_LEVEL_OPTIONS = [
+  {
+    label: "General",
+    options: [
+      { label: "All", value: "all" },
+      { label: "App", value: "app" },
+      { label: "System", value: "system" },
+      { label: "Settings", value: "settings" },
+      { label: "Storage", value: "storage" },
+      { label: "Hotkey", value: "hotkey" },
+      { label: "Window", value: "window" },
+      { label: "Frontend", value: "frontend" },
+      { label: "Update", value: "update" },
+      { label: "Error", value: "error" },
+    ],
+  },
+  {
+    label: "Tools",
+    options: [
+      { label: "Clipboard", value: "clipboard" },
+      { label: "App usage", value: "app_usage" },
+    ],
+  },
+];
 
 function isTextInputTarget(target: EventTarget | null) {
   const element = target instanceof HTMLElement ? target : null;
@@ -218,11 +252,16 @@ function useUpdateChecker(settings?: AppSettings) {
     checkingRef.current = true;
     setCheckingUpdates(true);
     setUpdateStatus("正在检查更新...");
+    void invoke("push_frontend_debug_log", {
+      level: "update",
+      message: `update.check.started manual=${manual} current=${APP_VERSION}`,
+    });
     try {
       const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
         headers: { Accept: "application/vnd.github+json" },
       });
       if (response.status === 404) {
+        void invoke("push_frontend_debug_log", { level: "update", message: "update.check.no_release" });
         setUpdateStatus("暂无发布版本");
         if (manual) {
           setUpdateNoticeClosing(false);
@@ -240,6 +279,10 @@ function useUpdateChecker(settings?: AppSettings) {
       const release = await response.json() as { assets?: Array<{ browser_download_url?: string; name?: string }>; body?: string; html_url?: string; tag_name?: string };
       const tag = release.tag_name ?? "";
       if (!isRemoteVersionNewer(tag, APP_VERSION)) {
+        void invoke("push_frontend_debug_log", {
+          level: "update",
+          message: `update.check.up_to_date current=${APP_VERSION} remote=${tag || "none"}`,
+        });
         setUpdateStatus("当前已是最新版本");
         if (manual) {
           setUpdateNoticeClosing(false);
@@ -252,6 +295,10 @@ function useUpdateChecker(settings?: AppSettings) {
         return;
       }
       const asset = release.assets?.find((item) => item.name?.toLowerCase().endsWith(".exe")) ?? release.assets?.[0];
+      void invoke("push_frontend_debug_log", {
+        level: "update",
+        message: `update.check.available current=${APP_VERSION} remote=${tag} asset=${asset?.name ?? "none"}`,
+      });
       const notice = {
         phase: "available" as const,
         title: `发现新版本 ${tag}`,
@@ -267,6 +314,10 @@ function useUpdateChecker(settings?: AppSettings) {
       }
     } catch (reason) {
       const message = `检查失败：${String(reason)}`;
+      void invoke("push_frontend_debug_log", {
+        level: "error",
+        message: `update.check.failed error=${String(reason)}`,
+      });
       setUpdateStatus(message);
       if (manual) {
         setUpdateNoticeClosing(false);
@@ -767,6 +818,25 @@ function App() {
 function DebugLogPanel() {
   const [logs, setLogs] = useState<DebugLogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [levelFilter, setLevelFilter] = useState("all");
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const [expandedLogGroups, setExpandedLogGroups] = useState<Set<string>>(() => new Set());
+  const terminalRef = useRef<HTMLDivElement | null>(null);
+  const { pushToast, toast: currentToast } = useToastQueue();
+
+  const filteredLogs = useMemo(
+    () => levelFilter === "all" ? logs : logs.filter((entry) => entry.level === levelFilter),
+    [levelFilter, logs],
+  );
+  const selectedLevelLabel = useMemo(() => {
+    for (const group of LOG_LEVEL_OPTIONS) {
+      const option = group.options.find((item) => item.value === levelFilter);
+      if (option) {
+        return option.label;
+      }
+    }
+    return "All";
+  }, [levelFilter]);
 
   const loadLogs = useCallback(async () => {
     try {
@@ -783,6 +853,14 @@ function DebugLogPanel() {
     return () => window.clearInterval(interval);
   }, [loadLogs]);
 
+  useLayoutEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+    terminal.scrollTo({ top: terminal.scrollHeight, behavior: "smooth" });
+  }, [filteredLogs.length, levelFilter]);
+
   async function clearLogs() {
     try {
       await invoke("clear_debug_logs");
@@ -793,6 +871,56 @@ function DebugLogPanel() {
     }
   }
 
+  async function copyFilteredLogs() {
+    const text = filteredLogs
+      .map((entry) => `${formatLogTime(entry.timestampMs)} [${entry.level}] ${entry.message}`)
+      .join("\n");
+    if (!text) {
+      pushToast("当前筛选无日志");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      pushToast(`已复制 ${filteredLogs.length} 条日志`);
+    } catch (reason) {
+      setError(`复制失败：${String(reason)}`);
+    }
+  }
+
+  function toggleFilterMenu() {
+    setFilterMenuOpen((open) => {
+      if (!open) {
+        setExpandedLogGroups(new Set());
+      }
+      return !open;
+    });
+  }
+
+  function toggleLogGroup(label: string) {
+    setExpandedLogGroups((current) => {
+      const next = new Set(current);
+      if (next.has(label)) {
+        next.delete(label);
+      } else {
+        next.add(label);
+      }
+      return next;
+    });
+  }
+
+  function selectLogLevel(value: string) {
+    setLevelFilter(value);
+    setFilterMenuOpen(false);
+  }
+
+  function handleFilterMenuBlur(event: FocusEvent<HTMLDivElement>) {
+    const nextFocus = event.relatedTarget;
+    if (nextFocus instanceof Node && event.currentTarget.contains(nextFocus)) {
+      return;
+    }
+    setFilterMenuOpen(false);
+  }
+
   return (
     <div className="settings-section page-enter">
       <div className="log-heading">
@@ -801,13 +929,63 @@ function DebugLogPanel() {
           <p>保留最近 300 条主进程与页面日志</p>
         </div>
         <div className="log-actions">
+          <div className="log-filter-menu" onBlur={handleFilterMenuBlur}>
+            <button
+              aria-expanded={filterMenuOpen}
+              aria-haspopup="menu"
+              className="secondary-action log-filter-trigger"
+              onClick={toggleFilterMenu}
+              type="button"
+            >
+              <span>{selectedLevelLabel}</span>
+              <ChevronRight className={filterMenuOpen ? "log-filter-trigger-icon open" : "log-filter-trigger-icon"} size={13} />
+            </button>
+            {filterMenuOpen ? (
+              <div className="log-filter-popover" role="menu">
+                {LOG_LEVEL_OPTIONS.map((group) => {
+                  const expanded = expandedLogGroups.has(group.label);
+                  return (
+                    <div className="log-filter-group" key={group.label}>
+                      <button
+                        aria-expanded={expanded}
+                        className="log-filter-group-button"
+                        onClick={() => toggleLogGroup(group.label)}
+                        type="button"
+                      >
+                        <ChevronRight className={expanded ? "log-filter-group-icon open" : "log-filter-group-icon"} size={12} />
+                        <span>{group.label}</span>
+                      </button>
+                      {expanded ? (
+                        <div className="log-filter-options">
+                          {group.options.map((option) => (
+                            <button
+                              className={option.value === levelFilter ? "log-filter-option active" : "log-filter-option"}
+                              key={option.value}
+                              onClick={() => selectLogLevel(option.value)}
+                              aria-checked={option.value === levelFilter}
+                              role="menuitemradio"
+                              type="button"
+                            >
+                              <span>{option.label}</span>
+                              {option.value === levelFilter ? <Check size={12} /> : null}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+          <button className="secondary-action icon-text-action" onClick={() => void copyFilteredLogs()} type="button"><Copy size={13} />复制</button>
           <button className="secondary-action icon-text-action" onClick={() => void loadLogs()} type="button"><RefreshCw size={13} />刷新</button>
           <button className="secondary-action icon-text-action" onClick={() => void clearLogs()} type="button"><Trash2 size={13} />清空</button>
         </div>
       </div>
       {error ? <div className="error-banner">{error}</div> : null}
-      <div className="terminal-panel" aria-label="终端日志输出">
-        {logs.length ? logs.map((entry, index) => (
+      <div className="terminal-panel" aria-label="终端日志输出" ref={terminalRef}>
+        {filteredLogs.length ? filteredLogs.map((entry, index) => (
           <div className="terminal-line" key={`${entry.timestampMs}-${index}`}>
             <span className="terminal-prefix">
               <span className="terminal-time">{formatLogTime(entry.timestampMs)}</span>
@@ -816,9 +994,10 @@ function DebugLogPanel() {
             <span className="terminal-message">{entry.message}</span>
           </div>
         )) : (
-          <div className="terminal-line muted">暂无日志输出</div>
+          <div className="terminal-line muted">{logs.length ? "当前类型暂无日志" : "暂无日志输出"}</div>
         )}
       </div>
+      {currentToast ? createPortal(<div className="app-toast" key={currentToast.id}>{currentToast.text}</div>, document.body) : null}
     </div>
   );
 }
@@ -1192,6 +1371,11 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
   const [range, setRange] = useState<AppUsageRange>("day");
   const [clearOpen, setClearOpen] = useState(false);
   const [clearClosing, setClearClosing] = useState(false);
+  const [processAliasDrafts, setProcessAliasDrafts] = useState<Record<string, string>>({});
+  const [processListCollapsed, setProcessListCollapsed] = useState(false);
+  const [processFilter, setProcessFilter] = useState<AppUsageProcessFilter>("all");
+  const [processFilterMenuOpen, setProcessFilterMenuOpen] = useState(false);
+  const processPanelRef = useRef<HTMLElement | null>(null);
   const { pushToast, toast: currentToast } = useToastQueue();
 
   const loadSnapshot = useCallback(async () => {
@@ -1229,7 +1413,27 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [range]);
 
+  useEffect(() => {
+    if (processListCollapsed) {
+      return;
+    }
+    function handlePointerDown(event: PointerEvent) {
+      const panel = processPanelRef.current;
+      if (panel && event.target instanceof Node && !panel.contains(event.target)) {
+        setProcessListCollapsed(true);
+        setProcessFilterMenuOpen(false);
+      }
+    }
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    return () => window.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [processListCollapsed]);
+
   const rangeData = useMemo(() => buildAppUsageRangeData(snapshot, range), [range, snapshot]);
+  const processRows = useMemo(() => buildAppUsageProcessRows(snapshot), [snapshot]);
+  const filteredProcessRows = useMemo(
+    () => filterAppUsageProcessRows(processRows, processFilter),
+    [processFilter, processRows],
+  );
   const activeName = snapshot?.activeProcess ? appUsageDisplayName(snapshot.activeProcess, snapshot.aliases) : "";
 
   function toast(text: string) {
@@ -1257,6 +1461,32 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
     });
     setSnapshot(nextSnapshot);
     toast(`离开判定已设为${formatShortMinutes(afkThresholdSec)}`);
+  }
+
+  function processAliasValue(row: AppUsageProcessRow) {
+    return processAliasDrafts[row.processName] ?? row.alias;
+  }
+
+  async function updateProcessAlias(row: AppUsageProcessRow) {
+    const alias = processAliasValue(row).trim();
+    const nextSnapshot = await invoke<AppUsageSnapshot>("app_usage_update_process", {
+      patch: { processName: row.processName, alias },
+    });
+    setSnapshot(nextSnapshot);
+    setProcessAliasDrafts((drafts) => {
+      const next = { ...drafts };
+      delete next[row.processName];
+      return next;
+    });
+    toast(alias ? "进程名称映射已保存" : "进程名称映射已清除");
+  }
+
+  async function updateProcessMonitored(row: AppUsageProcessRow, monitored: boolean) {
+    const nextSnapshot = await invoke<AppUsageSnapshot>("app_usage_update_process", {
+      patch: { processName: row.processName, monitored },
+    });
+    setSnapshot(nextSnapshot);
+    toast(monitored ? "进程监测已开启" : "进程监测已关闭");
   }
 
   return (
@@ -1341,6 +1571,122 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
               {formatShortMinutes(value)}
             </button>
           ))}
+        </div>
+      </section>
+
+      <section className={processListCollapsed ? "app-usage-process-panel collapsed" : "app-usage-process-panel"} ref={processPanelRef}>
+        <div
+          aria-expanded={!processListCollapsed}
+          className="app-usage-process-heading"
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setProcessListCollapsed((value) => !value);
+              setProcessFilterMenuOpen(false);
+            }
+          }}
+          onClick={() => {
+            setProcessListCollapsed((value) => !value);
+            setProcessFilterMenuOpen(false);
+          }}
+          role="button"
+          tabIndex={0}
+        >
+          <div>
+            <h2>本地已记录进程管理</h2>
+            <p>为历史进程设置显示名称，关闭监测后将不再检测和累计该进程</p>
+          </div>
+          <div className="app-usage-process-heading-actions">
+            {!processListCollapsed ? (
+              <div className="app-usage-process-filter-menu" onClick={(event) => event.stopPropagation()}>
+                <button
+                  aria-expanded={processFilterMenuOpen}
+                  aria-haspopup="menu"
+                  className="app-usage-process-filter-trigger"
+                  onClick={() => setProcessFilterMenuOpen((value) => !value)}
+                  type="button"
+                >
+                  <span>{appUsageProcessFilterLabel(processFilter)}</span>
+                  <ChevronRight className={processFilterMenuOpen ? "open" : ""} size={12} />
+                </button>
+                {processFilterMenuOpen ? (
+                  <div className="app-usage-process-filter-popover" role="menu">
+                    {([
+                      ["all", "全部"],
+                      ["mapped", "已配置映射"],
+                      ["unmapped", "未配置映射"],
+                      ["monitored", "监测"],
+                      ["ignored", "忽略"],
+                    ] as Array<[AppUsageProcessFilter, string]>).map(([value, label]) => (
+                      <button
+                        className={processFilter === value ? "active" : ""}
+                        key={value}
+                        onClick={() => {
+                          setProcessFilter(value);
+                          setProcessFilterMenuOpen(false);
+                        }}
+                        role="menuitemradio"
+                        type="button"
+                      >
+                        <span>{label}</span>
+                        {processFilter === value ? <Check size={12} /> : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            <span>{filteredProcessRows.length}/{processRows.length} 个进程</span>
+            <ChevronRight className={processListCollapsed ? "" : "open"} size={13} />
+          </div>
+        </div>
+        <div className="app-usage-process-body">
+          <div>
+            <div className="app-usage-process-list">
+              {filteredProcessRows.map((row) => {
+                const aliasValue = processAliasValue(row);
+                const aliasChanged = aliasValue.trim() !== row.alias;
+                return (
+                  <div className={aliasChanged ? "app-usage-process-row saving" : "app-usage-process-row"} key={row.processName}>
+                    <div className="app-usage-process-identity">
+                      <strong>{row.displayName}</strong>
+                      <span><i>总时长</i><b>{formatUsageDuration(row.seconds)}</b></span>
+                    </div>
+                    <input
+                      aria-label={`${row.processName} display name`}
+                      onChange={(event) => setProcessAliasDrafts((drafts) => ({ ...drafts, [row.processName]: event.target.value }))}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && aliasChanged) {
+                          void updateProcessAlias(row);
+                        }
+                      }}
+                      placeholder={row.processName}
+                      type="text"
+                      value={aliasValue}
+                    />
+                    <button
+                      className={aliasChanged ? "secondary-action app-usage-process-save visible" : "secondary-action app-usage-process-save"}
+                      disabled={!aliasChanged}
+                      onClick={() => void updateProcessAlias(row)}
+                      title="保存名称映射"
+                      type="button"
+                    >
+                      保存
+                    </button>
+                    <label className="app-usage-process-toggle">
+                      <input
+                        checked={row.monitored}
+                        onChange={(event) => void updateProcessMonitored(row, event.currentTarget.checked)}
+                        type="checkbox"
+                      />
+                      <span>{row.monitored ? "监测" : "忽略"}</span>
+                    </label>
+                  </div>
+                );
+              })}
+              {filteredProcessRows.length === 0 ? <p className="app-usage-empty">暂无匹配进程</p> : null}
+            </div>
+          </div>
         </div>
       </section>
 
@@ -2530,6 +2876,7 @@ function formatClipboardDateTime(value: number | null) {
 function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsageRange) {
   const aliases = snapshot?.aliases ?? {};
   const days = snapshot?.days ?? {};
+  const disabled = new Set(snapshot?.disabledProcesses ?? []);
   const trendDays = appUsageTrendKeys(range);
   const includedDays = range === "year"
     ? Object.keys(days).filter((day) => day.startsWith(`${new Date().getFullYear()}-`))
@@ -2538,7 +2885,7 @@ function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsa
   let totalSeconds = 0;
 
   for (const day of includedDays) {
-    const apps = days[day] ?? {};
+    const apps = filterAppUsageStats(days[day] ?? {}, disabled);
     for (const [processName, seconds] of Object.entries(apps)) {
       totalSeconds += seconds;
       appTotals.set(processName, (appTotals.get(processName) ?? 0) + seconds);
@@ -2559,13 +2906,13 @@ function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsa
       const monthApps = mergeAppUsage(
         Object.entries(days)
           .filter(([day]) => day.startsWith(`${point.key}-`))
-          .map(([, apps]) => apps),
+          .map(([, apps]) => filterAppUsageStats(apps, disabled)),
       );
       const seconds = Object.values(monthApps)
         .reduce((sum, value) => sum + value, 0);
       return { label: point.label, seconds, topApps: topAppUsageRows(monthApps, aliases, 5) };
     }
-    const apps = days[point.key] ?? {};
+    const apps = filterAppUsageStats(days[point.key] ?? {}, disabled);
     return { label: point.label, seconds: sumAppUsageSeconds(apps), topApps: topAppUsageRows(apps, aliases, 5) };
   });
 
@@ -2575,6 +2922,76 @@ function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsa
     totalSeconds,
     trend,
   };
+}
+
+function filterAppUsageStats(apps: Record<string, number>, disabled: Set<string>) {
+  if (disabled.size === 0) {
+    return apps;
+  }
+  const filtered: Record<string, number> = {};
+  for (const [processName, seconds] of Object.entries(apps)) {
+    if (!disabled.has(processName)) {
+      filtered[processName] = seconds;
+    }
+  }
+  return filtered;
+}
+
+function buildAppUsageProcessRows(snapshot: AppUsageSnapshot | null): AppUsageProcessRow[] {
+  if (!snapshot) {
+    return [];
+  }
+  const disabled = new Set(snapshot.disabledProcesses ?? []);
+  const totals = new Map<string, number>();
+  for (const apps of Object.values(snapshot.days ?? {})) {
+    for (const [processName, seconds] of Object.entries(apps)) {
+      totals.set(processName, (totals.get(processName) ?? 0) + seconds);
+    }
+  }
+  for (const processName of Object.keys(snapshot.aliases ?? {})) {
+    totals.set(processName, totals.get(processName) ?? 0);
+  }
+  for (const processName of disabled) {
+    totals.set(processName, totals.get(processName) ?? 0);
+  }
+  return Array.from(totals.entries())
+    .map(([processName, seconds]) => {
+      const alias = snapshot.aliases[processName]?.trim() ?? "";
+      return {
+        processName,
+        displayName: alias || processName,
+        alias,
+        monitored: !disabled.has(processName),
+        seconds,
+      };
+    })
+    .sort((a, b) => b.seconds - a.seconds || a.displayName.localeCompare(b.displayName) || a.processName.localeCompare(b.processName));
+}
+
+function filterAppUsageProcessRows(rows: AppUsageProcessRow[], filter: AppUsageProcessFilter) {
+  if (filter === "mapped") {
+    return rows.filter((row) => row.alias.length > 0);
+  }
+  if (filter === "unmapped") {
+    return rows.filter((row) => row.alias.length === 0);
+  }
+  if (filter === "monitored") {
+    return rows.filter((row) => row.monitored);
+  }
+  if (filter === "ignored") {
+    return rows.filter((row) => !row.monitored);
+  }
+  return rows;
+}
+
+function appUsageProcessFilterLabel(filter: AppUsageProcessFilter) {
+  return ({
+    all: "全部",
+    mapped: "已配置映射",
+    unmapped: "未配置映射",
+    monitored: "监测",
+    ignored: "忽略",
+  } as Record<AppUsageProcessFilter, string>)[filter];
 }
 
 function mergeAppUsage(appRecords: Array<Record<string, number>>) {

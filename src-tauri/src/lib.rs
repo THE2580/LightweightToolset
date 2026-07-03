@@ -22,7 +22,7 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::ShortcutState;
 
-use app_usage::{AppUsageSettingsPatch, AppUsageSnapshot};
+use app_usage::{AppUsageProcessPatch, AppUsageSettingsPatch, AppUsageSnapshot};
 use clipboard::{
     ClipboardEntry, ClipboardEntryPatch, ClipboardPasteResult, ClipboardQueryInput,
     ClipboardQueryResult, ClipboardSettingsPatch, ClipboardSnapshot,
@@ -257,8 +257,25 @@ fn clear_debug_logs(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 fn push_frontend_debug_log(state: State<'_, AppState>, level: String, message: String) {
-    let level = if level == "error" { "error" } else { "info" };
+    let level = normalize_debug_log_level(level);
     push_debug_log(&state, level, message);
+}
+
+fn normalize_debug_log_level(level: String) -> &'static str {
+    match level.trim().to_ascii_lowercase().as_str() {
+        "app" => "app",
+        "app_usage" => "app_usage",
+        "clipboard" => "clipboard",
+        "error" => "error",
+        "frontend" => "frontend",
+        "hotkey" => "hotkey",
+        "settings" => "settings",
+        "storage" => "storage",
+        "system" => "system",
+        "update" => "update",
+        "window" => "window",
+        _ => "frontend",
+    }
 }
 
 #[tauri::command]
@@ -273,11 +290,8 @@ fn set_tool_enabled(
     save_app_settings(&state, registry.settings())?;
     push_debug_log(
         &state,
-        "info",
-        format!(
-            "工具 {tool_id} {}",
-            if enabled { "已启用" } else { "已禁用" }
-        ),
+        "settings",
+        format!("tool.enabled id={tool_id} enabled={enabled}"),
     );
     app_snapshot(&state, &registry)
 }
@@ -294,8 +308,8 @@ fn set_tool_hotkey(
     save_app_settings(&state, registry.settings())?;
     push_debug_log(
         &state,
-        "info",
-        format!("工具 {tool_id} 快捷键已更新为 {hotkey}"),
+        "hotkey",
+        format!("tool.hotkey.updated id={tool_id} hotkey={hotkey}"),
     );
     app_snapshot(&state, &registry)
 }
@@ -304,7 +318,7 @@ fn set_tool_hotkey(
 fn suspend_tool_hotkeys(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.suspend_shortcuts(&app)?;
-    push_debug_log(&state, "info", "工具快捷键监听期间已暂停");
+    push_debug_log(&state, "hotkey", "tool.hotkeys.suspended");
     Ok(())
 }
 
@@ -312,7 +326,7 @@ fn suspend_tool_hotkeys(app: AppHandle, state: State<'_, AppState>) -> Result<()
 fn resume_tool_hotkeys(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.resume_shortcuts(&app)?;
-    push_debug_log(&state, "info", "工具快捷键已恢复");
+    push_debug_log(&state, "hotkey", "tool.hotkeys.resumed");
     Ok(())
 }
 
@@ -336,6 +350,7 @@ fn ensure_app_usage_enabled(state: &State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 fn app_usage_get_snapshot(state: State<'_, AppState>) -> Result<AppUsageSnapshot, String> {
     ensure_app_usage_enabled(&state)?;
+    push_debug_log(&state, "app_usage", "app_usage.snapshot.requested");
     app_usage::snapshot()
 }
 
@@ -345,18 +360,31 @@ fn app_usage_update_settings(
     patch: AppUsageSettingsPatch,
 ) -> Result<AppUsageSnapshot, String> {
     ensure_app_usage_enabled(&state)?;
+    push_debug_log(&state, "app_usage", "app_usage.settings.update_requested");
     app_usage::update_settings(patch)
+}
+
+#[tauri::command]
+fn app_usage_update_process(
+    state: State<'_, AppState>,
+    patch: AppUsageProcessPatch,
+) -> Result<AppUsageSnapshot, String> {
+    ensure_app_usage_enabled(&state)?;
+    push_debug_log(&state, "app_usage", "app_usage.process.update_requested");
+    app_usage::update_process(patch)
 }
 
 #[tauri::command]
 fn app_usage_clear(state: State<'_, AppState>) -> Result<AppUsageSnapshot, String> {
     ensure_app_usage_enabled(&state)?;
+    push_debug_log(&state, "app_usage", "app_usage.clear_requested");
     app_usage::clear()
 }
 
 #[tauri::command]
 fn clipboard_get_snapshot(state: State<'_, AppState>) -> Result<ClipboardSnapshot, String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(&state, "clipboard", "clipboard.snapshot.requested");
     clipboard::snapshot()
 }
 
@@ -366,6 +394,17 @@ fn clipboard_query(
     input: ClipboardQueryInput,
 ) -> Result<ClipboardQueryResult, String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(
+        &state,
+        "clipboard",
+        format!(
+            "clipboard.query.requested scope={:?} search_len={} limit={:?} offset={:?}",
+            input.scope,
+            input.search.as_deref().unwrap_or("").len(),
+            input.limit,
+            input.offset
+        ),
+    );
     clipboard::query(input)
 }
 
@@ -375,6 +414,7 @@ fn clipboard_update_settings(
     patch: ClipboardSettingsPatch,
 ) -> Result<ClipboardSnapshot, String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(&state, "clipboard", "clipboard.settings.update_requested");
     clipboard::update_settings(patch)
 }
 
@@ -385,6 +425,11 @@ fn clipboard_create_manual(
     text: String,
 ) -> Result<Option<ClipboardEntry>, String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(
+        &state,
+        "clipboard",
+        format!("clipboard.manual_create.requested title_len={} text_len={}", title.len(), text.len()),
+    );
     clipboard::create_manual(title, text)
 }
 
@@ -395,12 +440,18 @@ fn clipboard_update_entry(
     patch: ClipboardEntryPatch,
 ) -> Result<Option<ClipboardEntry>, String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(
+        &state,
+        "clipboard",
+        format!("clipboard.entry.update_requested id={id}"),
+    );
     clipboard::update_entry(id, patch)
 }
 
 #[tauri::command]
 fn clipboard_copy(state: State<'_, AppState>, id: String) -> Result<ClipboardPasteResult, String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(&state, "clipboard", format!("clipboard.copy.requested id={id}"));
     clipboard::copy_entry(id)
 }
 
@@ -411,6 +462,7 @@ fn clipboard_paste(
     id: String,
 ) -> Result<ClipboardPasteResult, String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(&state, "clipboard", format!("clipboard.paste.requested id={id}"));
     let result = clipboard::paste_entry(id)?;
     if result.copied {
         if window_service::is_clipboard_popup_pinned() {
@@ -428,6 +480,11 @@ fn clipboard_copy_text(
     text: String,
 ) -> Result<ClipboardPasteResult, String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(
+        &state,
+        "clipboard",
+        format!("clipboard.copy_text.requested text_len={}", text.len()),
+    );
     clipboard::copy_text(text)
 }
 
@@ -437,6 +494,11 @@ fn clipboard_copy_derived_text(
     text: String,
 ) -> Result<ClipboardPasteResult, String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(
+        &state,
+        "clipboard",
+        format!("clipboard.copy_derived_text.requested text_len={}", text.len()),
+    );
     clipboard::copy_derived_text(text)
 }
 
@@ -447,6 +509,11 @@ fn clipboard_paste_text(
     text: String,
 ) -> Result<ClipboardPasteResult, String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(
+        &state,
+        "clipboard",
+        format!("clipboard.paste_text.requested text_len={}", text.len()),
+    );
     let result = clipboard::paste_text(text)?;
     if result.copied {
         window_service::refocus_clipboard_popup_after_paste(&app);
@@ -457,30 +524,35 @@ fn clipboard_paste_text(
 #[tauri::command]
 fn clipboard_delete(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(&state, "clipboard", format!("clipboard.delete.requested count={}", ids.len()));
     clipboard::delete_entries(ids)
 }
 
 #[tauri::command]
 fn clipboard_restore(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(&state, "clipboard", format!("clipboard.restore.requested count={}", ids.len()));
     clipboard::restore_entries(ids)
 }
 
 #[tauri::command]
 fn clipboard_purge(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(&state, "clipboard", format!("clipboard.purge.requested count={}", ids.len()));
     clipboard::purge_entries(ids)
 }
 
 #[tauri::command]
 fn clipboard_clear_history(state: State<'_, AppState>) -> Result<(), String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(&state, "clipboard", "clipboard.clear_history.requested");
     clipboard::clear_history()
 }
 
 #[tauri::command]
 fn clipboard_open_panel(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     ensure_clipboard_enabled(&state)?;
+    push_debug_log(&state, "clipboard", "clipboard.panel.open_requested");
     window_service::open_clipboard_popup(&app)
 }
 
@@ -501,11 +573,17 @@ fn clipboard_set_panel_dragging(dragging: bool) {
 
 #[tauri::command]
 fn clipboard_start_panel_drag(app: AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        push_debug_log(&state, "clipboard", "clipboard.panel.drag_started");
+    }
     window_service::start_clipboard_popup_drag(&app);
 }
 
 #[tauri::command]
 fn clipboard_open_management(app: AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        push_debug_log(&state, "clipboard", "clipboard.management.open_requested");
+    }
     window_service::close_clipboard_popup(&app);
     show_main_window(&app);
     if let Some(window) = app.get_webview_window("main") {
@@ -525,8 +603,8 @@ fn set_auto_start_enabled(
     save_app_settings(&state, registry.settings())?;
     push_debug_log(
         &state,
-        "info",
-        format!("开机自启{}", if enabled { "已开启" } else { "已关闭" }),
+        "settings",
+        format!("app.autostart.updated enabled={enabled}"),
     );
     app_snapshot(&state, &registry)
 }
@@ -547,7 +625,11 @@ fn open_storage_path(
         .arg(&path)
         .spawn()
         .map_err(|error| format!("打开存储目录失败: {error}"))?;
-    push_debug_log(&state, "info", format!("打开存储目录：{}", path.display()));
+    push_debug_log(
+        &state,
+        "storage",
+        format!("storage.opened path={}", path.display()),
+    );
     Ok(())
 }
 
@@ -600,11 +682,14 @@ fn update_app_settings(
         app_usage::relocate(&next_storage_dir)?;
     }
     save_app_settings(&state, registry.settings())?;
-    push_debug_log(&state, "info", "应用设置已保存");
+    push_debug_log(&state, "settings", "app.settings.saved");
     app_snapshot(&state, &registry)
 }
 
 fn show_main_window(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        push_debug_log(&state, "window", "main_window.show_requested");
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -623,6 +708,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
             "quit" => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    push_debug_log(&state, "app", "tray.quit_requested");
+                }
                 window_service::close_clipboard_popup(app);
                 clipboard::stop();
                 app_usage::stop();
@@ -637,6 +725,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 ..
             } = event
             {
+                if let Some(state) = tray.app_handle().try_state::<AppState>() {
+                    push_debug_log(&state, "window", "tray.left_click_show_requested");
+                }
                 show_main_window(tray.app_handle());
             }
         })
@@ -660,7 +751,11 @@ pub fn run() {
                     if event.state() == ShortcutState::Pressed {
                         let mut handled = false;
                         if let Some(state) = app.try_state::<AppState>() {
-                            push_debug_log(&state, "info", format!("工具快捷键已触发：{shortcut}"));
+                            push_debug_log(
+                                &state,
+                                "hotkey",
+                                format!("tool.hotkey.triggered shortcut={shortcut}"),
+                            );
                             if let Ok(registry) = state.registry.lock() {
                                 let shortcut_text = shortcut.to_string();
                                 if registry.tool_for_shortcut(&shortcut_text).as_deref()
@@ -677,7 +772,7 @@ pub fn run() {
                                     push_debug_log(
                                         &state,
                                         "error",
-                                        format!("剪贴板快捷窗口启动命令失败：{error}"),
+                                        format!("clipboard.popup.open_failed error={error}"),
                                     );
                                 }
                             }
@@ -703,6 +798,9 @@ pub fn run() {
                         })
                         .unwrap_or(true);
                     if should_hide {
+                        if let Some(state) = window.try_state::<AppState>() {
+                            push_debug_log(&state, "window", "main_window.close_to_tray_requested");
+                        }
                         api.prevent_close();
                         let _ = window.hide();
                     }
@@ -739,8 +837,8 @@ pub fn run() {
                         .duration_since(UNIX_EPOCH)
                         .map(|duration| duration.as_millis())
                         .unwrap_or_default(),
-                    level: "info",
-                    message: "LightweightToolset 开发版日志已启动".to_owned(),
+                    level: "app",
+                    message: "app.started profile=development".to_owned(),
                 }])),
             });
             build_tray(app.handle())?;
@@ -758,6 +856,7 @@ pub fn run() {
             set_auto_start_enabled,
             app_usage_get_snapshot,
             app_usage_update_settings,
+            app_usage_update_process,
             app_usage_clear,
             clipboard_get_snapshot,
             clipboard_query,
