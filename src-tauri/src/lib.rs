@@ -28,7 +28,7 @@ use clipboard::{
     ClipboardQueryResult, ClipboardSettingsPatch, ClipboardSnapshot,
 };
 use settings::{AppSettings, CloseBehavior, ThemeMode};
-use tools::{ToolRegistry, ToolSnapshot};
+use tools::{app_hotkey_snapshots, ToolRegistry, ToolSnapshot};
 
 const SETTINGS_FILE: &str = "settings.json";
 const STORAGE_POINTER_FILE: &str = "storage_path.txt";
@@ -52,6 +52,7 @@ pub fn mark_process_start() {
 #[serde(rename_all = "camelCase")]
 pub struct AppSnapshot {
     tools: Vec<ToolSnapshot>,
+    app_hotkeys: Vec<ToolSnapshot>,
     cold_start_ms: u128,
     settings: AppSettings,
 }
@@ -68,6 +69,7 @@ struct DebugLogEntry {
 #[serde(rename_all = "camelCase")]
 struct SettingsPatch {
     theme: Option<ThemeMode>,
+    main_window_always_on_top: Option<bool>,
     auto_check_updates: Option<bool>,
     show_update_notification: Option<bool>,
     window_title: Option<String>,
@@ -84,6 +86,7 @@ fn cold_start_ms(state: &AppState) -> Result<u128, String> {
 fn app_snapshot(state: &AppState, registry: &ToolRegistry) -> Result<AppSnapshot, String> {
     Ok(AppSnapshot {
         tools: registry.snapshot(),
+        app_hotkeys: app_hotkey_snapshots(registry.settings()),
         cold_start_ms: cold_start_ms(state)?,
         settings: registry.settings().clone(),
     })
@@ -310,6 +313,23 @@ fn set_tool_hotkey(
         &state,
         "hotkey",
         format!("tool.hotkey.updated id={tool_id} hotkey={hotkey}"),
+    );
+    app_snapshot(&state, &registry)
+}
+
+#[tauri::command]
+fn clear_tool_hotkey(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tool_id: String,
+) -> Result<AppSnapshot, String> {
+    let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+    registry.clear_hotkey(&app, &tool_id)?;
+    save_app_settings(&state, registry.settings())?;
+    push_debug_log(
+        &state,
+        "hotkey",
+        format!("tool.hotkey.cleared id={tool_id}"),
     );
     app_snapshot(&state, &registry)
 }
@@ -644,6 +664,19 @@ fn update_app_settings(
     if let Some(theme) = patch.theme {
         settings.theme = theme;
     }
+    if let Some(always_on_top) = patch.main_window_always_on_top {
+        settings.main_window_always_on_top = always_on_top;
+        if let Some(window) = app.get_webview_window("main") {
+            window
+                .set_always_on_top(always_on_top)
+                .map_err(|error| format!("更新主窗口置顶失败: {error}"))?;
+        }
+        push_debug_log(
+            &state,
+            "window",
+            format!("main_window.always_on_top.updated enabled={always_on_top}"),
+        );
+    }
     if let Some(auto_check_updates) = patch.auto_check_updates {
         settings.auto_check_updates = auto_check_updates;
     }
@@ -758,7 +791,10 @@ pub fn run() {
                             );
                             if let Ok(registry) = state.registry.lock() {
                                 let shortcut_text = shortcut.to_string();
-                                if registry.tool_for_shortcut(&shortcut_text).as_deref()
+                                let app_hotkey = registry.app_hotkey_for_shortcut(&shortcut_text);
+                                if app_hotkey.as_deref() == Some("main_window") {
+                                    handled = false;
+                                } else if registry.tool_for_shortcut(&shortcut_text).as_deref()
                                     == Some("clipboard")
                                     || registry.only_enabled_tool().as_deref() == Some("clipboard")
                                 {
@@ -823,8 +859,12 @@ pub fn run() {
                 let _ = set_auto_start_plugin(app.handle(), true);
             }
             registry.start_enabled(app.handle())?;
+            if let Err(error) = registry.register_app_hotkeys(app.handle()) {
+                eprintln!("[hotkey] app hotkey registration skipped: {error}");
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title(&registry.settings().window_title);
+                let _ = window.set_always_on_top(registry.settings().main_window_always_on_top);
             }
             app.manage(AppState {
                 registry: Mutex::new(registry),
@@ -851,6 +891,7 @@ pub fn run() {
             push_frontend_debug_log,
             set_tool_enabled,
             set_tool_hotkey,
+            clear_tool_hotkey,
             suspend_tool_hotkeys,
             resume_tool_hotkeys,
             set_auto_start_enabled,

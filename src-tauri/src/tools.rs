@@ -15,6 +15,20 @@ struct ToolDefinition {
     implemented: bool,
 }
 
+struct AppHotkeyDefinition {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    default_hotkey: &'static str,
+}
+
+const APP_HOTKEYS: [AppHotkeyDefinition; 1] = [AppHotkeyDefinition {
+    id: "main_window",
+    name: "呼出主窗口",
+    description: "按下快捷键显示并聚焦主窗口",
+    default_hotkey: "CTRL+ALT+M",
+}];
+
 const TOOLS: [ToolDefinition; 2] = [
     ToolDefinition {
         id: "clipboard",
@@ -63,12 +77,17 @@ pub struct ToolSnapshot {
 impl ToolRegistry {
     pub fn new(mut settings: AppSettings) -> Self {
         let known_tool_ids: Vec<&str> = TOOLS.iter().map(|tool| tool.id).collect();
+        let known_hotkey_ids: Vec<&str> = known_tool_ids
+            .iter()
+            .copied()
+            .chain(APP_HOTKEYS.iter().map(|hotkey| hotkey.id))
+            .collect();
         settings
             .tools
             .retain(|tool_id, _| known_tool_ids.contains(&tool_id.as_str()));
         settings
             .hotkeys
-            .retain(|tool_id, _| known_tool_ids.contains(&tool_id.as_str()));
+            .retain(|hotkey_id, _| known_hotkey_ids.contains(&hotkey_id.as_str()));
 
         for tool in TOOLS.iter() {
             if tool.implemented {
@@ -87,6 +106,12 @@ impl ToolRegistry {
             } else {
                 settings.hotkeys.remove(tool.id);
             }
+        }
+        for hotkey in APP_HOTKEYS.iter() {
+            settings
+                .hotkeys
+                .entry(hotkey.id.to_owned())
+                .or_insert_with(|| hotkey.default_hotkey.to_owned());
         }
         Self {
             enabled: settings.tools.clone(),
@@ -110,6 +135,21 @@ impl ToolRegistry {
             if tool.implemented && self.is_enabled(tool.id) {
                 self.start(app, tool)?;
             }
+        }
+        Ok(())
+    }
+
+    pub fn register_app_hotkeys(&self, app: &AppHandle) -> Result<(), String> {
+        if self.shortcuts_suspended {
+            return Ok(());
+        }
+        for hotkey in APP_HOTKEYS.iter() {
+            let Some(shortcut) = self.shortcut_for(hotkey.id)? else {
+                continue;
+            };
+            app.global_shortcut()
+                .register(shortcut)
+                .map_err(|error| format!("注册软件快捷键失败: {error}"))?;
         }
         Ok(())
     }
@@ -159,24 +199,25 @@ impl ToolRegistry {
     pub fn set_hotkey(
         &mut self,
         app: &AppHandle,
-        tool_id: &str,
+        hotkey_id: &str,
         hotkey: String,
     ) -> Result<(), String> {
-        let tool = TOOLS
-            .iter()
-            .find(|tool| tool.id == tool_id)
-            .ok_or("未知工具")?;
-        if tool.default_hotkey.is_none() {
+        let tool = TOOLS.iter().find(|tool| tool.id == hotkey_id);
+        if tool.is_none() && !APP_HOTKEYS.iter().any(|hotkey| hotkey.id == hotkey_id) {
+            return Err("未知快捷键".to_owned());
+        }
+        if tool.is_some_and(|tool| tool.default_hotkey.is_none()) {
             return Err("该工具不需要快捷键".to_owned());
         }
         let normalized = normalize_hotkey(&hotkey)?;
-        self.ensure_hotkey_available(tool_id, &normalized)?;
-        let previous = self.hotkey_for(tool_id);
+        self.ensure_hotkey_available(hotkey_id, &normalized)?;
+        let previous = self.hotkey_for(hotkey_id);
         if previous == normalized {
             return Ok(());
         }
 
-        if self.is_enabled(tool_id) && self.shortcuts_suspended {
+        let should_register = self.hotkey_should_register(hotkey_id);
+        if should_register && self.shortcuts_suspended {
             let next_shortcut: Shortcut = normalized
                 .parse()
                 .map_err(|error| format!("解析新快捷键失败: {error}"))?;
@@ -189,27 +230,52 @@ impl ToolRegistry {
             app.global_shortcut()
                 .unregister(registered_shortcut)
                 .map_err(|error| format!("释放新快捷键检查失败: {error}"))?;
-        } else if self.is_enabled(tool_id) {
-            let previous_shortcut: Shortcut = previous
-                .parse()
-                .map_err(|error| format!("解析原快捷键失败: {error}"))?;
-            app.global_shortcut()
-                .unregister(previous_shortcut)
-                .map_err(|error| format!("注销原快捷键失败: {error}"))?;
+        } else if should_register {
+            if !previous.is_empty() {
+                let previous_shortcut: Shortcut = previous
+                    .parse()
+                    .map_err(|error| format!("解析原快捷键失败: {error}"))?;
+                app.global_shortcut()
+                    .unregister(previous_shortcut)
+                    .map_err(|error| format!("注销原快捷键失败: {error}"))?;
+            }
             let next_shortcut: Shortcut = normalized
                 .parse()
                 .map_err(|error| format!("解析新快捷键失败: {error}"))?;
             if let Err(error) = app.global_shortcut().register(next_shortcut) {
-                let restore_shortcut: Shortcut = previous
-                    .parse()
-                    .map_err(|parse_error| format!("恢复原快捷键失败: {parse_error}"))?;
-                let _ = app.global_shortcut().register(restore_shortcut);
+                if !previous.is_empty() {
+                    let restore_shortcut: Shortcut = previous
+                        .parse()
+                        .map_err(|parse_error| format!("恢复原快捷键失败: {parse_error}"))?;
+                    let _ = app.global_shortcut().register(restore_shortcut);
+                }
                 return Err(format!("注册新快捷键失败: {error}"));
             }
         }
 
-        self.hotkeys.insert(tool.id.to_owned(), normalized.clone());
-        self.settings.hotkeys.insert(tool.id.to_owned(), normalized);
+        self.hotkeys
+            .insert(hotkey_id.to_owned(), normalized.clone());
+        self.settings
+            .hotkeys
+            .insert(hotkey_id.to_owned(), normalized);
+        Ok(())
+    }
+
+    pub fn clear_hotkey(&mut self, app: &AppHandle, hotkey_id: &str) -> Result<(), String> {
+        let tool = TOOLS.iter().find(|tool| tool.id == hotkey_id);
+        if tool.is_none() && !APP_HOTKEYS.iter().any(|hotkey| hotkey.id == hotkey_id) {
+            return Err("未知快捷键".to_owned());
+        }
+        if tool.is_some_and(|tool| tool.default_hotkey.is_none()) {
+            return Err("该工具不需要快捷键".to_owned());
+        }
+        if self.hotkey_registered(hotkey_id) && !self.shortcuts_suspended {
+            self.unregister_hotkey_if_registered(app, hotkey_id);
+        }
+        self.hotkeys.insert(hotkey_id.to_owned(), String::new());
+        self.settings
+            .hotkeys
+            .insert(hotkey_id.to_owned(), String::new());
         Ok(())
     }
 
@@ -222,6 +288,14 @@ impl ToolRegistry {
                     && self.hotkey_for(tool.id).eq_ignore_ascii_case(&normalized)
             })
             .map(|tool| tool.id.to_owned())
+    }
+
+    pub fn app_hotkey_for_shortcut(&self, shortcut: &str) -> Option<String> {
+        let normalized = normalize_hotkey(shortcut).ok()?;
+        APP_HOTKEYS
+            .iter()
+            .find(|hotkey| self.hotkey_for(hotkey.id).eq_ignore_ascii_case(&normalized))
+            .map(|hotkey| hotkey.id.to_owned())
     }
 
     pub fn only_enabled_tool(&self) -> Option<String> {
@@ -240,14 +314,11 @@ impl ToolRegistry {
         }
         for tool in TOOLS.iter() {
             if self.is_enabled(tool.id) && self.supports_hotkey(tool.id) {
-                let shortcut: Shortcut = self
-                    .hotkey_for(tool.id)
-                    .parse()
-                    .map_err(|error| format!("解析快捷键失败: {error}"))?;
-                app.global_shortcut()
-                    .unregister(shortcut)
-                    .map_err(|error| format!("暂停快捷键失败: {error}"))?;
+                self.unregister_hotkey_if_registered(app, tool.id);
             }
+        }
+        for hotkey in APP_HOTKEYS.iter() {
+            self.unregister_hotkey_if_registered(app, hotkey.id);
         }
         self.shortcuts_suspended = true;
         Ok(())
@@ -260,10 +331,9 @@ impl ToolRegistry {
         let mut registered = Vec::new();
         for tool in TOOLS.iter() {
             if self.is_enabled(tool.id) && self.supports_hotkey(tool.id) {
-                let shortcut: Shortcut = self
-                    .hotkey_for(tool.id)
-                    .parse()
-                    .map_err(|error| format!("解析快捷键失败: {error}"))?;
+                let Some(shortcut) = self.shortcut_for(tool.id)? else {
+                    continue;
+                };
                 if let Err(error) = app.global_shortcut().register(shortcut) {
                     for registered_shortcut in registered {
                         let _ = app.global_shortcut().unregister(registered_shortcut);
@@ -272,6 +342,16 @@ impl ToolRegistry {
                 }
                 registered.push(shortcut);
             }
+        }
+        for hotkey in APP_HOTKEYS.iter() {
+            let Some(shortcut) = self.shortcut_for(hotkey.id)? else {
+                continue;
+            };
+            if let Err(error) = app.global_shortcut().register(shortcut) {
+                eprintln!("[hotkey] app hotkey restore skipped: {error}");
+                continue;
+            }
+            registered.push(shortcut);
         }
         self.shortcuts_suspended = false;
         Ok(())
@@ -291,6 +371,12 @@ impl ToolRegistry {
                     .find(|tool| tool.id == tool_id)
                     .and_then(|tool| tool.default_hotkey.map(str::to_owned))
             })
+            .or_else(|| {
+                APP_HOTKEYS
+                    .iter()
+                    .find(|hotkey| hotkey.id == tool_id)
+                    .map(|hotkey| hotkey.default_hotkey.to_owned())
+            })
             .unwrap_or_default()
     }
 
@@ -305,10 +391,41 @@ impl ToolRegistry {
         if TOOLS
             .iter()
             .any(|tool| tool.id != tool_id && self.hotkey_for(tool.id).eq_ignore_ascii_case(hotkey))
+            || APP_HOTKEYS.iter().any(|app_hotkey| {
+                app_hotkey.id != tool_id
+                    && self.hotkey_for(app_hotkey.id).eq_ignore_ascii_case(hotkey)
+            })
         {
-            return Err("快捷键已被其他工具占用".to_owned());
+            return Err("快捷键已被其他功能占用".to_owned());
         }
         Ok(())
+    }
+
+    fn hotkey_registered(&self, hotkey_id: &str) -> bool {
+        !self.hotkey_for(hotkey_id).is_empty() && self.hotkey_should_register(hotkey_id)
+    }
+
+    fn hotkey_should_register(&self, hotkey_id: &str) -> bool {
+        APP_HOTKEYS.iter().any(|hotkey| hotkey.id == hotkey_id)
+            || (self.is_enabled(hotkey_id) && self.supports_hotkey(hotkey_id))
+    }
+
+    fn shortcut_for(&self, hotkey_id: &str) -> Result<Option<Shortcut>, String> {
+        let hotkey = self.hotkey_for(hotkey_id);
+        if hotkey.is_empty() {
+            return Ok(None);
+        }
+        hotkey
+            .parse()
+            .map(Some)
+            .map_err(|error| format!("解析快捷键失败: {error}"))
+    }
+
+    fn unregister_hotkey_if_registered(&self, app: &AppHandle, hotkey_id: &str) {
+        let Ok(shortcut) = self.hotkey_for(hotkey_id).parse::<Shortcut>() else {
+            return;
+        };
+        let _ = app.global_shortcut().unregister(shortcut);
     }
 
     fn start(&mut self, app: &AppHandle, tool: &ToolDefinition) -> Result<(), String> {
@@ -316,13 +433,11 @@ impl ToolRegistry {
             return Ok(());
         }
         if !self.shortcuts_suspended && tool.default_hotkey.is_some() {
-            let shortcut: Shortcut = self
-                .hotkey_for(tool.id)
-                .parse()
-                .map_err(|error| format!("解析快捷键失败: {error}"))?;
-            app.global_shortcut()
-                .register(shortcut)
-                .map_err(|error| format!("注册快捷键失败: {error}"))?;
+            if let Some(shortcut) = self.shortcut_for(tool.id)? {
+                app.global_shortcut()
+                    .register(shortcut)
+                    .map_err(|error| format!("注册快捷键失败: {error}"))?;
+            }
         }
         if tool.id == "clipboard" {
             clipboard::start()?;
@@ -345,11 +460,7 @@ impl ToolRegistry {
 
     fn stop(&mut self, app: &AppHandle, tool: &ToolDefinition) -> Result<(), String> {
         if !self.shortcuts_suspended && tool.default_hotkey.is_some() {
-            let shortcut: Shortcut = self
-                .hotkey_for(tool.id)
-                .parse()
-                .map_err(|error| format!("解析快捷键失败: {error}"))?;
-            let _ = app.global_shortcut().unregister(shortcut);
+            self.unregister_hotkey_if_registered(app, tool.id);
         }
         window_service::close_tool_window(app, tool.id);
         if tool.id == "clipboard" {
@@ -364,6 +475,26 @@ impl ToolRegistry {
         }
         Ok(())
     }
+}
+
+pub fn app_hotkey_snapshots(settings: &AppSettings) -> Vec<ToolSnapshot> {
+    APP_HOTKEYS
+        .iter()
+        .map(|hotkey| ToolSnapshot {
+            id: hotkey.id,
+            name: hotkey.name,
+            description: hotkey.description,
+            hotkey: settings
+                .hotkeys
+                .get(hotkey.id)
+                .cloned()
+                .unwrap_or_else(|| hotkey.default_hotkey.to_owned()),
+            enabled: true,
+            implemented: true,
+            supports_hotkey: true,
+            worker_running: false,
+        })
+        .collect()
 }
 
 fn normalize_hotkey(value: &str) -> Result<String, String> {
@@ -455,6 +586,9 @@ mod tests {
     fn normalizes_tauri_shortcut_callback_text() {
         assert_eq!(normalize_hotkey("control+alt+KeyZ").unwrap(), "CTRL+ALT+Z");
         assert_eq!(normalize_hotkey("control+alt+KeyV").unwrap(), "CTRL+ALT+V");
-        assert_eq!(normalize_hotkey("control+shift+Digit1").unwrap(), "CTRL+SHIFT+1");
+        assert_eq!(
+            normalize_hotkey("control+shift+Digit1").unwrap(),
+            "CTRL+SHIFT+1"
+        );
     }
 }

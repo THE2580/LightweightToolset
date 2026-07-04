@@ -41,6 +41,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub auto_start: bool,
     #[serde(default)]
+    pub main_window_always_on_top: bool,
+    #[serde(default)]
     pub auto_check_updates: bool,
     #[serde(default)]
     pub show_update_notification: bool,
@@ -61,6 +63,7 @@ impl Default for AppSettings {
             hotkeys: BTreeMap::new(),
             theme: default_theme(),
             auto_start: false,
+            main_window_always_on_top: false,
             auto_check_updates: true,
             show_update_notification: true,
             window_title: default_window_title(),

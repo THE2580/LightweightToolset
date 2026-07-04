@@ -54,6 +54,11 @@ type Tool = {
   workerRunning: boolean;
 };
 
+type HotkeyItem = Tool & {
+  group: "app" | "tool";
+  displayName: string;
+};
+
 type ClipboardEntry = {
   id: string;
   text: string;
@@ -136,6 +141,7 @@ type AppSettings = {
   tools: Record<string, boolean>;
   theme: ThemeMode;
   autoStart: boolean;
+  mainWindowAlwaysOnTop: boolean;
   autoCheckUpdates: boolean;
   showUpdateNotification: boolean;
   windowTitle: string;
@@ -148,6 +154,7 @@ type SettingsPatch = Partial<Omit<AppSettings, "tools" | "autoStart">>;
 
 type AppSnapshot = {
   tools: Tool[];
+  appHotkeys: Tool[];
   coldStartMs: number;
   settings: AppSettings;
 };
@@ -776,6 +783,7 @@ function App() {
           ) : view === "settings" && settings ? (
             <div className="page-enter" key="settings">
               <SettingsView
+                appHotkeys={snapshot?.appHotkeys ?? []}
                 coldStartupMs={snapshot?.coldStartMs ?? 0}
                 initialTab={settingsInitialTab}
                 settings={settings}
@@ -1027,6 +1035,7 @@ function ToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: Settin
 }
 
 function SettingsView({
+  appHotkeys,
   coldStartupMs,
   initialTab,
   settings,
@@ -1036,6 +1045,7 @@ function SettingsView({
   updateChecker,
   updateSettings,
 }: {
+  appHotkeys: Tool[];
   coldStartupMs: number;
   initialTab: SettingsTab;
   settings: AppSettings;
@@ -1128,6 +1138,12 @@ function SettingsView({
               label="开机自启"
               onChange={(value) => setAutoStartEnabled(value)}
             />
+            <ToggleRow
+              checked={settings.mainWindowAlwaysOnTop}
+              description="开启后主窗口会保持在其它窗口之上"
+              label="主窗口始终置顶"
+              onChange={(value) => updateSettings({ mainWindowAlwaysOnTop: value })}
+            />
             <div className="settings-row">
               <div>
                 <h2>主题模式</h2>
@@ -1173,7 +1189,7 @@ function SettingsView({
         ) : null}
 
         {activeTab === "hotkey" ? (
-          <HotkeySettings setSnapshot={setSnapshot} tools={tools} />
+          <HotkeySettings appHotkeys={appHotkeys} setSnapshot={setSnapshot} tools={tools} />
         ) : null}
 
         {activeTab === "logs" ? <DebugLogPanel /> : null}
@@ -1195,14 +1211,38 @@ function SettingsTabButton({ active, icon, label, onClick }: { active: boolean; 
   );
 }
 
-function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<React.SetStateAction<AppSnapshot | null>>; tools: Tool[] }) {
+function HotkeySettings({
+  appHotkeys,
+  setSnapshot,
+  tools,
+}: {
+  appHotkeys: Tool[];
+  setSnapshot: React.Dispatch<React.SetStateAction<AppSnapshot | null>>;
+  tools: Tool[];
+}) {
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
   const [draft, setDraft] = useState<CaptureHotkeyDraft>({ display: "", value: "" });
   const [notice, setNotice] = useState<HotkeyNotice | null>(null);
   const [noticeClosing, setNoticeClosing] = useState(false);
-  const editingTool = tools.find((tool) => tool.id === editingToolId) ?? null;
+  const appItems = appHotkeys
+    .filter((item) => item.supportsHotkey)
+    .map((item) => ({ ...item, group: "app" as const, displayName: item.name }));
+  const toolItems = tools
+    .filter((tool) => tool.supportsHotkey)
+    .map((tool) => ({ ...tool, group: "tool" as const, displayName: hotkeyFeatureName(tool) }));
+  const hotkeyItems: HotkeyItem[] = [...appItems, ...toolItems];
+  const groups: Array<{ id: string; title: string; description: string; items: HotkeyItem[] }> = [
+    { id: "app", title: "软件", description: "控制主程序窗口与全局行为", items: appItems },
+    ...toolItems.map((item) => ({
+      id: item.id,
+      title: item.name,
+      description: `${item.name} 的快捷功能`,
+      items: [item],
+    })),
+  ].filter((group) => group.items.length > 0);
+  const editingTool = hotkeyItems.find((tool) => tool.id === editingToolId) ?? null;
 
-  async function startEditing(tool: Tool) {
+  async function startEditing(tool: HotkeyItem) {
     setEditingToolId(tool.id);
     setDraft({ display: "", value: "" });
     try {
@@ -1287,16 +1327,16 @@ function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<Re
       });
       return;
     }
-    const conflictTool = tools.find((tool) => tool.supportsHotkey && tool.id !== editingToolId && normalizeHotkeyDraft(tool.hotkey) === normalizedDraft);
+    const conflictTool = hotkeyItems.find((tool) => tool.id !== editingToolId && normalizeHotkeyDraft(tool.hotkey) === normalizedDraft);
     if (conflictTool) {
       showNotice({
         phase: "error",
         title: "快捷键冲突",
-        message: `快捷键 ${formatHotkeyForDisplay(normalizedDraft)} 已被 ${conflictTool.name} 使用。`,
+        message: `快捷键 ${formatHotkeyForDisplay(normalizedDraft)} 已被 ${conflictTool.displayName} 使用。`,
         detail: {
           kind: "conflict",
           hotkey: formatHotkeyForDisplay(normalizedDraft),
-          toolName: conflictTool.name,
+          toolName: conflictTool.displayName,
         },
       });
       return;
@@ -1311,7 +1351,7 @@ function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<Re
       showNotice({
         phase: "success",
         title: "快捷键已保存",
-        message: `${editingTool.name} 已更新为 ${formatHotkeyForDisplay(normalizedDraft)}。`,
+        message: `${editingTool.displayName} 已更新为 ${formatHotkeyForDisplay(normalizedDraft)}。`,
       });
     } catch (reason) {
       showNotice({
@@ -1323,47 +1363,100 @@ function HotkeySettings({ setSnapshot, tools }: { setSnapshot: React.Dispatch<Re
     }
   }
 
+  async function clearHotkey(tool: HotkeyItem) {
+    if (editingToolId === tool.id) {
+      await stopEditing();
+    }
+    try {
+      const nextSnapshot = await invoke<AppSnapshot>("clear_tool_hotkey", {
+        toolId: tool.id,
+      });
+      setSnapshot(nextSnapshot);
+      showNotice({
+        phase: "success",
+        title: "快捷键已停用",
+        message: `${tool.displayName} 不再使用快捷键。`,
+      });
+    } catch (reason) {
+      showNotice({
+        phase: "error",
+        title: "快捷键停用失败",
+        message: String(reason),
+        detail: { kind: "plain-error" },
+      });
+    }
+  }
+
   return (
     <div className="settings-section page-enter">
-      {tools.map((tool) => {
-        const isEditing = editingToolId === tool.id;
-        return (
-          <div className="settings-row hotkey-row" key={tool.id}>
+      {groups.map((group) => (
+        <section className="hotkey-group" key={group.id}>
+          <header className="hotkey-group-header">
             <div>
-              <h2>{tool.name}</h2>
-              <p>{tool.supportsHotkey ? (tool.enabled ? "当前快捷键已注册；保存后会立即重新注册并检查冲突" : "工具已禁用；快捷键会保存，启用后注册") : "该工具不需要快捷键"}</p>
+              <h2>{group.title}</h2>
+              <p>{group.description}</p>
             </div>
-            <div className="hotkey-controls">
-              {!tool.supportsHotkey ? (
-                <span className="state-stopped">无快捷键</span>
-              ) : isEditing ? (
-                <>
-                  <button
-                    autoFocus
-                    className={`hotkey-capture ${draft.display ? "" : "empty"}`}
-                    onBlur={() => void stopEditing()}
-                    onKeyDown={captureHotkey}
-                    type="button"
-                  >
-                    {draft.display || "按下快捷键"}
-                  </button>
-                  <button className="primary-action icon-text-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void saveHotkey()} type="button"><Check size={12} />保存</button>
-                  <button className="secondary-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void stopEditing()} type="button">取消</button>
-                </>
-              ) : (
-                <>
-                  <kbd className="hotkey-preview">{formatHotkeyForDisplay(tool.hotkey)}</kbd>
-                  <button className="secondary-action planned-action" onClick={() => void startEditing(tool)} type="button"><Pencil size={12} />编辑</button>
-                </>
-              )}
-            </div>
-          </div>
-        );
-      })}
-      <p className="settings-note">点击捕获框后直接按下组合键；同一工具集内会在保存瞬间检查重复，系统级冲突会在保存注册时弹窗提示。</p>
+          </header>
+          {group.items.map((tool) => {
+            const isEditing = editingToolId === tool.id;
+            return (
+              <div className="settings-row hotkey-row" key={tool.id}>
+                <div>
+                  <h2>{tool.displayName}</h2>
+                  <p>{hotkeyDescription(tool)}</p>
+                </div>
+                <div className="hotkey-controls">
+                  {isEditing ? (
+                    <>
+                      <button
+                        autoFocus
+                        className={`hotkey-capture ${draft.display ? "" : "empty"}`}
+                        onBlur={() => void stopEditing()}
+                        onKeyDown={captureHotkey}
+                        type="button"
+                      >
+                        {draft.display || "按下快捷键"}
+                      </button>
+                      <button className="primary-action icon-text-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void saveHotkey()} type="button"><Check size={12} />保存</button>
+                      <button className="secondary-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void stopEditing()} type="button">取消</button>
+                    </>
+                  ) : (
+                    <>
+                      {tool.hotkey ? <kbd className="hotkey-preview">{formatHotkeyForDisplay(tool.hotkey)}</kbd> : <span className="hotkey-disabled">未设置</span>}
+                      <button aria-label="编辑快捷键" className="secondary-action hotkey-icon-action" title="编辑快捷键" onClick={() => void startEditing(tool)} type="button"><Pencil size={14} /></button>
+                      {tool.hotkey ? <button aria-label="停用快捷键" className="secondary-action hotkey-icon-action danger-action" title="停用快捷键" onClick={() => void clearHotkey(tool)} type="button"><Trash2 size={14} /></button> : null}
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      ))}
+      <p className="settings-note">点击捕获框后直接按下组合键；删除后该功能不再响应全局快捷键，可随时重新编辑启用。</p>
       {notice ? <HotkeyNoticeDialog closing={noticeClosing} notice={notice} onClose={closeNotice} /> : null}
     </div>
   );
+}
+
+function hotkeyFeatureName(tool: Tool) {
+  return ({
+    clipboard: "剪贴板快捷弹窗",
+  } as Record<string, string>)[tool.id] ?? `${tool.name}快捷入口`;
+}
+
+function hotkeyDescription(tool: HotkeyItem) {
+  if (tool.id === "main_window") {
+    return "按下后显示并聚焦主窗口，适合从托盘或其它窗口快速回到工具集。";
+  }
+  if (tool.id === "clipboard") {
+    return tool.enabled
+      ? "按下后打开剪贴板快捷弹窗，用于快速搜索、选择并粘贴历史文本。"
+      : "按下后打开剪贴板快捷弹窗；当前工具已禁用，启用后才会注册快捷键。";
+  }
+  return tool.enabled
+    ? `按下后触发 ${tool.displayName}。`
+    : `按下后触发 ${tool.displayName}；当前工具已禁用，启用后才会注册快捷键。`;
 }
 
 function AppUsageToolPage({ tool }: { tool: Tool }) {
