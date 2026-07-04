@@ -4,25 +4,32 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  Bell,
+  BellOff,
   ChevronLeft,
   ChevronRight,
   Check,
   ChartNoAxesColumn,
+  Clock,
   ClipboardList,
   Copy,
   FileText,
   Gauge,
   FolderOpen,
+  GripVertical,
   Home,
   Info,
   Keyboard,
+  Maximize2,
   Minus,
   Monitor,
   Moon,
+  Pause,
   Pencil,
   PanelLeftClose,
   PanelLeftOpen,
   Pin,
+  Play,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -132,6 +139,39 @@ type AppUsageProcessRow = {
   seconds: number;
 };
 
+type TimerKind = "stopwatch" | "countdown";
+type TimerStatus = "paused" | "running" | "finished";
+
+type TimerEntry = {
+  id: string;
+  name: string;
+  note: string;
+  kind: TimerKind;
+  status: TimerStatus;
+  elapsedMs: number;
+  durationMs: number | null;
+  remainingMs: number | null;
+  progress: number;
+  notificationsEnabled: boolean;
+  order: number;
+  finishedAtMs: number | null;
+};
+
+type TimerSnapshot = {
+  running: boolean;
+  storageBytes: number;
+  timers: TimerEntry[];
+};
+
+type TimerCreateDraft = {
+  name: string;
+  note: string;
+  hours: string;
+  minutes: string;
+  seconds: string;
+  notificationsEnabled: boolean;
+};
+
 type ToastMessage = {
   id: number;
   text: string;
@@ -207,6 +247,7 @@ const AUTHOR_EMAILS = ["2021289500@qq.com", "liangneng20060725@gmail.com"];
 const toolIcons = {
   clipboard: ClipboardList,
   app_usage: ChartNoAxesColumn,
+  timer: Clock,
 };
 const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SUPER", "CMD", "COMMAND"]);
 const TOAST_DURATION_MS = 1400;
@@ -1021,6 +1062,9 @@ function ToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: Settin
   if (tool.id === "app_usage") {
     return <AppUsageToolPage tool={tool} />;
   }
+  if (tool.id === "timer") {
+    return <TimerToolPage tool={tool} />;
+  }
 
   return (
     <section className="tool-page">
@@ -1457,6 +1501,509 @@ function hotkeyDescription(tool: HotkeyItem) {
   return tool.enabled
     ? `按下后触发 ${tool.displayName}。`
     : `按下后触发 ${tool.displayName}；当前工具已禁用，启用后才会注册快捷键。`;
+}
+
+function TimerToolPage({ tool }: { tool: Tool }) {
+  const [snapshot, setSnapshot] = useState<TimerSnapshot | null>(null);
+  const [showStats, setShowStats] = useState(true);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createClosing, setCreateClosing] = useState(false);
+  const [editTarget, setEditTarget] = useState<TimerEntry | null>(null);
+  const [editClosing, setEditClosing] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<TimerEntry | null>(null);
+  const [deleteClosing, setDeleteClosing] = useState(false);
+  const [createKind, setCreateKind] = useState<TimerKind>("stopwatch");
+  const [createDraft, setCreateDraft] = useState<TimerCreateDraft>({
+    name: "",
+    note: "",
+    hours: "0",
+    minutes: "25",
+    seconds: "0",
+    notificationsEnabled: true,
+  });
+  const [now, setNow] = useState(() => new Date());
+  const { pushToast, toast: currentToast } = useToastQueue();
+
+  const loadSnapshot = useCallback(async () => {
+    setSnapshot(await invoke<TimerSnapshot>("timer_get_snapshot"));
+  }, []);
+
+  useEffect(() => {
+    void loadSnapshot();
+    const tick = window.setInterval(() => void loadSnapshot(), 1000);
+    return () => window.clearInterval(tick);
+  }, [loadSnapshot]);
+
+  useEffect(() => {
+    const tick = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(tick);
+  }, []);
+
+  async function createTimer() {
+    const seconds = createKind === "countdown" ? parseDurationParts(createDraft) : null;
+    if (createKind === "countdown" && !seconds) {
+      pushToast("请输入有效倒计时时长");
+      return;
+    }
+    const nextSnapshot = await invoke<TimerSnapshot>("timer_create", {
+      input: {
+        kind: createKind,
+        name: createDraft.name,
+        note: createDraft.note,
+        durationSeconds: seconds,
+        notificationsEnabled: createKind === "countdown" ? createDraft.notificationsEnabled : false,
+      },
+    });
+    setSnapshot(nextSnapshot);
+    setCreateOpen(false);
+    setCreateDraft({
+      name: "",
+      note: "",
+      hours: "0",
+      minutes: "25",
+      seconds: "0",
+      notificationsEnabled: true,
+    });
+    pushToast("计时器已创建");
+  }
+
+  async function runCommand(command: string, id: string, message: string) {
+    const nextSnapshot = await invoke<TimerSnapshot>(command, { id });
+    setSnapshot(nextSnapshot);
+    pushToast(message);
+  }
+
+  async function toggleNotification(timer: TimerEntry) {
+    if (timer.kind !== "countdown") {
+      return;
+    }
+    const nextSnapshot = await invoke<TimerSnapshot>("timer_update", {
+      input: {
+        id: timer.id,
+        notificationsEnabled: !timer.notificationsEnabled,
+      },
+    });
+    setSnapshot(nextSnapshot);
+    pushToast(!timer.notificationsEnabled ? "结束提醒已开启" : "结束提醒已关闭");
+  }
+
+  function updateCreateDraft(patch: Partial<TimerCreateDraft>) {
+    setCreateDraft((current) => ({ ...current, ...patch }));
+  }
+
+  function showReservedToast(label: string) {
+    pushToast(`${label}将在后续版本支持`);
+  }
+
+  function closeCreateDialog() {
+    setCreateClosing(true);
+    window.setTimeout(() => {
+      setCreateOpen(false);
+      setCreateClosing(false);
+    }, 180);
+  }
+
+  function openCreateDialog() {
+    setCreateKind("stopwatch");
+    setCreateDraft({
+      name: "",
+      note: "",
+      hours: "0",
+      minutes: "25",
+      seconds: "0",
+      notificationsEnabled: true,
+    });
+    setCreateOpen(true);
+  }
+
+  function openEditDialog(timer: TimerEntry) {
+    setEditTarget(timer);
+    setCreateKind(timer.kind);
+    setCreateDraft({
+      name: timer.name,
+      note: timer.note,
+      ...secondsToTimerDraftParts(timer.durationMs ? Math.ceil(timer.durationMs / 1000) : 25 * 60),
+      notificationsEnabled: timer.notificationsEnabled,
+    });
+  }
+
+  function closeEditDialog() {
+    setEditClosing(true);
+    window.setTimeout(() => {
+      setEditTarget(null);
+      setEditClosing(false);
+    }, 180);
+  }
+
+  function closeDeleteDialog() {
+    setDeleteClosing(true);
+    window.setTimeout(() => {
+      setDeleteTarget(null);
+      setDeleteClosing(false);
+    }, 180);
+  }
+
+  async function saveEditTimer() {
+    if (!editTarget) {
+      return;
+    }
+    const seconds = editTarget.kind === "countdown" ? parseDurationParts(createDraft) : null;
+    if (editTarget.kind === "countdown" && !seconds) {
+      pushToast("请输入有效倒计时时长");
+      return;
+    }
+    const nextSnapshot = await invoke<TimerSnapshot>("timer_update", {
+      input: {
+        id: editTarget.id,
+        name: createDraft.name,
+        note: createDraft.note,
+        durationSeconds: seconds,
+        notificationsEnabled: editTarget.kind === "countdown" ? createDraft.notificationsEnabled : false,
+      },
+    });
+    setSnapshot(nextSnapshot);
+    closeEditDialog();
+    pushToast("计时器已保存");
+  }
+
+  async function confirmDeleteTimer() {
+    if (!deleteTarget) {
+      return;
+    }
+    await runCommand("timer_delete", deleteTarget.id, "计时器已删除");
+    closeDeleteDialog();
+  }
+
+  async function pauseRunningTimers() {
+    const nextSnapshot = await invoke<TimerSnapshot>("timer_pause_running");
+    setSnapshot(nextSnapshot);
+    pushToast("运行中的计时器已暂停");
+  }
+
+  async function resetActiveTimers() {
+    const nextSnapshot = await invoke<TimerSnapshot>("timer_reset_active");
+    setSnapshot(nextSnapshot);
+    pushToast("计时器已重置");
+  }
+
+  const timers = snapshot?.timers ?? [];
+  const runningCount = timers.filter((timer) => timer.status === "running").length;
+  const resettableCount = timers.filter((timer) => timer.status === "running" || timer.status === "finished" || timer.elapsedMs > 0).length;
+  const detachedCount = 0;
+
+  return (
+    <section className="tool-page timer-page">
+      <header className="timer-header">
+        <div>
+          <div className="timer-heading">
+            <Clock size={22} />
+            <h1>{tool.name}</h1>
+            <button className="secondary-action timer-stats-toggle" onClick={() => setShowStats((value) => !value)} type="button">
+              {showStats ? "隐藏统计卡片" : "显示统计卡片"}
+            </button>
+          </div>
+          <p>{runningCount > 0 ? `${runningCount} 个计时器运行中` : "所有计时器均已暂停"}</p>
+        </div>
+        <div className="timer-header-actions">
+          <button className={`secondary-action timer-bulk-button ${runningCount > 0 ? "visible" : "hidden"}`} disabled={runningCount === 0} onClick={() => void pauseRunningTimers()} type="button">
+            <Pause size={17} />暂停全部
+          </button>
+          <button className={`secondary-action timer-bulk-button ${resettableCount > 0 ? "visible" : "hidden"}`} disabled={resettableCount === 0} onClick={() => void resetActiveTimers()} type="button">
+            <RotateCcw size={17} />重置全部
+          </button>
+          <button className="primary-action timer-add-button" disabled={timers.length >= 20} onClick={openCreateDialog} type="button">
+            <Plus size={17} />添加
+          </button>
+        </div>
+      </header>
+
+      <div className="timer-scroll-area">
+        {showStats ? (
+          <section className="timer-stat-card" aria-label="计时器统计">
+            <article>
+              <span>计时器数量</span>
+              <strong>{timers.length}/20</strong>
+            </article>
+            <article>
+              <span>运行中</span>
+              <strong className="timer-stat-primary">{runningCount}</strong>
+            </article>
+            <article>
+              <span>独立窗口</span>
+              <strong>{detachedCount}</strong>
+            </article>
+          </section>
+        ) : null}
+
+        <section className="timer-local-card" aria-label="本地时间">
+          <div>
+            <span>本地时间</span>
+            <small>{formatTimerDate(now)}</small>
+          </div>
+          <strong>{formatLocalTime(now)}</strong>
+        </section>
+
+        <section className="timer-list" aria-label="计时器列表">
+          {timers.map((timer) => {
+            const isRunning = timer.status === "running";
+            const isFinished = timer.status === "finished";
+            const canReset = !isRunning && (timer.elapsedMs > 0 || isFinished);
+            const stateClassName = timerStateClassName(timer);
+            return (
+              <article className={`timer-card ${stateClassName}`} key={timer.id} onClick={() => openEditDialog(timer)} title={timer.note ? `备注：${timer.note}` : timer.name}>
+                <div className="timer-card-top">
+                  <GripVertical size={18} />
+                  <h2 title={timer.name}>{timer.name}</h2>
+                  <span className={`timer-kind-badge ${timer.kind}`}>{timer.kind === "countdown" ? "倒计时" : "正计时"}</span>
+                  <span className={`timer-status-badge ${stateClassName}`}>{timerStatusLabel(timer)}</span>
+                  {timer.kind === "countdown" ? (
+                    <button
+                    aria-label={timer.notificationsEnabled ? "关闭结束提醒" : "开启结束提醒"}
+                    className={timer.notificationsEnabled ? "secondary-action timer-bell-button active" : "secondary-action timer-bell-button inactive"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void toggleNotification(timer);
+                    }}
+                    title={timer.notificationsEnabled ? "结束提醒已开启" : "结束提醒已关闭"}
+                    type="button"
+                  >
+                    {timer.notificationsEnabled ? <Bell size={18} /> : <BellOff size={18} />}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="timer-card-bottom">
+                  <strong className="timer-main-readout">{formatTimerReadout(timer)}</strong>
+                  <span className="timer-original-duration">
+                    {timer.kind === "countdown" && timer.durationMs ? `原始 ${formatTimerDuration(timer.durationMs)}` : ""}
+                  </span>
+                  <div className="timer-actions">
+                    {isRunning ? (
+                      <button className="timer-action-button primary" title="暂停" onClick={(event) => { event.stopPropagation(); void runCommand("timer_pause", timer.id, "计时器已暂停"); }} type="button"><Pause size={21} /></button>
+                    ) : (
+                      <button className="timer-action-button primary" title="开始" onClick={(event) => { event.stopPropagation(); void runCommand("timer_start", timer.id, "计时器已开始"); }} type="button"><Play size={22} /></button>
+                    )}
+                    {canReset ? (
+                      <button className="timer-action-button" title="重置" onClick={(event) => { event.stopPropagation(); void runCommand("timer_reset", timer.id, "计时器已重置"); }} type="button"><RotateCcw size={19} /></button>
+                    ) : null}
+                    <button className="timer-action-button" title="小悬浮框" onClick={(event) => { event.stopPropagation(); showReservedToast("小悬浮框"); }} type="button"><Monitor size={20} /></button>
+                    <button className="timer-action-button" title="自由窗口" onClick={(event) => { event.stopPropagation(); showReservedToast("自由窗口"); }} type="button"><Maximize2 size={20} /></button>
+                    {!isRunning ? (
+                      <button className="timer-action-button danger" title="删除" onClick={(event) => { event.stopPropagation(); setDeleteTarget(timer); }} type="button"><Trash2 size={20} /></button>
+                    ) : null}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+          {timers.length === 0 ? <p className="timer-empty">暂无计时器，先创建一个倒计时或正计时。</p> : null}
+        </section>
+
+        <p className="settings-note">第一版仅在主窗口内计时；运行中的计时器重启后会恢复为暂停，排序、独立窗口和悬浮窗能力已在数据结构中预留。</p>
+      </div>
+
+      {createOpen ? createPortal(
+        <div className={`dialog-backdrop ${createClosing ? "closing" : ""}`} onMouseDown={closeCreateDialog} role="presentation">
+          <section aria-modal="true" className={`update-dialog timer-create-dialog ${createClosing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog">
+            <header className="update-dialog-header">
+              <div>
+                <h2>添加计时器</h2>
+                <p>名称允许重复，软件内部会使用唯一 ID 管理。</p>
+              </div>
+              <div className="timer-create-kind" role="tablist" aria-label="计时类型">
+                {([
+                  ["stopwatch", "正"],
+                  ["countdown", "倒"],
+                ] as Array<[TimerKind, string]>).map(([value, label]) => (
+                  <button className={createKind === value ? "active" : ""} key={value} onClick={() => setCreateKind(value)} type="button">
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <button aria-label="关闭" className="dialog-close-button" onClick={closeCreateDialog} type="button"><X size={18} /></button>
+            </header>
+            <div className="timer-create-dialog-body">
+              <label>
+                <span>名称</span>
+                <input autoFocus onChange={(event) => updateCreateDraft({ name: event.target.value })} placeholder="例如 工作、煮面、休息" value={createDraft.name} />
+              </label>
+              <label>
+                <span>备注</span>
+                <textarea onChange={(event) => updateCreateDraft({ note: event.target.value })} placeholder="可选，例如用途、提醒内容或上下文" value={createDraft.note} />
+              </label>
+              {createKind === "countdown" ? (
+                <>
+                  <div className="timer-duration-grid">
+                    <label>
+                      <span>小时</span>
+                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ hours: event.target.value })} value={createDraft.hours} />
+                    </label>
+                    <label>
+                      <span>分钟</span>
+                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ minutes: event.target.value })} value={createDraft.minutes} />
+                    </label>
+                    <label>
+                      <span>秒</span>
+                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ seconds: event.target.value })} value={createDraft.seconds} />
+                    </label>
+                  </div>
+                  <label className="timer-create-checkbox">
+                    <span>结束时发送系统通知</span>
+                    <input checked={createDraft.notificationsEnabled} onChange={(event) => updateCreateDraft({ notificationsEnabled: event.currentTarget.checked })} type="checkbox" />
+                  </label>
+                </>
+              ) : null}
+            </div>
+            <footer className="update-dialog-actions">
+              <button className="secondary-action" onClick={closeCreateDialog} type="button">取消</button>
+              <button className="primary-action" onClick={() => void createTimer()} type="button">保存</button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      ) : null}
+      {editTarget ? createPortal(
+        <div className={`dialog-backdrop ${editClosing ? "closing" : ""}`} onMouseDown={closeEditDialog} role="presentation">
+          <section aria-modal="true" className={`update-dialog timer-create-dialog ${editClosing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog">
+            <header className="update-dialog-header">
+              <div>
+                <h2>编辑计时器</h2>
+                <p>修改名称、备注、通知与倒计时时长。</p>
+              </div>
+              <button aria-label="关闭" className="dialog-close-button" onClick={closeEditDialog} type="button"><X size={18} /></button>
+            </header>
+            <div className="timer-create-dialog-body">
+              <label>
+                <span>名称</span>
+                <input autoFocus onChange={(event) => updateCreateDraft({ name: event.target.value })} placeholder="例如 工作、煮面、休息" value={createDraft.name} />
+              </label>
+              <label>
+                <span>备注</span>
+                <textarea onChange={(event) => updateCreateDraft({ note: event.target.value })} placeholder="可选，例如用途、提醒内容或上下文" value={createDraft.note} />
+              </label>
+              {editTarget.kind === "countdown" ? (
+                <>
+                  <div className="timer-duration-grid">
+                    <label>
+                      <span>小时</span>
+                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ hours: event.target.value })} value={createDraft.hours} />
+                    </label>
+                    <label>
+                      <span>分钟</span>
+                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ minutes: event.target.value })} value={createDraft.minutes} />
+                    </label>
+                    <label>
+                      <span>秒</span>
+                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ seconds: event.target.value })} value={createDraft.seconds} />
+                    </label>
+                  </div>
+                  <label className="timer-create-checkbox">
+                    <span>结束时发送系统通知</span>
+                    <input checked={createDraft.notificationsEnabled} onChange={(event) => updateCreateDraft({ notificationsEnabled: event.currentTarget.checked })} type="checkbox" />
+                  </label>
+                </>
+              ) : null}
+            </div>
+            <footer className="update-dialog-actions">
+              <button className="secondary-action" onClick={closeEditDialog} type="button">取消</button>
+              <button className="primary-action" onClick={() => void saveEditTimer()} type="button">保存</button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      ) : null}
+      {deleteTarget ? createPortal(
+        <div className={`dialog-backdrop ${deleteClosing ? "closing" : ""}`} onMouseDown={closeDeleteDialog} role="presentation">
+          <section aria-modal="true" className={`update-dialog timer-delete-dialog ${deleteClosing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog">
+            <header className="update-dialog-header">
+              <div className="update-dialog-icon danger"><Trash2 size={17} /></div>
+              <div>
+                <h2>删除计时器</h2>
+                <p className="dialog-danger-text">确定删除“{deleteTarget.name}”吗？此操作无法撤销。</p>
+              </div>
+              <button aria-label="关闭" className="dialog-close-button" onClick={closeDeleteDialog} type="button"><X size={16} /></button>
+            </header>
+            <footer className="update-dialog-actions">
+              <button className="secondary-action" onClick={closeDeleteDialog} type="button">取消</button>
+              <button className="primary-action" onClick={() => void confirmDeleteTimer()} type="button">确认删除</button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      ) : null}
+      {currentToast ? createPortal(<div className="app-toast" key={currentToast.id}>{currentToast.text}</div>, document.body) : null}
+    </section>
+  );
+}
+
+function parseDurationParts(draft: TimerCreateDraft) {
+  const parts = [draft.hours, draft.minutes, draft.seconds].map((part) => Number.parseInt(part, 10));
+  if (parts.some((part) => !Number.isFinite(part) || part < 0)) {
+    return null;
+  }
+  const [hours, minutes, seconds] = parts;
+  if (minutes > 59 || seconds > 59) {
+    return null;
+  }
+  const total = hours * 3600 + minutes * 60 + seconds;
+  if (total <= 0 || total > 99 * 3600 + 59 * 60 + 59) {
+    return null;
+  }
+  return total;
+}
+
+function secondsToTimerDraftParts(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+  return {
+    hours: String(hours),
+    minutes: String(minutes),
+    seconds: String(seconds),
+  };
+}
+
+function formatTimerReadout(timer: TimerEntry) {
+  const ms = timer.kind === "countdown" ? timer.remainingMs ?? 0 : timer.elapsedMs;
+  return formatTimerDuration(ms);
+}
+
+function formatTimerDuration(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}`;
+}
+
+function timerStatusLabel(timer: TimerEntry) {
+  if (timer.status === "paused") {
+    return timer.elapsedMs > 0 ? "已暂停" : "未开始";
+  }
+  return ({
+    running: "进行中",
+    finished: "已结束",
+  } as Record<Exclude<TimerStatus, "paused">, string>)[timer.status];
+}
+
+function timerStateClassName(timer: TimerEntry) {
+  if (timer.status === "paused") {
+    return timer.elapsedMs > 0 ? "paused" : "not-started";
+  }
+  return timer.status;
+}
+
+function formatTimerDate(value: Date) {
+  const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  return `${pad2(value.getMonth() + 1)}/${pad2(value.getDate())}${weekdays[value.getDay()]}`;
+}
+
+function formatLocalTime(value: Date) {
+  return `${pad2(value.getHours())}:${pad2(value.getMinutes())}:${pad2(value.getSeconds())}`;
+}
+
+function pad2(value: number) {
+  return String(value).padStart(2, "0");
 }
 
 function AppUsageToolPage({ tool }: { tool: Tool }) {

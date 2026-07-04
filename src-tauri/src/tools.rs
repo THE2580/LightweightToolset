@@ -4,7 +4,7 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
-use crate::{app_usage, clipboard, settings::AppSettings, window_service};
+use crate::{app_usage, clipboard, settings::AppSettings, timer, window_service};
 
 struct ToolDefinition {
     id: &'static str,
@@ -29,7 +29,7 @@ const APP_HOTKEYS: [AppHotkeyDefinition; 1] = [AppHotkeyDefinition {
     default_hotkey: "CTRL+ALT+M",
 }];
 
-const TOOLS: [ToolDefinition; 2] = [
+const TOOLS: [ToolDefinition; 3] = [
     ToolDefinition {
         id: "clipboard",
         name: "剪贴板",
@@ -42,6 +42,14 @@ const TOOLS: [ToolDefinition; 2] = [
         id: "app_usage",
         name: "软件使用统计",
         description: "统计本机应用使用时长与活跃窗口",
+        default_hotkey: None,
+        default_enabled: false,
+        implemented: true,
+    },
+    ToolDefinition {
+        id: "timer",
+        name: "计时器",
+        description: "正计时、倒计时与提醒管理",
         default_hotkey: None,
         default_enabled: false,
         implemented: true,
@@ -445,6 +453,9 @@ impl ToolRegistry {
         if tool.id == "app_usage" {
             app_usage::start()?;
         }
+        if tool.id == "timer" {
+            timer::start()?;
+        }
         let (stop, receiver) = mpsc::channel();
         let name = tool.id.to_owned();
         let thread = thread::Builder::new()
@@ -468,6 +479,9 @@ impl ToolRegistry {
         }
         if tool.id == "app_usage" {
             app_usage::stop();
+        }
+        if tool.id == "timer" {
+            timer::stop();
         }
         if let Some(worker) = self.workers.remove(tool.id) {
             let _ = worker.stop.send(());

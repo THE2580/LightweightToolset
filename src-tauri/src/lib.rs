@@ -1,6 +1,7 @@
 mod app_usage;
 mod clipboard;
 mod settings;
+mod timer;
 mod tools;
 mod window_service;
 
@@ -28,6 +29,7 @@ use clipboard::{
     ClipboardQueryResult, ClipboardSettingsPatch, ClipboardSnapshot,
 };
 use settings::{AppSettings, CloseBehavior, ThemeMode};
+use timer::{TimerCreateInput, TimerSnapshot, TimerUpdateInput};
 use tools::{app_hotkey_snapshots, ToolRegistry, ToolSnapshot};
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -198,6 +200,17 @@ fn migrate_storage_files(
         fs::copy(&source_app_usage, &target_app_usage)
             .map_err(|error| format!("迁移软件统计数据失败: {error}"))?;
     }
+
+    let source_timer = default_config_dir.join("timer").join("timer.json");
+    let target_timer = storage_dir.join("timer").join("timer.json");
+    if source_timer.exists() && !target_timer.exists() {
+        if let Some(parent) = target_timer.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建计时器存储目录失败: {error}"))?;
+        }
+        fs::copy(&source_timer, &target_timer)
+            .map_err(|error| format!("迁移计时器数据失败: {error}"))?;
+    }
     Ok(())
 }
 
@@ -367,6 +380,10 @@ fn ensure_app_usage_enabled(state: &State<'_, AppState>) -> Result<(), String> {
     ensure_tool_enabled(state, "app_usage")
 }
 
+fn ensure_timer_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    ensure_tool_enabled(state, "timer")
+}
+
 #[tauri::command]
 fn app_usage_get_snapshot(state: State<'_, AppState>) -> Result<AppUsageSnapshot, String> {
     ensure_app_usage_enabled(&state)?;
@@ -399,6 +416,75 @@ fn app_usage_clear(state: State<'_, AppState>) -> Result<AppUsageSnapshot, Strin
     ensure_app_usage_enabled(&state)?;
     push_debug_log(&state, "app_usage", "app_usage.clear_requested");
     app_usage::clear()
+}
+
+#[tauri::command]
+fn timer_get_snapshot(state: State<'_, AppState>) -> Result<TimerSnapshot, String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", "timer.snapshot.requested");
+    timer::snapshot()
+}
+
+#[tauri::command]
+fn timer_create(
+    state: State<'_, AppState>,
+    input: TimerCreateInput,
+) -> Result<TimerSnapshot, String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", "timer.create_requested");
+    timer::create(input)
+}
+
+#[tauri::command]
+fn timer_update(
+    state: State<'_, AppState>,
+    input: TimerUpdateInput,
+) -> Result<TimerSnapshot, String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", "timer.update_requested");
+    timer::update(input)
+}
+
+#[tauri::command]
+fn timer_start(state: State<'_, AppState>, id: String) -> Result<TimerSnapshot, String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", format!("timer.start_requested id={id}"));
+    timer::start_timer(id)
+}
+
+#[tauri::command]
+fn timer_pause(state: State<'_, AppState>, id: String) -> Result<TimerSnapshot, String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", format!("timer.pause_requested id={id}"));
+    timer::pause_timer(id)
+}
+
+#[tauri::command]
+fn timer_pause_running(state: State<'_, AppState>) -> Result<TimerSnapshot, String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", "timer.pause_running_requested");
+    timer::pause_running_timers()
+}
+
+#[tauri::command]
+fn timer_reset(state: State<'_, AppState>, id: String) -> Result<TimerSnapshot, String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", format!("timer.reset_requested id={id}"));
+    timer::reset_timer(id)
+}
+
+#[tauri::command]
+fn timer_reset_active(state: State<'_, AppState>) -> Result<TimerSnapshot, String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", "timer.reset_active_requested");
+    timer::reset_active_timers()
+}
+
+#[tauri::command]
+fn timer_delete(state: State<'_, AppState>, id: String) -> Result<TimerSnapshot, String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", format!("timer.delete_requested id={id}"));
+    timer::delete_timer(id)
 }
 
 #[tauri::command]
@@ -713,6 +799,7 @@ fn update_app_settings(
         write_storage_pointer(&state.default_config_dir, &next_storage_dir)?;
         clipboard::relocate(&next_storage_dir)?;
         app_usage::relocate(&next_storage_dir)?;
+        timer::relocate(&next_storage_dir)?;
     }
     save_app_settings(&state, registry.settings())?;
     push_debug_log(&state, "settings", "app.settings.saved");
@@ -747,6 +834,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 window_service::close_clipboard_popup(app);
                 clipboard::stop();
                 app_usage::stop();
+                timer::stop();
                 app.exit(0);
             }
             _ => {}
@@ -852,6 +940,7 @@ pub fn run() {
             write_storage_pointer(&config_dir, &storage_dir)?;
             clipboard::init(&storage_dir)?;
             app_usage::init(&storage_dir)?;
+            timer::init(&storage_dir)?;
             let settings_path = settings_path_for(&storage_dir);
             let settings = AppSettings::load(&settings_path)?;
             let mut registry = ToolRegistry::new(settings);
@@ -899,6 +988,15 @@ pub fn run() {
             app_usage_update_settings,
             app_usage_update_process,
             app_usage_clear,
+            timer_get_snapshot,
+            timer_create,
+            timer_update,
+            timer_start,
+            timer_pause,
+            timer_pause_running,
+            timer_reset,
+            timer_reset_active,
+            timer_delete,
             clipboard_get_snapshot,
             clipboard_query,
             clipboard_update_settings,
