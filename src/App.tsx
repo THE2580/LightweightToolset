@@ -284,6 +284,7 @@ const LOG_LEVEL_OPTIONS = [
     options: [
       { label: "Clipboard", value: "clipboard" },
       { label: "App usage", value: "app_usage" },
+      { label: "Timer", value: "timer" },
     ],
   },
 ];

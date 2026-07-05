@@ -288,6 +288,7 @@ fn normalize_debug_log_level(level: String) -> &'static str {
         "settings" => "settings",
         "storage" => "storage",
         "system" => "system",
+        "timer" => "timer",
         "update" => "update",
         "window" => "window",
         _ => "frontend",

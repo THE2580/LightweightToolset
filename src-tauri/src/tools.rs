@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, sync::mpsc, thread};
 
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
-use crate::{app_usage, clipboard, settings::AppSettings, timer, window_service};
+use crate::{app_usage, clipboard, push_debug_log, settings::AppSettings, timer, window_service, AppState};
 
 struct ToolDefinition {
     id: &'static str,
@@ -438,8 +438,10 @@ impl ToolRegistry {
 
     fn start(&mut self, app: &AppHandle, tool: &ToolDefinition) -> Result<(), String> {
         if self.workers.contains_key(tool.id) {
+            log_tool_lifecycle(app, tool.id, "tool.lifecycle.start_skipped already_running=true");
             return Ok(());
         }
+        log_tool_lifecycle(app, tool.id, "tool.lifecycle.start_requested");
         if !self.shortcuts_suspended && tool.default_hotkey.is_some() {
             if let Some(shortcut) = self.shortcut_for(tool.id)? {
                 app.global_shortcut()
@@ -466,10 +468,12 @@ impl ToolRegistry {
             .map_err(|error| format!("启动后台 worker 失败: {error}"))?;
         self.workers
             .insert(tool.id.to_owned(), RunningWorker { stop, thread });
+        log_tool_lifecycle(app, tool.id, "tool.lifecycle.started");
         Ok(())
     }
 
     fn stop(&mut self, app: &AppHandle, tool: &ToolDefinition) -> Result<(), String> {
+        log_tool_lifecycle(app, tool.id, "tool.lifecycle.stop_requested");
         if !self.shortcuts_suspended && tool.default_hotkey.is_some() {
             self.unregister_hotkey_if_registered(app, tool.id);
         }
@@ -481,14 +485,33 @@ impl ToolRegistry {
             app_usage::stop();
         }
         if tool.id == "timer" {
-            timer::stop();
+            let paused_count = timer::stop();
+            log_tool_lifecycle(
+                app,
+                tool.id,
+                format!("timer.lifecycle.stop_paused_running count={paused_count}"),
+            );
         }
         if let Some(worker) = self.workers.remove(tool.id) {
             let _ = worker.stop.send(());
             let _ = worker.thread.join();
         }
+        log_tool_lifecycle(app, tool.id, "tool.lifecycle.stopped");
         Ok(())
     }
+}
+
+fn log_tool_lifecycle(app: &AppHandle, tool_id: &str, message: impl Into<String>) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let level = match tool_id {
+        "app_usage" => "app_usage",
+        "clipboard" => "clipboard",
+        "timer" => "timer",
+        _ => "settings",
+    };
+    push_debug_log(&state, level, message);
 }
 
 pub fn app_hotkey_snapshots(settings: &AppSettings) -> Vec<ToolSnapshot> {

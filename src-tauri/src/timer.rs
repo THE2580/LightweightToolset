@@ -242,17 +242,25 @@ pub fn start() -> Result<(), String> {
     Ok(())
 }
 
-pub fn stop() {
+pub fn stop() -> usize {
     let Some(manager_lock) = TIMER.get() else {
-        return;
+        return 0;
     };
     let Ok(mut manager) = manager_lock.lock() else {
-        return;
+        return 0;
     };
+    let path = manager.path.clone();
+    let store = Arc::clone(&manager.store);
+    let mut paused_count = 0;
+    if let Ok(mut store) = store.lock() {
+        paused_count = pause_running_entries(&mut store);
+    }
     if let Some(worker) = manager.worker.take() {
         let _ = worker.stop.send(());
         let _ = worker.thread.join();
     }
+    let _ = save_store(&path, &store, true);
+    paused_count
 }
 
 pub fn snapshot() -> Result<TimerSnapshot, String> {
@@ -422,19 +430,7 @@ pub fn pause_running_timers() -> Result<TimerSnapshot, String> {
     let manager = manager_lock.lock().map_err(|_| "计时器服务不可用")?;
     {
         let mut store = manager.store.lock().map_err(|_| "计时器数据不可用")?;
-        let now = now_ms();
-        let mut changed = false;
-        for timer in store.timers.iter_mut() {
-            if timer.status == TimerStatus::Running {
-                timer.elapsed_ms = timer_elapsed_ms(timer, now);
-                timer.started_at_ms = None;
-                timer.status = TimerStatus::Paused;
-                changed = true;
-            }
-        }
-        if changed {
-            store.dirty = true;
-        }
+        pause_running_entries(&mut store);
     }
     save_store(&manager.path, &manager.store, true)?;
     drop(manager);
@@ -597,6 +593,23 @@ fn timer_elapsed_ms(timer: &TimerEntry, now: u128) -> u128 {
     }
 }
 
+fn pause_running_entries(store: &mut TimerStore) -> usize {
+    let now = now_ms();
+    let mut paused_count = 0;
+    for timer in store.timers.iter_mut() {
+        if timer.status == TimerStatus::Running {
+            timer.elapsed_ms = timer_elapsed_ms(timer, now);
+            timer.started_at_ms = None;
+            timer.status = TimerStatus::Paused;
+            paused_count += 1;
+        }
+    }
+    if paused_count > 0 {
+        store.dirty = true;
+    }
+    paused_count
+}
+
 fn save_store(path: &Path, store: &Arc<Mutex<TimerStore>>, force: bool) -> Result<(), String> {
     let mut store = store.lock().map_err(|_| "计时器数据不可用")?;
     if !force && !store.dirty {
@@ -688,3 +701,40 @@ fn notify_timer_finished(name: String) {
 
 #[cfg(not(target_os = "windows"))]
 fn notify_timer_finished(_name: String) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pause_running_entries_pauses_and_keeps_elapsed_time() {
+        let now = now_ms();
+        let mut store = TimerStore {
+            timers: vec![TimerEntry {
+                id: "timer-1".to_owned(),
+                name: "Timer".to_owned(),
+                note: String::new(),
+                kind: TimerKind::Stopwatch,
+                status: TimerStatus::Running,
+                elapsed_ms: 1_000,
+                duration_ms: None,
+                started_at_ms: Some(now.saturating_sub(2_000)),
+                finished_at_ms: None,
+                notifications_enabled: false,
+                order: 1,
+                window: TimerWindowState::default(),
+                notified_at_ms: None,
+            }],
+            ..TimerStore::default()
+        };
+
+        let paused_count = pause_running_entries(&mut store);
+
+        let timer = &store.timers[0];
+        assert_eq!(timer.status, TimerStatus::Paused);
+        assert!(timer.started_at_ms.is_none());
+        assert!(timer.elapsed_ms >= 3_000);
+        assert_eq!(paused_count, 1);
+        assert!(store.dirty);
+    }
+}
