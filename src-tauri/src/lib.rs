@@ -3,6 +3,7 @@ mod clipboard;
 mod settings;
 mod timer;
 mod tools;
+mod windows_notification;
 mod window_service;
 
 use std::{
@@ -967,6 +968,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            windows_notification::prepare_app_identity();
             let _supported_window_kinds = window_service::reserved_window_kinds();
             let config_dir = app.path().app_config_dir()?;
             std::fs::create_dir_all(&config_dir)?;

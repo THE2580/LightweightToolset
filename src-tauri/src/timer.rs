@@ -221,7 +221,7 @@ pub fn start() -> Result<(), String> {
                 guard.dirty = guard.dirty || dirty;
             }
             for name in finished {
-                notify_timer_finished(name);
+                send_timer_finished_notification(name);
             }
             let _ = save_store(&path, &store, false);
         })
@@ -662,6 +662,15 @@ fn store_version() -> u32 {
 }
 
 #[cfg(target_os = "windows")]
+fn send_timer_finished_notification(name: String) {
+    crate::windows_notification::notify_timer_finished(&name);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn send_timer_finished_notification(_name: String) {}
+
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
 fn notify_timer_finished(name: String) {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
