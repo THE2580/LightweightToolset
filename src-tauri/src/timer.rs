@@ -54,18 +54,7 @@ pub struct TimerEntry {
     #[serde(default)]
     pub order: u32,
     #[serde(default)]
-    pub window: TimerWindowState,
-    #[serde(default)]
     notified_at_ms: Option<u128>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TimerWindowState {
-    #[serde(default)]
-    pub compact_open: bool,
-    #[serde(default)]
-    pub detached_open: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -322,7 +311,6 @@ pub fn create(input: TimerCreateInput) -> Result<TimerSnapshot, String> {
             finished_at_ms: None,
             notifications_enabled,
             order,
-            window: TimerWindowState::default(),
             notified_at_ms: None,
         });
         store.dirty = true;
@@ -722,7 +710,6 @@ mod tests {
                 finished_at_ms: None,
                 notifications_enabled: false,
                 order: 1,
-                window: TimerWindowState::default(),
                 notified_at_ms: None,
             }],
             ..TimerStore::default()

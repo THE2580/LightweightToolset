@@ -223,7 +223,9 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .timer-local-card div { display: grid; gap: 5px; }
 .timer-local-card small { color: #637392; font-size: 12px; }
 .timer-local-card strong { color: var(--text); font-family: Consolas, "Cascadia Mono", monospace; font-size: 20px; line-height: 1; letter-spacing: 0; }
+.timer-local-card.free-open { border-color: #2b63e8; background: #f4f8ff; box-shadow: inset 3px 0 0 #2b63e8, 0 8px 18px rgba(43, 99, 232, 0.12); }
 .timer-stat-card:hover, .timer-local-card:hover { border-color: #9fb8e2; box-shadow: 0 8px 18px rgba(28, 55, 99, 0.1); transform: translateY(-1px); }
+.timer-local-card.free-open:hover { border-color: #1f58d6; box-shadow: inset 3px 0 0 #1f58d6, 0 9px 20px rgba(43, 99, 232, 0.16); }
 .timer-list { display: flex; min-height: 0; flex: 1 0 auto; flex-direction: column; gap: 8px; list-style: none; }
 .timer-reorder-item { position: relative; list-style: none; touch-action: none; will-change: transform; }
 .timer-reorder-item.dragging { z-index: 20; }
@@ -238,7 +240,7 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .timer-card.paused:hover { border-color: #c97900; background: #fff3d4; box-shadow: inset 4px 0 0 #c97900, inset 0 0 0 1px rgba(201, 92, 0, 0.16), 0 9px 20px rgba(184, 116, 0, 0.14); transform: translateY(-1px); }
 .timer-card.finished:hover { border-color: #ef4444; background: #fff0f0; box-shadow: inset 4px 0 0 #dc2626, inset 0 0 0 1px rgba(220, 38, 38, 0.14), 0 9px 20px rgba(220, 38, 38, 0.14); transform: translateY(-1px); }
 .timer-list.reordering .timer-card:hover { transform: none; }
-.timer-card-top { display: grid; grid-template-columns: auto minmax(0, max-content) auto auto minmax(8px, 1fr) 194px; align-items: center; gap: 8px; min-width: 0; }
+.timer-card-top { display: grid; grid-template-columns: auto minmax(0, max-content) auto auto minmax(8px, 1fr); align-items: center; gap: 8px; min-width: 0; }
 .timer-drag-handle { display: grid; width: 20px; height: 28px; place-items: center; border-radius: 7px; color: #71819e; cursor: grab; touch-action: none; user-select: none; transition: color 140ms ease, background-color 140ms ease, transform 140ms ease; }
 .timer-drag-handle:hover { color: var(--primary); background: #edf5ff; transform: translateY(-1px); }
 .timer-drag-handle:active { cursor: grabbing; }
@@ -251,8 +253,6 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .timer-status-badge.running { color: #1d4ed8; background: #dbeafe; }
 .timer-status-badge.paused { color: #a16207; background: #fef3c7; }
 .timer-status-badge.finished { color: #b91c1c; background: #fee2e2; }
-.timer-bell-button { display: grid; grid-column: 6; width: 34px; height: 34px; place-self: center end; place-items: center; padding: 0; border-radius: 8px; }
-.timer-bell-button.active { border-color: #9bb9f4; color: #1d4ed8; background: #eff6ff; box-shadow: inset 0 0 0 1px rgba(43, 99, 232, 0.1); }
 .timer-bell-button.inactive { border-color: #dbe4f0; color: #7a879d; background: #f8fafc; opacity: 0.72; }
 .timer-bell-button.inactive:hover { opacity: 1; }
 .timer-card-note { display: none; }
@@ -264,6 +264,10 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .timer-action-button:hover { border-color: #8fb0e2; color: var(--primary); background: #eef5ff; transform: translateY(-1px); box-shadow: 0 5px 12px rgba(43, 99, 232, 0.12); }
 .timer-action-button.primary { border-color: var(--primary); color: #fff; background: var(--primary); }
 .timer-action-button.primary:hover { border-color: #1f58d6; color: #fff; background: #1f58d6; }
+.timer-action-button.active { border-color: #2b63e8; color: #fff; background: #2b63e8; box-shadow: 0 5px 12px rgba(43, 99, 232, 0.18); }
+.timer-action-button.active:hover { border-color: #1f58d6; color: #fff; background: #1f58d6; }
+.timer-action-button.timer-bell-button.active { border-color: #45d483; color: #047857; background: #dcfce7; box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.16), 0 5px 12px rgba(34, 197, 94, 0.16); }
+.timer-action-button.timer-bell-button.active:hover { border-color: #22c55e; color: #065f46; background: #bbf7d0; }
 .timer-action-button.danger { border-color: #fecaca; color: #dc2626; background: #fff7f7; }
 .timer-action-button.danger:hover { border-color: #fca5a5; color: #b91c1c; background: #fff0f0; box-shadow: 0 5px 12px rgba(220, 38, 38, 0.1); }
 .timer-empty { display: grid; min-height: 168px; place-items: center; margin: 0; border: 1px dashed #cddbf0; border-radius: 13px; color: #607190; font-size: 12px; }

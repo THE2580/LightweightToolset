@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Reorder, useDragControls } from "framer-motion";
@@ -178,6 +179,86 @@ type TimerDurationField = "hours" | "minutes" | "seconds";
 
 const TIMER_LAYOUT_TRANSITION = { type: "spring", stiffness: 680, damping: 52, mass: 0.75 } as const;
 const TIMER_DRAG_TRANSITION = { type: "spring", stiffness: 640, damping: 46, mass: 0.7 } as const;
+
+function timerFreeWindowLabel(id: string) {
+  return `tool-timer-free-${id.replace(/[^a-zA-Z0-9-]/g, "_")}`;
+}
+
+function waitForWindowCreated(webviewWindow: WebviewWindow, label: string) {
+  return new Promise<void>((resolve, reject) => {
+    let done = false;
+    const timeout = window.setTimeout(() => {
+      if (!done) {
+        done = true;
+        reject(new Error(`${label} 创建超时`));
+      }
+    }, 1500);
+
+    webviewWindow.once("tauri://created", () => {
+      if (!done) {
+        done = true;
+        window.clearTimeout(timeout);
+        resolve();
+      }
+    });
+    webviewWindow.once("tauri://error", (event) => {
+      if (!done) {
+        done = true;
+        window.clearTimeout(timeout);
+        reject(new Error(String(event.payload)));
+      }
+    });
+  });
+}
+
+async function openFreeWindow(label: string, url: string, title: string) {
+  const existing = await WebviewWindow.getByLabel(label);
+  if (existing) {
+    await existing.unminimize().catch(() => undefined);
+    await existing.show().catch(() => undefined);
+    await existing.setFocus().catch(() => undefined);
+    return;
+  }
+
+  const mainWindow = getCurrentWindow();
+  const mainScaleFactor = await mainWindow.scaleFactor();
+  const mainSize = (await mainWindow.innerSize()).toLogical(mainScaleFactor);
+  const width = Math.max(360, mainSize.width / 2);
+  const height = Math.max(240, mainSize.height / 2);
+  const created = new WebviewWindow(label, {
+    url,
+    title,
+    width,
+    height,
+    minWidth: Math.max(300, width - 20),
+    minHeight: Math.max(180, height - 10),
+    resizable: true,
+    decorations: false,
+    maximizable: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    visible: false,
+    focus: false,
+  });
+  await waitForWindowCreated(created, title);
+  await created.center();
+  await created.show();
+  await created.setFocus();
+}
+
+async function closeFreeWindow(label: string) {
+  const existing = await WebviewWindow.getByLabel(label);
+  if (existing) {
+    await existing.close();
+  }
+}
+
+async function getOpenFreeWindowLabels() {
+  const windows = await WebviewWindow.getAll();
+  return windows
+    .map((window) => window.label)
+    .filter((label) => label === "tool-timer-clock" || label.startsWith("tool-timer-free-"));
+}
 
 function sameTimerOrder(first: string[], second: string[]) {
   return first.length === second.length && first.every((id, index) => id === second[index]);
@@ -1579,6 +1660,8 @@ function TimerToolPage({ tool }: { tool: Tool }) {
   const [timerDragging, setTimerDragging] = useState(false);
   const [draggingTimerId, setDraggingTimerId] = useState<string | null>(null);
   const [timerDragSettling, setTimerDragSettling] = useState(false);
+  const [detachedCount, setDetachedCount] = useState(0);
+  const [openFreeWindowLabels, setOpenFreeWindowLabels] = useState<Set<string>>(() => new Set());
   const [createKind, setCreateKind] = useState<TimerKind>("stopwatch");
   const [createDraft, setCreateDraft] = useState<TimerCreateDraft>({
     name: "",
@@ -1605,11 +1688,30 @@ function TimerToolPage({ tool }: { tool: Tool }) {
     setSnapshot(await invoke<TimerSnapshot>("timer_get_snapshot"));
   }, []);
 
+  const loadDetachedCount = useCallback(async () => {
+    try {
+      const labels = await getOpenFreeWindowLabels();
+      setOpenFreeWindowLabels(new Set(labels));
+      setDetachedCount(labels.length);
+    } catch {
+      try {
+        setDetachedCount(await invoke<number>("timer_get_free_window_count"));
+      } catch {
+        setDetachedCount(0);
+      }
+      setOpenFreeWindowLabels(new Set());
+    }
+  }, []);
+
   useEffect(() => {
     void loadSnapshot();
-    const tick = window.setInterval(() => void loadSnapshot(), 1000);
+    void loadDetachedCount();
+    const tick = window.setInterval(() => {
+      void loadSnapshot();
+      void loadDetachedCount();
+    }, 1000);
     return () => window.clearInterval(tick);
-  }, [loadSnapshot]);
+  }, [loadSnapshot, loadDetachedCount]);
 
   useEffect(() => {
     const tick = window.setInterval(() => setNow(new Date()), 1000);
@@ -1726,10 +1828,6 @@ function TimerToolPage({ tool }: { tool: Tool }) {
     });
   }
 
-  function showReservedToast(label: string) {
-    pushToast(`${label}将在后续版本支持`);
-  }
-
   function closeCreateDialog() {
     setCreateClosing(true);
     window.setTimeout(() => {
@@ -1825,6 +1923,40 @@ function TimerToolPage({ tool }: { tool: Tool }) {
     pushToast("计时器已重置");
   }
 
+  async function openTimerFreeWindow(timer: TimerEntry) {
+    const label = timerFreeWindowLabel(timer.id);
+    try {
+      if (openFreeWindowLabels.has(label)) {
+        await closeFreeWindow(label);
+        await loadDetachedCount();
+        pushToast("自由窗口已关闭");
+        return;
+      }
+      await openFreeWindow(label, `free.html?kind=timer&id=${encodeURIComponent(timer.id)}`, timer.name);
+      await loadDetachedCount();
+      pushToast("自由窗口已打开");
+    } catch (error) {
+      pushToast(`打开自由窗口失败：${String(error)}`);
+    }
+  }
+
+  async function openClockFreeWindow() {
+    const label = "tool-timer-clock";
+    try {
+      if (openFreeWindowLabels.has(label)) {
+        await closeFreeWindow(label);
+        await loadDetachedCount();
+        pushToast("本地时间窗口已关闭");
+        return;
+      }
+      await openFreeWindow(label, "free.html?kind=clock", "本地时间");
+      await loadDetachedCount();
+      pushToast("本地时间窗口已打开");
+    } catch (error) {
+      pushToast(`打开本地时间窗口失败：${String(error)}`);
+    }
+  }
+
   async function persistTimerOrder(ids: string[]) {
     try {
       await invoke<TimerSnapshot>("timer_reorder", {
@@ -1889,7 +2021,6 @@ function TimerToolPage({ tool }: { tool: Tool }) {
 
   const runningCount = timers.filter((timer) => timer.status === "running").length;
   const resettableCount = timers.filter((timer) => timer.status === "running" || timer.status === "finished" || timer.elapsedMs > 0).length;
-  const detachedCount = 0;
 
   return (
     <section className="tool-page timer-page">
@@ -1935,7 +2066,20 @@ function TimerToolPage({ tool }: { tool: Tool }) {
           </section>
         </div>
 
-        <section className="timer-local-card" aria-label="本地时间">
+        <section
+          className={`timer-local-card ${openFreeWindowLabels.has("tool-timer-clock") ? "free-open" : ""}`}
+          aria-label="本地时间"
+          onClick={() => void openClockFreeWindow()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              void openClockFreeWindow();
+            }
+          }}
+          role="button"
+          tabIndex={0}
+          title="点击打开本地时间自由窗口"
+        >
           <div>
             <span>本地时间</span>
             <small>{formatTimerDate(now)}</small>
@@ -1961,6 +2105,7 @@ function TimerToolPage({ tool }: { tool: Tool }) {
             const isFinished = timer.status === "finished";
             const canReset = !isRunning && (timer.elapsedMs > 0 || isFinished);
             const stateClassName = timerStateClassName(timer);
+            const freeWindowOpen = openFreeWindowLabels.has(timerFreeWindowLabel(timer.id));
             return (
               <TimerReorderCard
                 className={`timer-card ${stateClassName} ${draggingTimerId === timer.id ? "dragging" : ""}`}
@@ -1994,20 +2139,6 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                   <h2 title={timer.name}>{timer.name}</h2>
                   <span className={`timer-kind-badge ${timer.kind}`}>{timer.kind === "countdown" ? "倒计时" : "正计时"}</span>
                   <span className={`timer-status-badge ${stateClassName}`}>{timerStatusLabel(timer)}</span>
-                  {timer.kind === "countdown" ? (
-                    <button
-                    aria-label={timer.notificationsEnabled ? "关闭结束提醒" : "开启结束提醒"}
-                    className={timer.notificationsEnabled ? "secondary-action timer-bell-button active" : "secondary-action timer-bell-button inactive"}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void toggleNotification(timer);
-                    }}
-                    title={timer.notificationsEnabled ? "结束提醒已开启" : "结束提醒已关闭"}
-                    type="button"
-                  >
-                    {timer.notificationsEnabled ? <Bell size={18} /> : <BellOff size={18} />}
-                    </button>
-                  ) : null}
                 </div>
                 <div className="timer-card-bottom">
                   <strong className="timer-main-readout">{formatTimerReadout(timer)}</strong>
@@ -2017,14 +2148,27 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                   <div className="timer-actions">
                     {isRunning ? (
                       <button className="timer-action-button primary" title="暂停" onClick={(event) => { event.stopPropagation(); void runCommand("timer_pause", timer.id, "计时器已暂停"); }} type="button"><Pause size={21} /></button>
-                    ) : (
+                    ) : !isFinished ? (
                       <button className="timer-action-button primary" title="开始" onClick={(event) => { event.stopPropagation(); void runCommand("timer_start", timer.id, "计时器已开始"); }} type="button"><Play size={22} /></button>
-                    )}
+                    ) : null}
                     {canReset ? (
                       <button className="timer-action-button" title="重置" onClick={(event) => { event.stopPropagation(); void runCommand("timer_reset", timer.id, "计时器已重置"); }} type="button"><RotateCcw size={19} /></button>
                     ) : null}
-                    <button className="timer-action-button" title="小悬浮框" onClick={(event) => { event.stopPropagation(); showReservedToast("小悬浮框"); }} type="button"><Monitor size={20} /></button>
-                    <button className="timer-action-button" title="自由窗口" onClick={(event) => { event.stopPropagation(); showReservedToast("自由窗口"); }} type="button"><Maximize2 size={20} /></button>
+                    {timer.kind === "countdown" ? (
+                      <button
+                        aria-label={timer.notificationsEnabled ? "关闭结束提醒" : "开启结束提醒"}
+                        className={timer.notificationsEnabled ? "timer-action-button timer-bell-button active" : "timer-action-button timer-bell-button inactive"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void toggleNotification(timer);
+                        }}
+                        title={timer.notificationsEnabled ? "结束提醒已开启" : "结束提醒已关闭"}
+                        type="button"
+                      >
+                        {timer.notificationsEnabled ? <Bell size={18} /> : <BellOff size={18} />}
+                      </button>
+                    ) : null}
+                    <button className={`timer-action-button ${freeWindowOpen ? "active" : ""}`} title={freeWindowOpen ? "关闭自由窗口" : "自由窗口"} onClick={(event) => { event.stopPropagation(); void openTimerFreeWindow(timer); }} type="button"><Maximize2 size={20} /></button>
                     {!isRunning ? (
                       <button className="timer-action-button danger" title="删除" onClick={(event) => { event.stopPropagation(); setDeleteTarget(timer); }} type="button"><Trash2 size={20} /></button>
                     ) : null}
@@ -2038,7 +2182,6 @@ function TimerToolPage({ tool }: { tool: Tool }) {
         </Reorder.Group>
         )}
 
-        <p className="settings-note">第一版仅在主窗口内计时；运行中的计时器重启后会恢复为暂停，排序、独立窗口和悬浮窗能力已在数据结构中预留。</p>
       </div>
 
       {createOpen ? createPortal(

@@ -499,6 +499,30 @@ fn timer_delete(state: State<'_, AppState>, id: String) -> Result<TimerSnapshot,
 }
 
 #[tauri::command]
+fn timer_open_free_window(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", format!("timer.free_window.open_requested id={id}"));
+    window_service::open_timer_free_window(&app, &id)
+}
+
+#[tauri::command]
+fn timer_open_clock_window(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", "timer.clock_window.open_requested");
+    window_service::open_timer_clock_window(&app)
+}
+
+#[tauri::command]
+fn timer_get_free_window_count(app: AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
+    ensure_timer_enabled(&state)?;
+    Ok(window_service::timer_free_window_count(&app))
+}
+
+#[tauri::command]
 fn clipboard_get_snapshot(state: State<'_, AppState>) -> Result<ClipboardSnapshot, String> {
     ensure_clipboard_enabled(&state)?;
     push_debug_log(&state, "clipboard", "clipboard.snapshot.requested");
@@ -1009,6 +1033,9 @@ pub fn run() {
             timer_reset_active,
             timer_reorder,
             timer_delete,
+            timer_open_free_window,
+            timer_open_clock_window,
+            timer_get_free_window_count,
             clipboard_get_snapshot,
             clipboard_query,
             clipboard_update_settings,

@@ -34,6 +34,7 @@ export default defineConfig(async () => ({
       input: {
         main: "index.html",
         popup: "popup.html",
+        free: "free.html",
       },
     },
   },

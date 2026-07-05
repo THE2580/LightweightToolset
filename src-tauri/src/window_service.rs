@@ -30,6 +30,92 @@ pub fn close_tool_window(app: &AppHandle, tool_id: &str) {
     if tool_id == "clipboard" {
         close_clipboard_popup(app);
     }
+    if tool_id == "timer" {
+        close_timer_free_windows(app);
+    }
+}
+
+pub fn open_timer_free_window(app: &AppHandle, timer_id: &str) -> Result<(), String> {
+    let label = timer_free_window_label(timer_id);
+    if let Some(window) = app.get_webview_window(&label) {
+        focus_window(&window);
+        log_window(app, "timer", format!("timer.free_window.focused id={timer_id}"));
+        return Ok(());
+    }
+
+    let url = WebviewUrl::App(format!("free.html?kind=timer&id={timer_id}").into());
+    let window = WebviewWindowBuilder::new(app, &label, url)
+        .title("计时器")
+        .inner_size(300.0, 186.0)
+        .min_inner_size(260.0, 160.0)
+        .resizable(true)
+        .maximizable(false)
+        .always_on_top(true)
+        .visible(false)
+        .build()
+        .map_err(|error| format!("打开计时器自由窗口失败: {error}"))?;
+    window.show().map_err(|error| format!("显示计时器自由窗口失败: {error}"))?;
+    focus_window(&window);
+    log_window(app, "timer", format!("timer.free_window.opened id={timer_id}"));
+    Ok(())
+}
+
+pub fn open_timer_clock_window(app: &AppHandle) -> Result<(), String> {
+    let label = "tool-timer-clock";
+    if let Some(window) = app.get_webview_window(label) {
+        focus_window(&window);
+        log_window(app, "timer", "timer.clock_window.focused");
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App("free.html?kind=clock".into()))
+        .title("本地时间")
+        .inner_size(300.0, 156.0)
+        .min_inner_size(260.0, 136.0)
+        .resizable(true)
+        .maximizable(false)
+        .always_on_top(true)
+        .visible(false)
+        .build()
+        .map_err(|error| format!("打开本地时间自由窗口失败: {error}"))?;
+    window.show().map_err(|error| format!("显示本地时间自由窗口失败: {error}"))?;
+    focus_window(&window);
+    log_window(app, "timer", "timer.clock_window.opened");
+    Ok(())
+}
+
+pub fn timer_free_window_count(app: &AppHandle) -> usize {
+    app.webview_windows()
+        .values()
+        .filter(|window| {
+            window.label() == "tool-timer-clock" || window.label().starts_with("tool-timer-free-")
+        })
+        .count()
+}
+
+fn close_timer_free_windows(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("tool-timer-clock") {
+        let _ = window.close();
+    }
+    for window in app.webview_windows().into_values() {
+        if window.label().starts_with("tool-timer-free-") {
+            let _ = window.close();
+        }
+    }
+}
+
+fn timer_free_window_label(timer_id: &str) -> String {
+    let safe_id: String = timer_id
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() || character == '-' { character } else { '_' })
+        .collect();
+    format!("tool-timer-free-{safe_id}")
+}
+
+fn focus_window(window: &tauri::WebviewWindow) {
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 pub fn open_clipboard_popup(app: &AppHandle) -> Result<(), String> {
@@ -189,6 +275,12 @@ pub fn refocus_clipboard_popup_after_paste(app: &AppHandle) {
 fn log_popup(app: &AppHandle, level: &'static str, message: impl Into<String>) {
     if let Some(state) = app.try_state::<AppState>() {
         let level = if level == "error" { "error" } else { "clipboard" };
+        push_debug_log(&state, level, message);
+    }
+}
+
+fn log_window(app: &AppHandle, level: &'static str, message: impl Into<String>) {
+    if let Some(state) = app.try_state::<AppState>() {
         push_debug_log(&state, level, message);
     }
 }
