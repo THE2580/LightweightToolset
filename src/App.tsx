@@ -11,6 +11,8 @@ import {
   BellOff,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   Check,
   ChartNoAxesColumn,
   Clock,
@@ -168,7 +170,6 @@ type TimerSnapshot = {
 
 type TimerCreateDraft = {
   name: string;
-  note: string;
   hours: string;
   minutes: string;
   seconds: string;
@@ -176,6 +177,7 @@ type TimerCreateDraft = {
 };
 
 type TimerDurationField = "hours" | "minutes" | "seconds";
+type TimerDurationParts = Pick<TimerCreateDraft, TimerDurationField>;
 
 const TIMER_LAYOUT_TRANSITION = { type: "spring", stiffness: 680, damping: 52, mass: 0.75 } as const;
 const TIMER_DRAG_TRANSITION = { type: "spring", stiffness: 640, damping: 46, mass: 0.7 } as const;
@@ -1647,6 +1649,226 @@ function TimerReorderCard({
   );
 }
 
+function TimerDurationPicker({
+  value,
+  onChange,
+}: {
+  value: TimerDurationParts;
+  onChange: (patch: Partial<TimerDurationParts>) => void;
+}) {
+  const inputBufferRef = useRef<Partial<Record<TimerDurationField, string>>>({});
+  const valueRef = useRef(value);
+  const stepQueueRef = useRef<Array<{ field: TimerDurationField; delta: number }>>([]);
+  const stepFrameRef = useRef<number | null>(null);
+  const holdTimeoutRef = useRef<number | null>(null);
+  const holdActiveRef = useRef(false);
+  const holdStartedRef = useRef(false);
+  const holdStepCountRef = useRef(0);
+  const fields: Array<{ key: TimerDurationField; label: string }> = [
+    { key: "hours", label: "小时" },
+    { key: "minutes", label: "分钟" },
+    { key: "seconds", label: "秒" },
+  ];
+
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+
+  useEffect(() => () => {
+    if (stepFrameRef.current !== null) {
+      window.cancelAnimationFrame(stepFrameRef.current);
+    }
+    if (holdTimeoutRef.current !== null) {
+      window.clearTimeout(holdTimeoutRef.current);
+    }
+  }, []);
+
+  function fieldValue(field: TimerDurationField) {
+    return clampDurationPart(value[field], durationFieldMax(field));
+  }
+
+  function fieldValueFromRef(field: TimerDurationField) {
+    return clampDurationPart(valueRef.current[field], durationFieldMax(field));
+  }
+
+  function updateField(field: TimerDurationField, nextValue: number) {
+    const next = String(wrapDurationPart(nextValue, durationFieldMax(field)));
+    valueRef.current = { ...valueRef.current, [field]: next };
+    onChange({ [field]: next });
+  }
+
+  function stepFieldNow(field: TimerDurationField, delta: number) {
+    inputBufferRef.current[field] = "";
+    updateField(field, fieldValueFromRef(field) + delta);
+  }
+
+  function flushQueuedStep() {
+    const nextStep = stepQueueRef.current.shift();
+    if (nextStep) {
+      stepFieldNow(nextStep.field, nextStep.delta);
+    }
+    if (stepQueueRef.current.length > 0) {
+      stepFrameRef.current = window.requestAnimationFrame(flushQueuedStep);
+    } else {
+      stepFrameRef.current = null;
+    }
+  }
+
+  function queueStepField(field: TimerDurationField, delta: number) {
+    stepQueueRef.current.push({ field, delta });
+    if (stepFrameRef.current === null) {
+      stepFrameRef.current = window.requestAnimationFrame(flushQueuedStep);
+    }
+  }
+
+  function stopHoldStep() {
+    holdActiveRef.current = false;
+    if (holdTimeoutRef.current !== null) {
+      window.clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
+    }
+  }
+
+  function scheduleHoldStep(field: TimerDurationField, delta: number) {
+    if (!holdActiveRef.current) {
+      return;
+    }
+    holdStartedRef.current = true;
+    queueStepField(field, delta);
+    holdStepCountRef.current += 1;
+    const nextDelay = Math.max(34, 190 - holdStepCountRef.current * 12);
+    holdTimeoutRef.current = window.setTimeout(() => scheduleHoldStep(field, delta), nextDelay);
+  }
+
+  function startHoldStep(field: TimerDurationField, delta: number) {
+    stopHoldStep();
+    holdActiveRef.current = true;
+    holdStartedRef.current = false;
+    holdStepCountRef.current = 0;
+    holdTimeoutRef.current = window.setTimeout(() => scheduleHoldStep(field, delta), 260);
+  }
+
+  function handleStepButtonPointerDown(event: ReactPointerEvent<HTMLButtonElement>, field: TimerDurationField, delta: number) {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    startHoldStep(field, delta);
+  }
+
+  function handleStepButtonPointerUp(event: ReactPointerEvent<HTMLButtonElement>, field: TimerDurationField, delta: number) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const wasHolding = holdStartedRef.current;
+    stopHoldStep();
+    if (!wasHolding) {
+      queueStepField(field, delta);
+    }
+  }
+
+  function handleWheel(event: ReactWheelEvent<HTMLButtonElement>, field: TimerDurationField) {
+    event.preventDefault();
+    stepFieldNow(field, event.deltaY < 0 ? 1 : -1);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, field: TimerDurationField) {
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      stepFieldNow(field, 1);
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      stepFieldNow(field, -1);
+      return;
+    }
+    if (event.key === "Backspace" || event.key === "Delete") {
+      event.preventDefault();
+      inputBufferRef.current[field] = "";
+      updateField(field, 0);
+      return;
+    }
+    if (!/^\d$/.test(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    const max = durationFieldMax(field);
+    const currentBuffer = inputBufferRef.current[field] ?? "";
+    if (!currentBuffer) {
+      inputBufferRef.current[field] = event.key;
+      updateField(field, Number(event.key));
+      return;
+    }
+    const candidate = Number(`${currentBuffer}${event.key}`);
+    if (candidate <= max) {
+      inputBufferRef.current[field] = "";
+      updateField(field, candidate);
+    } else if (event.key === "0") {
+      inputBufferRef.current[field] = "";
+      updateField(field, 0);
+    }
+  }
+
+  function resetBuffer(field: TimerDurationField) {
+    inputBufferRef.current[field] = "";
+  }
+
+  return (
+    <div className="timer-duration-picker" aria-label="倒计时时长">
+      <div className="timer-duration-picker-controls top">
+        {fields.map((field) => (
+          <button
+            className={field.key}
+            key={field.key}
+            onBlur={stopHoldStep}
+            onPointerCancel={stopHoldStep}
+            onPointerDown={(event) => handleStepButtonPointerDown(event, field.key, 1)}
+            onPointerLeave={stopHoldStep}
+            onPointerUp={(event) => handleStepButtonPointerUp(event, field.key, 1)}
+            tabIndex={-1}
+            type="button"
+          >
+            <ChevronUp size={18} />
+          </button>
+        ))}
+      </div>
+      <div className="timer-duration-display">
+        {fields.map((field, index) => (
+          <div className="timer-duration-segment-wrap" key={field.key}>
+            <button
+              aria-label={`${field.label}，当前 ${pad2(fieldValue(field.key))}`}
+              className="timer-duration-segment"
+              onBlur={() => resetBuffer(field.key)}
+              onFocus={() => resetBuffer(field.key)}
+              onKeyDown={(event) => handleKeyDown(event, field.key)}
+              onWheel={(event) => handleWheel(event, field.key)}
+              type="button"
+            >
+              {pad2(fieldValue(field.key))}
+            </button>
+            {index < fields.length - 1 ? <span className="timer-duration-separator">:</span> : null}
+          </div>
+        ))}
+      </div>
+      <div className="timer-duration-picker-controls bottom">
+        {fields.map((field) => (
+          <button
+            className={field.key}
+            key={field.key}
+            onBlur={stopHoldStep}
+            onPointerCancel={stopHoldStep}
+            onPointerDown={(event) => handleStepButtonPointerDown(event, field.key, -1)}
+            onPointerLeave={stopHoldStep}
+            onPointerUp={(event) => handleStepButtonPointerUp(event, field.key, -1)}
+            tabIndex={-1}
+            type="button"
+          >
+            <ChevronDown size={18} />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TimerToolPage({ tool }: { tool: Tool }) {
   const [snapshot, setSnapshot] = useState<TimerSnapshot | null>(null);
   const [showStats, setShowStats] = useState(true);
@@ -1665,7 +1887,6 @@ function TimerToolPage({ tool }: { tool: Tool }) {
   const [createKind, setCreateKind] = useState<TimerKind>("stopwatch");
   const [createDraft, setCreateDraft] = useState<TimerCreateDraft>({
     name: "",
-    note: "",
     hours: "0",
     minutes: "25",
     seconds: "0",
@@ -1760,7 +1981,7 @@ function TimerToolPage({ tool }: { tool: Tool }) {
       input: {
         kind: createKind,
         name: createDraft.name,
-        note: createDraft.note,
+        note: "",
         durationSeconds: seconds,
         notificationsEnabled: createKind === "countdown" ? createDraft.notificationsEnabled : false,
       },
@@ -1769,7 +1990,6 @@ function TimerToolPage({ tool }: { tool: Tool }) {
     setCreateOpen(false);
     setCreateDraft({
       name: "",
-      note: "",
       hours: "0",
       minutes: "25",
       seconds: "0",
@@ -1802,29 +2022,25 @@ function TimerToolPage({ tool }: { tool: Tool }) {
     setCreateDraft((current) => ({ ...current, ...patch }));
   }
 
-  function updateDurationDraft(field: TimerDurationField, value: string) {
-    updateCreateDraft({ [field]: value.replace(/\D/g, "") });
+  function updateDurationDraft(patch: Partial<TimerDurationParts>): void;
+  function updateDurationDraft(field: TimerDurationField, value: string): void;
+  function updateDurationDraft(patchOrField: Partial<TimerDurationParts> | TimerDurationField, value?: string) {
+    if (typeof patchOrField === "string") {
+      setCreateDraft((current) => ({ ...current, [patchOrField]: (value ?? "").replace(/\D/g, "") }));
+      return;
+    }
+    setCreateDraft((current) => ({ ...current, ...patchOrField }));
   }
 
   function normalizeDurationDraftField(field: TimerDurationField) {
-    setCreateDraft((current) => {
-      const max = field === "hours" ? 99 : 59;
-      const value = Number.parseInt(current[field], 10);
-      return {
-        ...current,
-        [field]: String(Number.isFinite(value) ? Math.min(Math.max(value, 0), max) : 0),
-      };
-    });
+    setCreateDraft((current) => ({ ...current, [field]: String(clampDurationPart(current[field], durationFieldMax(field))) }));
   }
 
   function changeDurationDraftByWheel(event: ReactWheelEvent<HTMLInputElement>, field: TimerDurationField) {
     event.preventDefault();
-    const step = event.deltaY < 0 ? 1 : -1;
     setCreateDraft((current) => {
-      const max = field === "hours" ? 99 : 59;
-      const value = Number.parseInt(current[field], 10);
-      const nextValue = Math.min(Math.max((Number.isFinite(value) ? value : 0) + step, 0), max);
-      return { ...current, [field]: String(nextValue) };
+      const step = event.deltaY < 0 ? 1 : -1;
+      return { ...current, [field]: String(wrapDurationPart(clampDurationPart(current[field], durationFieldMax(field)) + step, durationFieldMax(field))) };
     });
   }
 
@@ -1840,7 +2056,6 @@ function TimerToolPage({ tool }: { tool: Tool }) {
     setCreateKind("stopwatch");
     setCreateDraft({
       name: "",
-      note: "",
       hours: "0",
       minutes: "25",
       seconds: "0",
@@ -1858,7 +2073,6 @@ function TimerToolPage({ tool }: { tool: Tool }) {
     setCreateKind(timer.kind);
     setCreateDraft({
       name: timer.name,
-      note: timer.note,
       ...secondsToTimerDraftParts(timer.durationMs ? Math.ceil(timer.durationMs / 1000) : 25 * 60),
       notificationsEnabled: timer.notificationsEnabled,
     });
@@ -1893,7 +2107,7 @@ function TimerToolPage({ tool }: { tool: Tool }) {
       input: {
         id: editTarget.id,
         name: createDraft.name,
-        note: createDraft.note,
+        note: "",
         durationSeconds: seconds,
         notificationsEnabled: editTarget.kind === "countdown" ? createDraft.notificationsEnabled : false,
       },
@@ -2121,7 +2335,7 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                 onDragEnd={handleTimerDragEnd}
                 onDragStart={handleTimerDragStart}
                 timer={timer}
-                title={timer.note ? `备注：${timer.note}` : timer.name}
+                title={timer.name}
               >
                 {(startDrag) => (
                 <>
@@ -2209,13 +2423,10 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                 <span>名称</span>
                 <input autoFocus onChange={(event) => updateCreateDraft({ name: event.target.value })} placeholder="例如 工作、煮面、休息" value={createDraft.name} />
               </label>
-              <label>
-                <span>备注</span>
-                <textarea onChange={(event) => updateCreateDraft({ note: event.target.value })} placeholder="可选，例如用途、提醒内容或上下文" value={createDraft.note} />
-              </label>
               {createKind === "countdown" ? (
                 <>
-                  <div className="timer-duration-grid">
+                  <TimerDurationPicker value={createDraft} onChange={updateDurationDraft} />
+                  <div className="timer-duration-grid legacy">
                     <label>
                       <span>小时</span>
                       <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("hours")} onChange={(event) => updateDurationDraft("hours", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "hours")} value={createDraft.hours} />
@@ -2250,7 +2461,7 @@ function TimerToolPage({ tool }: { tool: Tool }) {
             <header className="update-dialog-header">
               <div>
                 <h2>编辑计时器</h2>
-                <p>修改名称、备注、通知与倒计时时长。</p>
+                <p>修改名称、通知与倒计时时长。</p>
               </div>
               <button aria-label="关闭" className="dialog-close-button" onClick={closeEditDialog} type="button"><X size={18} /></button>
             </header>
@@ -2259,13 +2470,10 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                 <span>名称</span>
                 <input autoFocus onChange={(event) => updateCreateDraft({ name: event.target.value })} placeholder="例如 工作、煮面、休息" value={createDraft.name} />
               </label>
-              <label>
-                <span>备注</span>
-                <textarea onChange={(event) => updateCreateDraft({ note: event.target.value })} placeholder="可选，例如用途、提醒内容或上下文" value={createDraft.note} />
-              </label>
               {editTarget.kind === "countdown" ? (
                 <>
-                  <div className="timer-duration-grid">
+                  <TimerDurationPicker value={createDraft} onChange={updateDurationDraft} />
+                  <div className="timer-duration-grid legacy">
                     <label>
                       <span>小时</span>
                       <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("hours")} onChange={(event) => updateDurationDraft("hours", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "hours")} value={createDraft.hours} />
@@ -2336,7 +2544,7 @@ function parseDurationParts(draft: TimerCreateDraft) {
 
 function secondsToTimerDraftParts(totalSeconds: number) {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
-  const hours = Math.floor(safeSeconds / 3600);
+  const hours = Math.min(99, Math.floor(safeSeconds / 3600));
   const minutes = Math.floor((safeSeconds % 3600) / 60);
   const seconds = safeSeconds % 60;
   return {
@@ -2344,6 +2552,28 @@ function secondsToTimerDraftParts(totalSeconds: number) {
     minutes: String(minutes),
     seconds: String(seconds),
   };
+}
+
+function durationFieldMax(field: TimerDurationField) {
+  return field === "hours" ? 99 : 59;
+}
+
+function clampDurationPart(value: string | number, max: number) {
+  const parsed = typeof value === "number" ? value : Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.min(Math.max(parsed, 0), max);
+}
+
+function wrapDurationPart(value: number, max: number) {
+  if (value < 0) {
+    return max;
+  }
+  if (value > max) {
+    return 0;
+  }
+  return value;
 }
 
 function formatTimerReadout(timer: TimerEntry) {
