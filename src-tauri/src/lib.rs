@@ -29,7 +29,7 @@ use clipboard::{
     ClipboardQueryResult, ClipboardSettingsPatch, ClipboardSnapshot,
 };
 use settings::{AppSettings, CloseBehavior, ThemeMode};
-use timer::{TimerCreateInput, TimerSnapshot, TimerUpdateInput};
+use timer::{TimerCreateInput, TimerReorderInput, TimerSnapshot, TimerUpdateInput};
 use tools::{app_hotkey_snapshots, ToolRegistry, ToolSnapshot};
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -478,6 +478,16 @@ fn timer_reset_active(state: State<'_, AppState>) -> Result<TimerSnapshot, Strin
     ensure_timer_enabled(&state)?;
     push_debug_log(&state, "timer", "timer.reset_active_requested");
     timer::reset_active_timers()
+}
+
+#[tauri::command]
+fn timer_reorder(
+    state: State<'_, AppState>,
+    input: TimerReorderInput,
+) -> Result<TimerSnapshot, String> {
+    ensure_timer_enabled(&state)?;
+    push_debug_log(&state, "timer", "timer.reorder_requested");
+    timer::reorder_timers(input)
 }
 
 #[tauri::command]
@@ -996,6 +1006,7 @@ pub fn run() {
             timer_pause_running,
             timer_reset,
             timer_reset_active,
+            timer_reorder,
             timer_delete,
             clipboard_get_snapshot,
             clipboard_query,

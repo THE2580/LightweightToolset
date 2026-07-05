@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { Reorder, useDragControls } from "framer-motion";
+import type { PointerEvent as ReactPointerEvent, RefObject, WheelEvent as ReactWheelEvent } from "react";
 import {
   Bell,
   BellOff,
@@ -171,6 +173,15 @@ type TimerCreateDraft = {
   seconds: string;
   notificationsEnabled: boolean;
 };
+
+type TimerDurationField = "hours" | "minutes" | "seconds";
+
+const TIMER_LAYOUT_TRANSITION = { type: "spring", stiffness: 680, damping: 52, mass: 0.75 } as const;
+const TIMER_DRAG_TRANSITION = { type: "spring", stiffness: 640, damping: 46, mass: 0.7 } as const;
+
+function sameTimerOrder(first: string[], second: string[]) {
+  return first.length === second.length && first.every((id, index) => id === second[index]);
+}
 
 type ToastMessage = {
   id: number;
@@ -1503,6 +1514,57 @@ function hotkeyDescription(tool: HotkeyItem) {
     : `按下后触发 ${tool.displayName}；当前工具已禁用，启用后才会注册快捷键。`;
 }
 
+function TimerReorderCard({
+  timer,
+  className,
+  title,
+  isDragging,
+  dragConstraints,
+  onCardClick,
+  onDragStart,
+  onDragEnd,
+  children,
+}: {
+  timer: TimerEntry;
+  className: string;
+  title: string;
+  isDragging: boolean;
+  dragConstraints: RefObject<HTMLElement | null>;
+  onCardClick: () => void;
+  onDragStart: (id: string) => void;
+  onDragEnd: () => void;
+  children: (startDrag: (event: ReactPointerEvent<HTMLSpanElement>) => void) => React.ReactNode;
+}) {
+  const dragControls = useDragControls();
+
+  function startDrag(event: ReactPointerEvent<HTMLSpanElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragControls.start(event);
+  }
+
+  return (
+    <Reorder.Item
+      as="div"
+      className={`timer-reorder-item ${isDragging ? "dragging" : ""}`}
+      dragControls={dragControls}
+      dragConstraints={dragConstraints}
+      dragElastic={0.02}
+      dragListener={false}
+      dragMomentum={false}
+      layout="position"
+      onDragEnd={onDragEnd}
+      onDragStart={() => onDragStart(timer.id)}
+      transition={isDragging ? TIMER_DRAG_TRANSITION : TIMER_LAYOUT_TRANSITION}
+      value={timer.id}
+    >
+      <article className={className} onClick={onCardClick} title={title}>
+        {children(startDrag)}
+      </article>
+    </Reorder.Item>
+  );
+}
+
 function TimerToolPage({ tool }: { tool: Tool }) {
   const [snapshot, setSnapshot] = useState<TimerSnapshot | null>(null);
   const [showStats, setShowStats] = useState(true);
@@ -1512,6 +1574,10 @@ function TimerToolPage({ tool }: { tool: Tool }) {
   const [editClosing, setEditClosing] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TimerEntry | null>(null);
   const [deleteClosing, setDeleteClosing] = useState(false);
+  const [orderedTimerIds, setOrderedTimerIds] = useState<string[]>([]);
+  const [timerDragging, setTimerDragging] = useState(false);
+  const [draggingTimerId, setDraggingTimerId] = useState<string | null>(null);
+  const [timerDragSettling, setTimerDragSettling] = useState(false);
   const [createKind, setCreateKind] = useState<TimerKind>("stopwatch");
   const [createDraft, setCreateDraft] = useState<TimerCreateDraft>({
     name: "",
@@ -1523,8 +1589,18 @@ function TimerToolPage({ tool }: { tool: Tool }) {
   });
   const [now, setNow] = useState(() => new Date());
   const { pushToast, toast: currentToast } = useToastQueue();
+  const dragClickSuppressedRef = useRef(false);
+  const orderedTimerIdsRef = useRef<string[]>([]);
+  const manualTimerIdsRef = useRef<string[]>([]);
+  const timerOrderSavingRef = useRef(false);
+  const timerDragSettlingRef = useRef<number | null>(null);
+  const timerSnapshotQuietUntilRef = useRef(0);
+  const timerListRef = useRef<HTMLElement | null>(null);
 
   const loadSnapshot = useCallback(async () => {
+    if (timerOrderSavingRef.current || Date.now() < timerSnapshotQuietUntilRef.current) {
+      return;
+    }
     setSnapshot(await invoke<TimerSnapshot>("timer_get_snapshot"));
   }, []);
 
@@ -1537,6 +1613,38 @@ function TimerToolPage({ tool }: { tool: Tool }) {
   useEffect(() => {
     const tick = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(tick);
+  }, []);
+
+  const timers = snapshot?.timers ?? [];
+  const manualTimerIds = useMemo(
+    () => [...timers].sort((first, second) => first.order - second.order).map((timer) => timer.id),
+    [timers],
+  );
+  const timerById = useMemo(() => new Map(timers.map((timer) => [timer.id, timer])), [timers]);
+  const displayTimerIds = useMemo(
+    () => [
+      ...manualTimerIds.filter((id) => timerById.get(id)?.status === "running"),
+      ...manualTimerIds.filter((id) => timerById.get(id)?.status !== "running"),
+    ],
+    [manualTimerIds, timerById],
+  );
+  const orderedTimers = orderedTimerIds
+    .map((id) => timerById.get(id))
+    .filter((timer): timer is TimerEntry => Boolean(timer));
+
+  useEffect(() => {
+    if (timerDragging || timerOrderSavingRef.current) {
+      return;
+    }
+    manualTimerIdsRef.current = manualTimerIds;
+    orderedTimerIdsRef.current = displayTimerIds;
+    setOrderedTimerIds((current) => (sameTimerOrder(current, displayTimerIds) ? current : displayTimerIds));
+  }, [timerDragging, manualTimerIds, displayTimerIds]);
+
+  useEffect(() => () => {
+    if (timerDragSettlingRef.current !== null) {
+      window.clearTimeout(timerDragSettlingRef.current);
+    }
   }, []);
 
   async function createTimer() {
@@ -1591,6 +1699,32 @@ function TimerToolPage({ tool }: { tool: Tool }) {
     setCreateDraft((current) => ({ ...current, ...patch }));
   }
 
+  function updateDurationDraft(field: TimerDurationField, value: string) {
+    updateCreateDraft({ [field]: value.replace(/\D/g, "") });
+  }
+
+  function normalizeDurationDraftField(field: TimerDurationField) {
+    setCreateDraft((current) => {
+      const max = field === "hours" ? 99 : 59;
+      const value = Number.parseInt(current[field], 10);
+      return {
+        ...current,
+        [field]: String(Number.isFinite(value) ? Math.min(Math.max(value, 0), max) : 0),
+      };
+    });
+  }
+
+  function changeDurationDraftByWheel(event: ReactWheelEvent<HTMLInputElement>, field: TimerDurationField) {
+    event.preventDefault();
+    const step = event.deltaY < 0 ? 1 : -1;
+    setCreateDraft((current) => {
+      const max = field === "hours" ? 99 : 59;
+      const value = Number.parseInt(current[field], 10);
+      const nextValue = Math.min(Math.max((Number.isFinite(value) ? value : 0) + step, 0), max);
+      return { ...current, [field]: String(nextValue) };
+    });
+  }
+
   function showReservedToast(label: string) {
     pushToast(`${label}将在后续版本支持`);
   }
@@ -1617,6 +1751,10 @@ function TimerToolPage({ tool }: { tool: Tool }) {
   }
 
   function openEditDialog(timer: TimerEntry) {
+    if (timer.status === "running") {
+      pushToast("计时器运行中，暂停后可编辑");
+      return;
+    }
     setEditTarget(timer);
     setCreateKind(timer.kind);
     setCreateDraft({
@@ -1686,7 +1824,68 @@ function TimerToolPage({ tool }: { tool: Tool }) {
     pushToast("计时器已重置");
   }
 
-  const timers = snapshot?.timers ?? [];
+  async function persistTimerOrder(ids: string[]) {
+    try {
+      await invoke<TimerSnapshot>("timer_reorder", {
+        input: { ids },
+      });
+      pushToast("计时器排序已保存");
+    } catch {
+      pushToast("计时器排序保存失败");
+    } finally {
+      timerOrderSavingRef.current = false;
+      timerSnapshotQuietUntilRef.current = Math.max(timerSnapshotQuietUntilRef.current, Date.now() + 450);
+    }
+  }
+
+  function toManualTimerOrder(displayIds: string[]) {
+    const runningIds = new Set(timers.filter((timer) => timer.status === "running").map((timer) => timer.id));
+    const nextRestIds = displayIds.filter((id) => !runningIds.has(id));
+    const restQueue = [...nextRestIds];
+    return manualTimerIdsRef.current.map((id) => (runningIds.has(id) ? id : restQueue.shift() ?? id));
+  }
+
+  function handleTimerReorder(ids: string[]) {
+    orderedTimerIdsRef.current = ids;
+    setOrderedTimerIds((current) => (sameTimerOrder(current, ids) ? current : ids));
+  }
+
+  function handleTimerDragStart(id: string) {
+    if (timerDragSettlingRef.current !== null) {
+      window.clearTimeout(timerDragSettlingRef.current);
+      timerDragSettlingRef.current = null;
+    }
+    dragClickSuppressedRef.current = true;
+    setDraggingTimerId(id);
+    setTimerDragging(true);
+    setTimerDragSettling(true);
+  }
+
+  function handleTimerDragEnd() {
+    timerSnapshotQuietUntilRef.current = Date.now() + 700;
+    timerOrderSavingRef.current = true;
+    const ids = toManualTimerOrder(orderedTimerIdsRef.current);
+    const nextDisplayIds = [
+      ...ids.filter((id) => timerById.get(id)?.status === "running"),
+      ...ids.filter((id) => timerById.get(id)?.status !== "running"),
+    ];
+    manualTimerIdsRef.current = ids;
+    orderedTimerIdsRef.current = nextDisplayIds;
+    setOrderedTimerIds((current) => (sameTimerOrder(current, nextDisplayIds) ? current : nextDisplayIds));
+    setTimerDragging(false);
+    setDraggingTimerId(null);
+    window.requestAnimationFrame(() => {
+      void persistTimerOrder(ids);
+    });
+    timerDragSettlingRef.current = window.setTimeout(() => {
+      setTimerDragSettling(false);
+      timerDragSettlingRef.current = null;
+    }, 80);
+    window.setTimeout(() => {
+      dragClickSuppressedRef.current = false;
+    }, 80);
+  }
+
   const runningCount = timers.filter((timer) => timer.status === "running").length;
   const resettableCount = timers.filter((timer) => timer.status === "running" || timer.status === "finished" || timer.elapsedMs > 0).length;
   const detachedCount = 0;
@@ -1718,7 +1917,7 @@ function TimerToolPage({ tool }: { tool: Tool }) {
       </header>
 
       <div className="timer-scroll-area">
-        {showStats ? (
+        <div className={`timer-stat-slot ${showStats ? "visible" : "hidden"}`} aria-hidden={!showStats}>
           <section className="timer-stat-card" aria-label="计时器统计">
             <article>
               <span>计时器数量</span>
@@ -1733,7 +1932,7 @@ function TimerToolPage({ tool }: { tool: Tool }) {
               <strong>{detachedCount}</strong>
             </article>
           </section>
-        ) : null}
+        </div>
 
         <section className="timer-local-card" aria-label="本地时间">
           <div>
@@ -1743,16 +1942,54 @@ function TimerToolPage({ tool }: { tool: Tool }) {
           <strong>{formatLocalTime(now)}</strong>
         </section>
 
-        <section className="timer-list" aria-label="计时器列表">
-          {timers.map((timer) => {
+        {orderedTimers.length === 0 ? (
+          <p className="timer-empty">暂无计时器，先创建一个倒计时或正计时。</p>
+        ) : (
+        <Reorder.Group
+          as="section"
+          axis="y"
+          className={`timer-list ${timerDragging || timerDragSettling ? "reordering" : ""}`}
+          layout="position"
+          onReorder={handleTimerReorder}
+          ref={timerListRef}
+          values={orderedTimerIds}
+          aria-label="计时器列表"
+        >
+          {orderedTimers.map((timer) => {
             const isRunning = timer.status === "running";
             const isFinished = timer.status === "finished";
             const canReset = !isRunning && (timer.elapsedMs > 0 || isFinished);
             const stateClassName = timerStateClassName(timer);
             return (
-              <article className={`timer-card ${stateClassName}`} key={timer.id} onClick={() => openEditDialog(timer)} title={timer.note ? `备注：${timer.note}` : timer.name}>
+              <TimerReorderCard
+                className={`timer-card ${stateClassName} ${draggingTimerId === timer.id ? "dragging" : ""}`}
+                dragConstraints={timerListRef}
+                isDragging={draggingTimerId === timer.id}
+                key={timer.id}
+                onCardClick={() => {
+                  if (dragClickSuppressedRef.current) {
+                    return;
+                  }
+                  openEditDialog(timer);
+                }}
+                onDragEnd={handleTimerDragEnd}
+                onDragStart={handleTimerDragStart}
+                timer={timer}
+                title={timer.note ? `备注：${timer.note}` : timer.name}
+              >
+                {(startDrag) => (
+                <>
                 <div className="timer-card-top">
-                  <GripVertical size={18} />
+                  <span
+                    aria-label="拖动排序"
+                    className="timer-drag-handle"
+                    onClick={(event) => event.stopPropagation()}
+                    onPointerDown={startDrag}
+                    role="button"
+                    title="拖动排序"
+                  >
+                    <GripVertical size={18} />
+                  </span>
                   <h2 title={timer.name}>{timer.name}</h2>
                   <span className={`timer-kind-badge ${timer.kind}`}>{timer.kind === "countdown" ? "倒计时" : "正计时"}</span>
                   <span className={`timer-status-badge ${stateClassName}`}>{timerStatusLabel(timer)}</span>
@@ -1792,11 +2029,13 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                     ) : null}
                   </div>
                 </div>
-              </article>
+                </>
+                )}
+              </TimerReorderCard>
             );
           })}
-          {timers.length === 0 ? <p className="timer-empty">暂无计时器，先创建一个倒计时或正计时。</p> : null}
-        </section>
+        </Reorder.Group>
+        )}
 
         <p className="settings-note">第一版仅在主窗口内计时；运行中的计时器重启后会恢复为暂停，排序、独立窗口和悬浮窗能力已在数据结构中预留。</p>
       </div>
@@ -1835,15 +2074,15 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                   <div className="timer-duration-grid">
                     <label>
                       <span>小时</span>
-                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ hours: event.target.value })} value={createDraft.hours} />
+                      <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("hours")} onChange={(event) => updateDurationDraft("hours", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "hours")} value={createDraft.hours} />
                     </label>
                     <label>
                       <span>分钟</span>
-                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ minutes: event.target.value })} value={createDraft.minutes} />
+                      <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("minutes")} onChange={(event) => updateDurationDraft("minutes", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "minutes")} value={createDraft.minutes} />
                     </label>
                     <label>
                       <span>秒</span>
-                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ seconds: event.target.value })} value={createDraft.seconds} />
+                      <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("seconds")} onChange={(event) => updateDurationDraft("seconds", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "seconds")} value={createDraft.seconds} />
                     </label>
                   </div>
                   <label className="timer-create-checkbox">
@@ -1885,15 +2124,15 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                   <div className="timer-duration-grid">
                     <label>
                       <span>小时</span>
-                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ hours: event.target.value })} value={createDraft.hours} />
+                      <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("hours")} onChange={(event) => updateDurationDraft("hours", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "hours")} value={createDraft.hours} />
                     </label>
                     <label>
                       <span>分钟</span>
-                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ minutes: event.target.value })} value={createDraft.minutes} />
+                      <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("minutes")} onChange={(event) => updateDurationDraft("minutes", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "minutes")} value={createDraft.minutes} />
                     </label>
                     <label>
                       <span>秒</span>
-                      <input inputMode="numeric" onChange={(event) => updateCreateDraft({ seconds: event.target.value })} value={createDraft.seconds} />
+                      <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("seconds")} onChange={(event) => updateDurationDraft("seconds", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "seconds")} value={createDraft.seconds} />
                     </label>
                   </div>
                   <label className="timer-create-checkbox">

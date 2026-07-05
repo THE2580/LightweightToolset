@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex, OnceLock},
@@ -106,6 +107,12 @@ pub struct TimerUpdateInput {
     pub note: Option<String>,
     pub duration_seconds: Option<u64>,
     pub notifications_enabled: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimerReorderInput {
+    pub ids: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -478,6 +485,44 @@ pub fn reset_active_timers() -> Result<TimerSnapshot, String> {
         if changed {
             store.dirty = true;
         }
+    }
+    save_store(&manager.path, &manager.store, true)?;
+    drop(manager);
+    snapshot()
+}
+
+pub fn reorder_timers(input: TimerReorderInput) -> Result<TimerSnapshot, String> {
+    let manager_lock = TIMER.get().ok_or("Timer service is not initialized")?;
+    let manager = manager_lock
+        .lock()
+        .map_err(|_| "Timer service is unavailable")?;
+    {
+        let mut store = manager
+            .store
+            .lock()
+            .map_err(|_| "Timer data is unavailable")?;
+        if input.ids.len() != store.timers.len() {
+            return Err("Timer reorder list is incomplete".to_owned());
+        }
+
+        let mut seen = HashSet::new();
+        if input.ids.iter().any(|id| !seen.insert(id.as_str())) {
+            return Err("Timer reorder list contains duplicate ids".to_owned());
+        }
+        if store
+            .timers
+            .iter()
+            .any(|timer| !seen.contains(timer.id.as_str()))
+        {
+            return Err("Timer reorder list contains invalid ids".to_owned());
+        }
+
+        for timer in store.timers.iter_mut() {
+            if let Some(index) = input.ids.iter().position(|id| id == &timer.id) {
+                timer.order = index as u32 + 1;
+            }
+        }
+        store.dirty = true;
     }
     save_store(&manager.path, &manager.store, true)?;
     drop(manager);
