@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Reorder, useDragControls } from "framer-motion";
+import { AnimatePresence, motion, Reorder, useDragControls } from "framer-motion";
 import type { PointerEvent as ReactPointerEvent, RefObject, WheelEvent as ReactWheelEvent } from "react";
 import {
   Bell,
@@ -341,7 +341,7 @@ type NavigationTarget = {
 const DEFAULT_TITLE = "轻量化工具集";
 const APP_NAME = "LightweightToolset";
 const APP_SUBTITLE = "Windows 桌面工具集";
-const APP_VERSION = "0.2.0";
+const APP_VERSION = "0.2.1";
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const GITHUB_API_LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
@@ -1873,7 +1873,6 @@ function TimerDurationPicker({
 
 function TimerToolPage({ tool }: { tool: Tool }) {
   const [snapshot, setSnapshot] = useState<TimerSnapshot | null>(null);
-  const [showStats, setShowStats] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [createClosing, setCreateClosing] = useState(false);
   const [editTarget, setEditTarget] = useState<TimerEntry | null>(null);
@@ -1884,7 +1883,6 @@ function TimerToolPage({ tool }: { tool: Tool }) {
   const [timerDragging, setTimerDragging] = useState(false);
   const [draggingTimerId, setDraggingTimerId] = useState<string | null>(null);
   const [timerDragSettling, setTimerDragSettling] = useState(false);
-  const [detachedCount, setDetachedCount] = useState(0);
   const [openFreeWindowLabels, setOpenFreeWindowLabels] = useState<Set<string>>(() => new Set());
   const [createKind, setCreateKind] = useState<TimerKind>("stopwatch");
   const [createDraft, setCreateDraft] = useState<TimerCreateDraft>({
@@ -1915,13 +1913,7 @@ function TimerToolPage({ tool }: { tool: Tool }) {
     try {
       const labels = await getOpenFreeWindowLabels();
       setOpenFreeWindowLabels(new Set(labels));
-      setDetachedCount(labels.length);
     } catch {
-      try {
-        setDetachedCount(await invoke<number>("timer_get_free_window_count"));
-      } catch {
-        setDetachedCount(0);
-      }
       setOpenFreeWindowLabels(new Set());
     }
   }, []);
@@ -2236,6 +2228,8 @@ function TimerToolPage({ tool }: { tool: Tool }) {
   }
 
   const runningCount = timers.filter((timer) => timer.status === "running").length;
+  const pausedCount = timers.filter((timer) => timer.status === "paused" && timer.elapsedMs > 0).length;
+  const finishedCount = timers.filter((timer) => timer.kind === "countdown" && timer.status === "finished").length;
   const resettableCount = timers.filter((timer) => timer.status === "running" || timer.status === "finished" || timer.elapsedMs > 0).length;
 
   return (
@@ -2245,43 +2239,33 @@ function TimerToolPage({ tool }: { tool: Tool }) {
           <div className="timer-heading">
             <Clock size={22} />
             <h1>{tool.name}</h1>
-            <button className="secondary-action timer-stats-toggle" onClick={() => setShowStats((value) => !value)} type="button">
-              {showStats ? "隐藏统计卡片" : "显示统计卡片"}
-            </button>
+            <div className="timer-header-stats" aria-label="计时器统计">
+              <span className="total">总数 <strong>{timers.length}/20</strong></span>
+              <i aria-hidden="true" />
+              <span className="running">运行 <strong>{runningCount}</strong></span>
+              <i aria-hidden="true" />
+              <span className="paused">暂停 <strong>{pausedCount}</strong></span>
+              <i aria-hidden="true" />
+              <span className="finished">结束 <strong>{finishedCount}</strong></span>
+              <i aria-hidden="true" />
+              <span className="window">窗口 <strong>{openFreeWindowLabels.size}</strong></span>
+            </div>
           </div>
-          <p>{runningCount > 0 ? `${runningCount} 个计时器运行中` : "所有计时器均已暂停"}</p>
         </div>
         <div className="timer-header-actions">
-          <button className={`secondary-action timer-bulk-button ${runningCount > 0 ? "visible" : "hidden"}`} disabled={runningCount === 0} onClick={() => void pauseRunningTimers()} type="button">
-            <Pause size={17} />暂停全部
+          <button aria-label="暂停全部" className={`secondary-action timer-bulk-button ${runningCount > 0 ? "visible" : "hidden"}`} disabled={runningCount === 0} onClick={() => void pauseRunningTimers()} title="暂停全部" type="button">
+            <Pause size={18} />
           </button>
-          <button className={`secondary-action timer-bulk-button ${resettableCount > 0 ? "visible" : "hidden"}`} disabled={resettableCount === 0} onClick={() => void resetActiveTimers()} type="button">
-            <RotateCcw size={17} />重置全部
+          <button aria-label="重置全部" className={`secondary-action timer-bulk-button ${resettableCount > 0 ? "visible" : "hidden"}`} disabled={resettableCount === 0} onClick={() => void resetActiveTimers()} title="重置全部" type="button">
+            <RotateCcw size={18} />
           </button>
-          <button className="primary-action timer-add-button" disabled={timers.length >= 20} onClick={openCreateDialog} type="button">
-            <Plus size={17} />添加
+          <button aria-label="添加计时器" className="primary-action timer-add-button" disabled={timers.length >= 20} onClick={openCreateDialog} title="添加计时器" type="button">
+            <Plus size={20} />
           </button>
         </div>
       </header>
 
       <div className="timer-scroll-area">
-        <div className={`timer-stat-slot ${showStats ? "visible" : "hidden"}`} aria-hidden={!showStats}>
-          <section className="timer-stat-card" aria-label="计时器统计">
-            <article>
-              <span>计时器数量</span>
-              <strong>{timers.length}/20</strong>
-            </article>
-            <article>
-              <span>运行中</span>
-              <strong className="timer-stat-primary">{runningCount}</strong>
-            </article>
-            <article>
-              <span>独立窗口</span>
-              <strong>{detachedCount}</strong>
-            </article>
-          </section>
-        </div>
-
         <section
           className={`timer-local-card ${openFreeWindowLabels.has("tool-timer-clock") ? "free-open" : ""}`}
           aria-label="本地时间"
@@ -2425,29 +2409,37 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                 <span>名称</span>
                 <input autoFocus onChange={(event) => updateCreateDraft({ name: event.target.value })} placeholder="例如 工作、煮面、休息" value={createDraft.name} />
               </label>
-              {createKind === "countdown" ? (
-                <>
-                  <TimerDurationPicker value={createDraft} onChange={updateDurationDraft} />
-                  <div className="timer-duration-grid legacy">
-                    <label>
-                      <span>小时</span>
-                      <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("hours")} onChange={(event) => updateDurationDraft("hours", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "hours")} value={createDraft.hours} />
+              <AnimatePresence initial={false}>
+                {createKind === "countdown" ? (
+                  <motion.div
+                    animate={{ height: "auto", marginTop: 10, opacity: 1 }}
+                    className="timer-countdown-fields"
+                    exit={{ height: 0, marginTop: 0, opacity: 0 }}
+                    initial={{ height: 0, marginTop: 0, opacity: 0 }}
+                    transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+                  >
+                    <TimerDurationPicker value={createDraft} onChange={updateDurationDraft} />
+                    <div className="timer-duration-grid legacy">
+                      <label>
+                        <span>小时</span>
+                        <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("hours")} onChange={(event) => updateDurationDraft("hours", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "hours")} value={createDraft.hours} />
+                      </label>
+                      <label>
+                        <span>分钟</span>
+                        <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("minutes")} onChange={(event) => updateDurationDraft("minutes", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "minutes")} value={createDraft.minutes} />
+                      </label>
+                      <label>
+                        <span>秒</span>
+                        <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("seconds")} onChange={(event) => updateDurationDraft("seconds", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "seconds")} value={createDraft.seconds} />
+                      </label>
+                    </div>
+                    <label className="timer-create-checkbox">
+                      <span>结束时发送系统通知</span>
+                      <input checked={createDraft.notificationsEnabled} onChange={(event) => updateCreateDraft({ notificationsEnabled: event.currentTarget.checked })} type="checkbox" />
                     </label>
-                    <label>
-                      <span>分钟</span>
-                      <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("minutes")} onChange={(event) => updateDurationDraft("minutes", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "minutes")} value={createDraft.minutes} />
-                    </label>
-                    <label>
-                      <span>秒</span>
-                      <input inputMode="numeric" onBlur={() => normalizeDurationDraftField("seconds")} onChange={(event) => updateDurationDraft("seconds", event.target.value)} onWheel={(event) => changeDurationDraftByWheel(event, "seconds")} value={createDraft.seconds} />
-                    </label>
-                  </div>
-                  <label className="timer-create-checkbox">
-                    <span>结束时发送系统通知</span>
-                    <input checked={createDraft.notificationsEnabled} onChange={(event) => updateCreateDraft({ notificationsEnabled: event.currentTarget.checked })} type="checkbox" />
-                  </label>
-                </>
-              ) : null}
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
             </div>
             <footer className="update-dialog-actions">
               <button className="secondary-action" onClick={closeCreateDialog} type="button">取消</button>
@@ -2473,7 +2465,7 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                 <input autoFocus onChange={(event) => updateCreateDraft({ name: event.target.value })} placeholder="例如 工作、煮面、休息" value={createDraft.name} />
               </label>
               {editTarget.kind === "countdown" ? (
-                <>
+                <div className="timer-countdown-fields static">
                   <TimerDurationPicker value={createDraft} onChange={updateDurationDraft} />
                   <div className="timer-duration-grid legacy">
                     <label>
@@ -2493,7 +2485,7 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                     <span>结束时发送系统通知</span>
                     <input checked={createDraft.notificationsEnabled} onChange={(event) => updateCreateDraft({ notificationsEnabled: event.currentTarget.checked })} type="checkbox" />
                   </label>
-                </>
+                </div>
               ) : null}
             </div>
             <footer className="update-dialog-actions">
@@ -2621,9 +2613,77 @@ function pad2(value: number) {
   return String(value).padStart(2, "0");
 }
 
+const APP_USAGE_STATUS_NAME_MAX_FONT_SIZE = 14;
+const APP_USAGE_STATUS_NAME_MIN_FONT_SIZE = 8;
+
+function AppUsageStatusText({ label, prefix, value }: { label?: string; prefix?: string; value?: string }) {
+  const containerRef = useRef<HTMLElement | null>(null);
+  const prefixRef = useRef<HTMLSpanElement | null>(null);
+  const measureRef = useRef<HTMLElement | null>(null);
+  const [nameFontSize, setNameFontSize] = useState(APP_USAGE_STATUS_NAME_MAX_FONT_SIZE);
+
+  useLayoutEffect(() => {
+    if (!prefix || !value) {
+      setNameFontSize(APP_USAGE_STATUS_NAME_MAX_FONT_SIZE);
+      return;
+    }
+
+    const container = containerRef.current;
+    const measure = measureRef.current;
+    if (!container || !measure) {
+      return;
+    }
+
+    let frame = 0;
+    const calculate = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const style = window.getComputedStyle(container);
+        const gap = Number.parseFloat(style.columnGap || style.gap || "0") || 0;
+        const prefixWidth = prefixRef.current?.getBoundingClientRect().width ?? 0;
+        const availableWidth = Math.max(0, container.clientWidth - prefixWidth - gap);
+        measure.style.fontSize = `${APP_USAGE_STATUS_NAME_MAX_FONT_SIZE}px`;
+        const naturalWidth = measure.getBoundingClientRect().width;
+        const nextSize = naturalWidth > availableWidth && availableWidth > 0
+          ? Math.max(
+            APP_USAGE_STATUS_NAME_MIN_FONT_SIZE,
+            Math.min(APP_USAGE_STATUS_NAME_MAX_FONT_SIZE, Math.floor((availableWidth / naturalWidth) * APP_USAGE_STATUS_NAME_MAX_FONT_SIZE * 10) / 10),
+          )
+          : APP_USAGE_STATUS_NAME_MAX_FONT_SIZE;
+        setNameFontSize((current) => (Math.abs(current - nextSize) < 0.05 ? current : nextSize));
+      });
+    };
+
+    calculate();
+    const observer = new ResizeObserver(calculate);
+    observer.observe(container);
+    if (prefixRef.current) {
+      observer.observe(prefixRef.current);
+    }
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [prefix, value]);
+
+  if (!prefix || !value) {
+    return <strong className="app-usage-status-text">{label}</strong>;
+  }
+
+  return (
+    <strong className="app-usage-status-text" ref={containerRef}>
+      <span ref={prefixRef}>{prefix}</span>
+      <em style={{ fontSize: nameFontSize }}>{value}</em>
+      <em aria-hidden="true" className="app-usage-status-measure" ref={measureRef}>{value}</em>
+    </strong>
+  );
+}
+
 function AppUsageToolPage({ tool }: { tool: Tool }) {
   const [snapshot, setSnapshot] = useState<AppUsageSnapshot | null>(null);
   const [range, setRange] = useState<AppUsageRange>("day");
+  const [trendTarget, setTrendTarget] = useState("__total");
   const [clearOpen, setClearOpen] = useState(false);
   const [clearClosing, setClearClosing] = useState(false);
   const [processAliasDrafts, setProcessAliasDrafts] = useState<Record<string, string>>({});
@@ -2683,13 +2743,32 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
     return () => window.removeEventListener("pointerdown", handlePointerDown, true);
   }, [processListCollapsed]);
 
-  const rangeData = useMemo(() => buildAppUsageRangeData(snapshot, range), [range, snapshot]);
+  const rangeData = useMemo(() => buildAppUsageRangeData(snapshot, range, trendTarget), [range, snapshot, trendTarget]);
   const processRows = useMemo(() => buildAppUsageProcessRows(snapshot), [snapshot]);
   const filteredProcessRows = useMemo(
     () => filterAppUsageProcessRows(processRows, processFilter),
     [processFilter, processRows],
   );
   const activeName = snapshot?.activeProcess ? appUsageDisplayName(snapshot.activeProcess, snapshot.aliases) : "";
+  const usageStatus = useMemo(() => {
+    if (snapshot?.running && !snapshot.isAfk && activeName) {
+      return { tone: "running", prefix: "正在统计", value: activeName };
+    }
+    return { tone: "idle", label: "未检测到活跃应用" };
+  }, [activeName, snapshot?.isAfk, snapshot?.running]);
+
+  const selectedTrendApp = trendTarget === "__total"
+    ? null
+    : rangeData.appRows.find((row) => row.processName === trendTarget) ?? null;
+
+  useEffect(() => {
+    if (trendTarget === "__total") {
+      return;
+    }
+    if (!rangeData.appRows.some((row) => row.processName === trendTarget)) {
+      setTrendTarget("__total");
+    }
+  }, [rangeData.appRows, trendTarget]);
 
   function toast(text: string) {
     pushToast(text);
@@ -2748,10 +2827,10 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
     <section className="tool-page app-usage-page">
       <header className="app-usage-header">
         <div>
-          <h1>{tool.name}</h1>
-          <p className={snapshot?.running && !snapshot.isAfk ? "state-running" : "state-stopped"}>
-            {snapshot?.running ? (snapshot.isAfk ? "空闲中" : `正在统计：${activeName || "未检测到活跃应用"}`) : "统计未运行"}
-          </p>
+          <div className="app-usage-heading">
+            <ChartNoAxesColumn size={22} />
+            <h1>{tool.name}</h1>
+          </div>
         </div>
         <div className="segmented app-usage-range" role="tablist" aria-label="统计范围">
           {([
@@ -2776,34 +2855,55 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
           <div><Monitor size={14} />{rangeLabel(range)}软件数</div>
           <strong>{rangeData.appRows.length}</strong>
         </article>
-        <article>
-          <div><ChartNoAxesColumn size={14} />统计状态</div>
-          <strong>{snapshot?.isAfk ? "空闲中" : snapshot?.running ? "进行中" : "已停止"}</strong>
+        <article className={`app-usage-status-card ${usageStatus.tone}`}>
+          <div className="app-usage-summary-title">
+            <span><ChartNoAxesColumn size={14} />统计状态</span>
+            <i aria-hidden="true" />
+          </div>
+          {"prefix" in usageStatus
+            ? <AppUsageStatusText prefix={usageStatus.prefix} value={usageStatus.value} />
+            : <AppUsageStatusText label={usageStatus.label} />}
         </article>
       </div>
 
       <div className="app-usage-main-grid">
         <section className="app-usage-panel app-usage-chart-panel">
           <div className="app-usage-panel-title">
-            <h2>总使用时长趋势</h2>
-            <span>{formatAppUsageRangeSubtitle(range)}</span>
+            <h2>使用时长趋势</h2>
+            <div className="app-usage-trend-reset-slot">
+              {trendTarget !== "__total" ? (
+                <button className="app-usage-trend-reset" title="切换到总时长" aria-label="切换到总时长" onClick={() => setTrendTarget("__total")} type="button">
+                  <RotateCcw size={12} />
+                </button>
+              ) : null}
+            </div>
+            <div className="app-usage-trend-controls">
+              <strong title={selectedTrendApp?.displayName ?? "总时长"}>{selectedTrendApp?.displayName ?? "总时长"}</strong>
+              <span>{formatAppUsageRangeSubtitle(range)}</span>
+            </div>
           </div>
           <AppUsageTrendChart points={rangeData.trend} />
         </section>
 
         <section className="app-usage-panel app-usage-ranking-panel">
           <div className="app-usage-panel-title">
-            <h2>{rangeLabel(range)}软件排行 TOP 20</h2>
+            <h2>{rangeLabel(range)}软件排行</h2>
           </div>
           <div className="app-usage-ranking">
             {rangeData.appRows.map((row, index) => (
-              <div className="app-usage-rank-row" key={row.processName}>
+              <button
+                className={`app-usage-rank-row ${trendTarget === row.processName ? "active" : ""}`}
+                key={row.processName}
+                onClick={() => setTrendTarget(row.processName)}
+                title={`查看 ${row.displayName} 的使用时长趋势`}
+                type="button"
+              >
                 <div>
                   <span>{index + 1}. {row.displayName}</span>
                   <strong>{formatUsageDuration(row.seconds)}</strong>
                 </div>
                 <i style={{ "--progress": `${rangeData.maxAppSeconds > 0 ? Math.max(4, (row.seconds / rangeData.maxAppSeconds) * 100) : 0}%` } as React.CSSProperties} />
-              </div>
+              </button>
             ))}
             {rangeData.appRows.length === 0 ? <p className="app-usage-empty">暂无统计数据</p> : null}
           </div>
@@ -3483,9 +3583,12 @@ function ClipboardToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (ta
     <section className="tool-page clipboard-page" onPointerDownCapture={closeOpenActionsFromOutside}>
       <div className="clipboard-fixed-region">
         <div className="clipboard-page-header">
-          <div>
+          <div className="clipboard-page-title">
+            <ClipboardList size={22} />
+            <div>
             <h1>剪贴板</h1>
             <p>本地纯文本历史与固定片段。</p>
+            </div>
           </div>
           <div className={`clipboard-header-actions ${selectedEntries.length > 0 ? "selecting" : ""}`}>
             {selectedEntries.length > 0 ? (
@@ -4128,7 +4231,7 @@ function formatClipboardDateTime(value: number | null) {
   return new Date(value).toLocaleString("zh-CN");
 }
 
-function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsageRange) {
+function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsageRange, trendTarget: string) {
   const aliases = snapshot?.aliases ?? {};
   const days = snapshot?.days ?? {};
   const disabled = new Set(snapshot?.disabledProcesses ?? []);
@@ -4153,8 +4256,7 @@ function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsa
       displayName: appUsageDisplayName(processName, aliases),
       seconds,
     }))
-    .sort((a, b) => b.seconds - a.seconds || a.processName.localeCompare(b.processName))
-    .slice(0, 20);
+    .sort((a, b) => b.seconds - a.seconds || a.processName.localeCompare(b.processName));
 
   const trend = trendDays.map((point) => {
     if (range === "year") {
@@ -4163,12 +4265,10 @@ function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsa
           .filter(([day]) => day.startsWith(`${point.key}-`))
           .map(([, apps]) => filterAppUsageStats(apps, disabled)),
       );
-      const seconds = Object.values(monthApps)
-        .reduce((sum, value) => sum + value, 0);
-      return { label: point.label, seconds, topApps: topAppUsageRows(monthApps, aliases, 5) };
+      return appUsageTrendPoint(point.label, monthApps, aliases, trendTarget);
     }
     const apps = filterAppUsageStats(days[point.key] ?? {}, disabled);
-    return { label: point.label, seconds: sumAppUsageSeconds(apps), topApps: topAppUsageRows(apps, aliases, 5) };
+    return appUsageTrendPoint(point.label, apps, aliases, trendTarget);
   });
 
   return {
@@ -4176,6 +4276,24 @@ function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsa
     maxAppSeconds: Math.max(0, ...appRows.map((row) => row.seconds)),
     totalSeconds,
     trend,
+  };
+}
+
+function appUsageTrendPoint(label: string, apps: Record<string, number>, aliases: Record<string, string>, trendTarget: string): AppUsageTrendPoint {
+  if (trendTarget !== "__total") {
+    const seconds = apps[trendTarget] ?? 0;
+    return {
+      label,
+      seconds,
+      topApps: seconds > 0
+        ? [{ displayName: appUsageDisplayName(trendTarget, aliases), seconds }]
+        : [],
+    };
+  }
+  return {
+    label,
+    seconds: sumAppUsageSeconds(apps),
+    topApps: topAppUsageRows(apps, aliases, 5),
   };
 }
 
