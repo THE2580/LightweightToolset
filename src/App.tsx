@@ -313,6 +313,13 @@ type UpdateNotice = {
   downloadUrl?: string;
 };
 
+type LatestReleaseInfo = {
+  tag: string;
+  releaseNotes?: string;
+  releaseUrl: string;
+  downloadUrl?: string;
+};
+
 type HotkeyNotice = {
   phase: "success" | "error";
   title: string;
@@ -337,6 +344,8 @@ const APP_SUBTITLE = "Windows 桌面工具集";
 const APP_VERSION = "0.2.0";
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
+const GITHUB_API_LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const GITHUB_RAW_PACKAGE_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/master/package.json`;
 const AUTHOR_EMAILS = ["2021289500@qq.com", "liangneng20060725@gmail.com"];
 const toolIcons = {
   clipboard: ClipboardList,
@@ -400,10 +409,8 @@ function useUpdateChecker(settings?: AppSettings) {
       message: `update.check.started manual=${manual} current=${APP_VERSION}`,
     });
     try {
-      const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-        headers: { Accept: "application/vnd.github+json" },
-      });
-      if (response.status === 404) {
+      const latest = await fetchLatestReleaseInfo(APP_VERSION);
+      if (!latest) {
         void invoke("push_frontend_debug_log", { level: "update", message: "update.check.no_release" });
         setUpdateStatus("暂无发布版本");
         if (manual) {
@@ -416,11 +423,7 @@ function useUpdateChecker(settings?: AppSettings) {
         }
         return;
       }
-      if (!response.ok) {
-        throw new Error(`GitHub 返回 ${response.status}`);
-      }
-      const release = await response.json() as { assets?: Array<{ browser_download_url?: string; name?: string }>; body?: string; html_url?: string; tag_name?: string };
-      const tag = release.tag_name ?? "";
+      const tag = latest.tag;
       if (!isRemoteVersionNewer(tag, APP_VERSION)) {
         void invoke("push_frontend_debug_log", {
           level: "update",
@@ -437,18 +440,17 @@ function useUpdateChecker(settings?: AppSettings) {
         }
         return;
       }
-      const asset = release.assets?.find((item) => item.name?.toLowerCase().endsWith(".exe")) ?? release.assets?.[0];
       void invoke("push_frontend_debug_log", {
         level: "update",
-        message: `update.check.available current=${APP_VERSION} remote=${tag} asset=${asset?.name ?? "none"}`,
+        message: `update.check.available current=${APP_VERSION} remote=${tag} download=${latest.downloadUrl ? "yes" : "none"}`,
       });
       const notice = {
         phase: "available" as const,
         title: `发现新版本 ${tag}`,
         message: `当前版本 v${APP_VERSION}，建议更新以获得最新改进。`,
-        releaseNotes: release.body?.trim() || "本次 Release 暂未填写更新日志。",
-        releaseUrl: release.html_url ?? GITHUB_URL,
-        downloadUrl: asset?.browser_download_url,
+        releaseNotes: latest.releaseNotes?.trim() || "本次 Release 暂未填写更新日志。",
+        releaseUrl: latest.releaseUrl,
+        downloadUrl: latest.downloadUrl,
       };
       setUpdateStatus(`发现新版本 ${tag}`);
       if (manual || settings?.showUpdateNotification) {
@@ -4596,6 +4598,63 @@ function InfoBlock({ children, label }: { children: React.ReactNode; label: stri
       <div className="about-value">{children}</div>
     </section>
   );
+}
+
+async function fetchLatestReleaseInfo(currentVersion: string): Promise<LatestReleaseInfo | null> {
+  const packageResponse = await fetch(`${GITHUB_RAW_PACKAGE_URL}?t=${Date.now()}`, {
+    cache: "no-store",
+    headers: { Accept: "application/json, text/plain;q=0.9" },
+  });
+  if (packageResponse.status === 404) {
+    return null;
+  }
+  if (!packageResponse.ok) {
+    throw new Error(`GitHub Raw 返回 ${packageResponse.status}`);
+  }
+
+  const remotePackage = await packageResponse.json() as { version?: string };
+  const version = remotePackage.version?.trim();
+  if (!version) {
+    throw new Error("远端版本信息缺失");
+  }
+
+  const tag = version.startsWith("v") ? version : `v${version}`;
+  const fallbackInfo: LatestReleaseInfo = {
+    tag,
+    releaseUrl: `${GITHUB_URL}/releases/tag/${tag}`,
+    downloadUrl: `${GITHUB_URL}/releases/download/${tag}/LightweightToolset_${version.replace(/^v/i, "")}_x64-setup.exe`,
+  };
+
+  if (!isRemoteVersionNewer(tag, currentVersion)) {
+    return fallbackInfo;
+  }
+
+  try {
+    const releaseResponse = await fetch(GITHUB_API_LATEST_RELEASE_URL, {
+      cache: "no-store",
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!releaseResponse.ok) {
+      return fallbackInfo;
+    }
+    const release = await releaseResponse.json() as {
+      assets?: Array<{ browser_download_url?: string; name?: string }>;
+      body?: string;
+      html_url?: string;
+      tag_name?: string;
+    };
+    const apiTag = release.tag_name?.trim() || tag;
+    const apiVersion = apiTag.replace(/^v/i, "");
+    const asset = release.assets?.find((item) => item.name?.toLowerCase().endsWith(".exe")) ?? release.assets?.[0];
+    return {
+      tag: apiTag,
+      releaseNotes: release.body,
+      releaseUrl: release.html_url ?? `${GITHUB_URL}/releases/tag/${apiTag}`,
+      downloadUrl: asset?.browser_download_url ?? `${GITHUB_URL}/releases/download/${apiTag}/LightweightToolset_${apiVersion}_x64-setup.exe`,
+    };
+  } catch {
+    return fallbackInfo;
+  }
 }
 
 function isRemoteVersionNewer(tag: string, current: string) {
