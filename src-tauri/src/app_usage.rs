@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::{mpsc, Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Arc, Mutex, OnceLock,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -16,6 +19,7 @@ const SAVE_INTERVAL_MS: u64 = 10_000;
 const DEFAULT_AFK_THRESHOLD_SEC: u32 = 300;
 
 static APP_USAGE: OnceLock<Mutex<AppUsageManager>> = OnceLock::new();
+static LAST_PHYSICAL_INPUT_MS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +49,8 @@ struct AppUsageStore {
     disabled_processes: BTreeSet<String>,
     #[serde(default)]
     days: BTreeMap<String, BTreeMap<String, f64>>,
+    #[serde(default)]
+    hours: BTreeMap<String, BTreeMap<String, BTreeMap<String, f64>>>,
     #[serde(skip)]
     dirty: bool,
 }
@@ -57,6 +63,7 @@ impl Default for AppUsageStore {
             aliases: BTreeMap::new(),
             disabled_processes: BTreeSet::new(),
             days: BTreeMap::new(),
+            hours: BTreeMap::new(),
             dirty: false,
         }
     }
@@ -88,6 +95,7 @@ pub struct AppUsageSnapshot {
     pub aliases: BTreeMap<String, String>,
     pub disabled_processes: Vec<String>,
     pub days: BTreeMap<String, BTreeMap<String, f64>>,
+    pub hours: BTreeMap<String, BTreeMap<String, BTreeMap<String, f64>>>,
 }
 
 struct AppUsageRuntime {
@@ -98,7 +106,17 @@ struct AppUsageRuntime {
 struct AppUsageWorker {
     stop: mpsc::Sender<()>,
     thread: thread::JoinHandle<()>,
+    input_monitor: PhysicalInputMonitor,
 }
+
+#[cfg(target_os = "windows")]
+struct PhysicalInputMonitor {
+    thread_id: u32,
+    thread: thread::JoinHandle<()>,
+}
+
+#[cfg(not(target_os = "windows"))]
+struct PhysicalInputMonitor;
 
 struct AppUsageManager {
     path: PathBuf,
@@ -131,8 +149,7 @@ pub fn relocate(config_dir: &Path) -> Result<(), String> {
     let mut manager = manager_lock.lock().map_err(|_| "软件使用统计服务不可用")?;
     let was_running = manager.worker.is_some();
     if let Some(worker) = manager.worker.take() {
-        let _ = worker.stop.send(());
-        let _ = worker.thread.join();
+        stop_worker(worker);
     }
 
     let dir = config_dir.join(APP_USAGE_DIR);
@@ -158,6 +175,7 @@ pub fn start() -> Result<(), String> {
     let runtime = Arc::clone(&manager.runtime);
     let path = manager.path.clone();
     let ignored = ignored_processes();
+    let input_monitor = start_physical_input_monitor()?;
     let (stop, receiver) = mpsc::channel();
     let thread = thread::Builder::new()
         .name("tool-app-usage".to_owned())
@@ -189,7 +207,7 @@ pub fn start() -> Result<(), String> {
                     .lock()
                     .map(|guard| guard.settings.afk_threshold_sec)
                     .unwrap_or(DEFAULT_AFK_THRESHOLD_SEC);
-                let is_afk = get_idle_seconds() >= afk_threshold_sec;
+                let is_afk = physical_idle_seconds() >= afk_threshold_sec;
 
                 if let Ok(mut state) = runtime.lock() {
                     state.active_process = active_process.clone();
@@ -212,7 +230,11 @@ pub fn start() -> Result<(), String> {
         })
         .map_err(|error| format!("启动软件使用统计失败: {error}"))?;
 
-    manager.worker = Some(AppUsageWorker { stop, thread });
+    manager.worker = Some(AppUsageWorker {
+        stop,
+        thread,
+        input_monitor,
+    });
     Ok(())
 }
 
@@ -224,13 +246,18 @@ pub fn stop() {
         return;
     };
     if let Some(worker) = manager.worker.take() {
-        let _ = worker.stop.send(());
-        let _ = worker.thread.join();
+        stop_worker(worker);
     }
     if let Ok(mut state) = manager.runtime.lock() {
         state.active_process = None;
         state.is_afk = false;
     };
+}
+
+fn stop_worker(worker: AppUsageWorker) {
+    let _ = worker.stop.send(());
+    let _ = worker.thread.join();
+    worker.input_monitor.stop();
 }
 
 pub fn snapshot() -> Result<AppUsageSnapshot, String> {
@@ -254,6 +281,7 @@ pub fn snapshot() -> Result<AppUsageSnapshot, String> {
         aliases: store.aliases.clone(),
         disabled_processes: store.disabled_processes.iter().cloned().collect(),
         days: store.days.clone(),
+        hours: store.hours.clone(),
     })
 }
 
@@ -325,6 +353,7 @@ pub fn clear() -> Result<AppUsageSnapshot, String> {
     {
         let mut store = manager.store.lock().map_err(|_| "软件使用统计数据不可用")?;
         store.days.clear();
+        store.hours.clear();
         store.dirty = true;
     }
     save_store(&manager.path, &manager.store, true)?;
@@ -336,10 +365,13 @@ fn add_usage(store: &mut AppUsageStore, process_name: String, seconds: f64) {
     if seconds <= 0.0 {
         return;
     }
-    let day = local_day_string();
-    let apps = store.days.entry(day).or_default();
+    let (day, hour) = local_day_hour();
+    let apps = store.days.entry(day.clone()).or_default();
     let next = apps.get(&process_name).copied().unwrap_or(0.0) + seconds;
-    apps.insert(process_name, round_seconds(next));
+    apps.insert(process_name.clone(), round_seconds(next));
+    let hour_apps = store.hours.entry(day).or_default().entry(hour).or_default();
+    let next_hour = hour_apps.get(&process_name).copied().unwrap_or(0.0) + seconds;
+    hour_apps.insert(process_name, round_seconds(next_hour));
     store.dirty = true;
 }
 
@@ -388,44 +420,170 @@ fn default_afk_threshold_sec() -> u32 {
 }
 
 fn store_version() -> u32 {
-    1
+    2
 }
 
 #[cfg(target_os = "windows")]
 fn local_day_string() -> String {
+    local_day_hour().0
+}
+
+#[cfg(target_os = "windows")]
+fn local_day_hour() -> (String, String) {
     use windows_sys::Win32::{Foundation::SYSTEMTIME, System::SystemInformation::GetLocalTime};
     unsafe {
         let mut time = std::mem::zeroed::<SYSTEMTIME>();
         GetLocalTime(&mut time);
-        format!("{:04}-{:02}-{:02}", time.wYear, time.wMonth, time.wDay)
+        (
+            format!("{:04}-{:02}-{:02}", time.wYear, time.wMonth, time.wDay),
+            format!("{:02}", time.wHour),
+        )
     }
 }
 
 #[cfg(not(target_os = "windows"))]
 fn local_day_string() -> String {
-    "1970-01-01".to_owned()
+    local_day_hour().0
+}
+
+#[cfg(not(target_os = "windows"))]
+fn local_day_hour() -> (String, String) {
+    ("1970-01-01".to_owned(), "00".to_owned())
 }
 
 #[cfg(target_os = "windows")]
-fn get_idle_seconds() -> u32 {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
-    unsafe {
-        let mut info = LASTINPUTINFO {
-            cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
-            dwTime: 0,
-        };
-        if GetLastInputInfo(&mut info) == 0 {
-            return 0;
+fn start_physical_input_monitor() -> Result<PhysicalInputMonitor, String> {
+    use windows_sys::Win32::{
+        System::Threading::GetCurrentThreadId,
+        System::SystemInformation::GetTickCount64,
+        UI::WindowsAndMessaging::{
+            GetMessageW, PeekMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+            DispatchMessageW, MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL,
+        },
+    };
+
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let thread = thread::Builder::new()
+        .name("tool-app-usage-input".to_owned())
+        .spawn(move || unsafe {
+            let mut message = std::mem::zeroed::<MSG>();
+            PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
+
+            let keyboard_hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(physical_keyboard_hook), std::ptr::null_mut(), 0);
+            if keyboard_hook.is_null() {
+                let _ = ready_tx.send(Err("启动键盘空闲监听失败".to_owned()));
+                return;
+            }
+            let mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, Some(physical_mouse_hook), std::ptr::null_mut(), 0);
+            if mouse_hook.is_null() {
+                UnhookWindowsHookEx(keyboard_hook);
+                let _ = ready_tx.send(Err("启动鼠标空闲监听失败".to_owned()));
+                return;
+            }
+
+            LAST_PHYSICAL_INPUT_MS.store(GetTickCount64(), Ordering::Release);
+            let _ = ready_tx.send(Ok(GetCurrentThreadId()));
+            while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            UnhookWindowsHookEx(mouse_hook);
+            UnhookWindowsHookEx(keyboard_hook);
+        })
+        .map_err(|error| format!("启动物理输入监听线程失败: {error}"))?;
+    let thread_id = match ready_rx.recv() {
+        Ok(Ok(thread_id)) => thread_id,
+        Ok(Err(error)) => {
+            let _ = thread.join();
+            return Err(error);
         }
-        let elapsed_ms =
-            windows_sys::Win32::System::SystemInformation::GetTickCount().wrapping_sub(info.dwTime);
-        elapsed_ms / 1000
+        Err(_) => {
+            let _ = thread.join();
+            return Err("物理输入监听线程未能初始化".to_owned());
+        }
+    };
+    Ok(PhysicalInputMonitor { thread_id, thread })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_physical_input_monitor() -> Result<PhysicalInputMonitor, String> {
+    Ok(PhysicalInputMonitor)
+}
+
+#[cfg(target_os = "windows")]
+impl PhysicalInputMonitor {
+    fn stop(self) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+        unsafe {
+            PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
+        }
+        let _ = self.thread.join();
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn get_idle_seconds() -> u32 {
+impl PhysicalInputMonitor {
+    fn stop(self) {}
+}
+
+#[cfg(target_os = "windows")]
+fn physical_idle_seconds() -> u32 {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+    let last_input_ms = LAST_PHYSICAL_INPUT_MS.load(Ordering::Acquire);
+    if last_input_ms == 0 {
+        return 0;
+    }
+    ((unsafe { GetTickCount64() }).saturating_sub(last_input_ms) / 1000).min(u32::MAX as u64) as u32
+}
+
+#[cfg(not(target_os = "windows"))]
+fn physical_idle_seconds() -> u32 {
     0
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn physical_keyboard_hook(
+    code: i32,
+    w_param: windows_sys::Win32::Foundation::WPARAM,
+    l_param: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::{
+        System::SystemInformation::GetTickCount64,
+        UI::WindowsAndMessaging::{CallNextHookEx, KBDLLHOOKSTRUCT, LLKHF_INJECTED, WM_KEYDOWN, WM_SYSKEYDOWN},
+    };
+    if code == 0 && (w_param as u32 == WM_KEYDOWN || w_param as u32 == WM_SYSKEYDOWN) && l_param != 0 {
+        let input = &*(l_param as *const KBDLLHOOKSTRUCT);
+        if input.flags & LLKHF_INJECTED == 0 {
+            LAST_PHYSICAL_INPUT_MS.store(GetTickCount64(), Ordering::Release);
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param)
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn physical_mouse_hook(
+    code: i32,
+    w_param: windows_sys::Win32::Foundation::WPARAM,
+    l_param: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::{
+        System::SystemInformation::GetTickCount64,
+        UI::WindowsAndMessaging::{
+            CallNextHookEx, MSLLHOOKSTRUCT, LLMHF_INJECTED, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
+            WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_XBUTTONDOWN,
+        },
+    };
+    let message = w_param as u32;
+    if code == 0
+        && matches!(message, WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_MOUSEWHEEL | WM_XBUTTONDOWN)
+        && l_param != 0
+    {
+        let input = &*(l_param as *const MSLLHOOKSTRUCT);
+        if input.flags & LLMHF_INJECTED == 0 {
+            LAST_PHYSICAL_INPUT_MS.store(GetTickCount64(), Ordering::Release);
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param)
 }
 
 #[cfg(target_os = "windows")]

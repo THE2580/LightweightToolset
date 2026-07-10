@@ -328,12 +328,14 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .app-usage-summary-title span { display: inline-flex; min-width: 0; align-items: center; gap: 5px; }
 .app-usage-summary-title i { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 999px; background: #94a3b8; box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.16); }
 .app-usage-status-card.running .app-usage-summary-title i { background: #16a34a; box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.15); }
+.app-usage-status-card.afk .app-usage-summary-title i { background: #f59e0b; box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16); }
 .app-usage-status-card.idle .app-usage-summary-title i { background: #94a3b8; box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.16); }
 .app-usage-status-text { position: relative; display: flex; min-width: 0; align-items: baseline; gap: 4px; overflow: hidden; padding-bottom: 6px; font-size: 14px; line-height: 1.25; white-space: nowrap; }
 .app-usage-status-text span { flex: 0 0 auto; font-weight: 850; line-height: 1.25; white-space: nowrap; }
 .app-usage-status-text em { min-width: 0; overflow: hidden; color: var(--text); font-style: normal; font-weight: 850; line-height: 1.25; text-overflow: clip; white-space: nowrap; }
 .app-usage-status-measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; }
 .app-usage-status-card.running .app-usage-status-text span { color: #16a34a; }
+.app-usage-status-card.afk .app-usage-status-text span { color: #d97706; }
 .app-usage-status-card.idle .app-usage-status-text { color: #64748b; }
 .app-usage-main-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 9px; min-height: 165px; flex: 0 0 185px; }
 .app-usage-panel { min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-bg); }
@@ -351,10 +353,20 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .app-usage-chart-canvas:active { cursor: grabbing; }
 .app-usage-chart { position: relative; height: 100%; min-height: 0; padding: 9px 14px 0; }
 .app-usage-chart::after { position: absolute; right: 14px; bottom: 18px; left: 14px; height: 1px; background: #d9e3f3; content: ""; }
-.app-usage-chart-bars { position: absolute; inset: 10px 14px 0; display: grid; grid-auto-columns: minmax(8px, 1fr); grid-auto-flow: column; align-items: end; gap: 0; }
-.app-usage-chart-bars.single { left: 42%; right: 42%; }
+.app-usage-chart-guides { position: absolute; z-index: 0; inset: 10px 14px 18px; pointer-events: none; }
+.app-usage-chart-value-line, .app-usage-chart-average-line { position: absolute; right: 0; left: 0; top: var(--line-top); display: flex; height: 1px; align-items: center; background: rgba(148, 163, 184, 0.2); }
+.app-usage-chart-value-line span, .app-usage-chart-average-line span { position: sticky; right: 3px; margin-left: auto; padding-left: 5px; color: #94a3b8; background: var(--muted-bg); font-size: 8px; line-height: 1; white-space: nowrap; }
+.app-usage-chart-average-line { z-index: 1; background: transparent; }
+.app-usage-chart-average-line::before { position: absolute; inset: 0; border-top: 1px dashed color-mix(in srgb, var(--primary) 55%, transparent); content: ""; transform: translateY(-1px); }
+.app-usage-chart-average-line span { color: var(--primary); font-weight: 700; }
+.app-usage-chart-segments, .app-usage-chart-bars { position: absolute; inset: 10px 14px 0; display: grid; grid-auto-columns: minmax(8px, 1fr); grid-auto-flow: column; gap: 0; }
+.app-usage-chart-segments { z-index: 1; bottom: 18px; pointer-events: none; }
+.app-usage-chart-segments i { width: 1px; align-self: stretch; justify-self: center; }
+.app-usage-chart-segments i.reference { border-left: 1px dashed rgba(148, 163, 184, 0.18); }
+.app-usage-chart-bars { z-index: 2; align-items: end; }
+.app-usage-chart-bars.single, .app-usage-chart-segments.single { left: 42%; right: 42%; }
 .app-usage-chart-bar { position: relative; display: grid; height: 100%; min-width: 0; grid-template-rows: minmax(0, 1fr) 18px; align-items: end; justify-items: center; }
-.app-usage-chart-bar span { width: 100%; border-radius: 3px 3px 0 0; background: color-mix(in srgb, var(--primary) 28%, transparent); transition: background-color 140ms ease, transform 140ms ease, box-shadow 140ms ease; transform-origin: bottom; }
+.app-usage-chart-bar span { width: 100%; border-radius: 3px 3px 0 0; background: color-mix(in srgb, var(--primary) 28%, transparent); box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.72); transition: background-color 140ms ease, transform 140ms ease, box-shadow 140ms ease; transform-origin: bottom; }
 .app-usage-chart-bar:hover span { background: color-mix(in srgb, var(--primary) 62%, transparent); box-shadow: 0 5px 12px rgba(43, 99, 232, 0.18); transform: scaleY(1.04); }
 .app-usage-chart-bar small { align-self: center; overflow: hidden; max-width: 38px; color: var(--muted-text); font-size: 7px; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
 .app-usage-ranking-panel { display: flex; flex-direction: column; }

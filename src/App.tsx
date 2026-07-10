@@ -128,12 +128,24 @@ type AppUsageSnapshot = {
   aliases: Record<string, string>;
   disabledProcesses: string[];
   days: Record<string, Record<string, number>>;
+  hours: Record<string, Record<string, Record<string, number>>>;
 };
 
 type AppUsageTrendPoint = {
   label: string;
+  axisLabel?: string;
+  hoverLabel?: string;
+  elapsed: boolean;
   seconds: number;
   topApps: Array<{ displayName: string; seconds: number }>;
+};
+
+type AppUsageTrendKey = {
+  key: string;
+  label: string;
+  axisLabel?: string;
+  hoverLabel?: string;
+  elapsed?: boolean;
 };
 
 type AppUsageProcessRow = {
@@ -2751,6 +2763,9 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
   );
   const activeName = snapshot?.activeProcess ? appUsageDisplayName(snapshot.activeProcess, snapshot.aliases) : "";
   const usageStatus = useMemo(() => {
+    if (snapshot?.running && snapshot.isAfk && activeName) {
+      return { tone: "afk", prefix: "空闲暂停", value: activeName };
+    }
     if (snapshot?.running && !snapshot.isAfk && activeName) {
       return { tone: "running", prefix: "正在统计", value: activeName };
     }
@@ -2853,7 +2868,7 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
         </article>
         <article>
           <div><Monitor size={14} />{rangeLabel(range)}软件数</div>
-          <strong>{rangeData.appRows.length}</strong>
+          <strong>{rangeData.activeAppCount}</strong>
         </article>
         <article className={`app-usage-status-card ${usageStatus.tone}`}>
           <div className="app-usage-summary-title">
@@ -2894,7 +2909,7 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
               <button
                 className={`app-usage-rank-row ${trendTarget === row.processName ? "active" : ""}`}
                 key={row.processName}
-                onClick={() => setTrendTarget(row.processName)}
+                onClick={() => setTrendTarget((currentTarget) => currentTarget === row.processName ? "__total" : row.processName)}
                 title={`查看 ${row.displayName} 的使用时长趋势`}
                 type="button"
               >
@@ -2902,7 +2917,7 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
                   <span>{index + 1}. {row.displayName}</span>
                   <strong>{formatUsageDuration(row.seconds)}</strong>
                 </div>
-                <i style={{ "--progress": `${rangeData.maxAppSeconds > 0 ? Math.max(4, (row.seconds / rangeData.maxAppSeconds) * 100) : 0}%` } as React.CSSProperties} />
+                <i style={{ "--progress": `${rangeData.maxAppSeconds > 0 && row.seconds > 0 ? Math.max(4, (row.seconds / rangeData.maxAppSeconds) * 100) : 0}%` } as React.CSSProperties} />
               </button>
             ))}
             {rangeData.appRows.length === 0 ? <p className="app-usage-empty">暂无统计数据</p> : null}
@@ -3066,8 +3081,17 @@ function AppUsageTrendChart({ points }: { points: AppUsageTrendPoint[] }) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ active: boolean; scrollLeft: number; x: number }>({ active: false, scrollLeft: 0, x: 0 });
   const [hoverPoint, setHoverPoint] = useState<{ point: AppUsageTrendPoint; x: number; y: number } | null>(null);
-  const maxSeconds = Math.max(1, ...points.map((point) => point.seconds));
-  const barWidth = points.length <= 1 ? 58 : points.length <= 7 ? 38 : points.length <= 12 ? 30 : 16;
+  const pointSeconds = points.map((point) => point.seconds);
+  const maxSeconds = Math.max(0, ...pointSeconds);
+  const averagePoints = points.filter((point) => point.elapsed);
+  const averageBase = averagePoints.length > 0 ? averagePoints : points;
+  const averageSeconds = averageBase.length > 0
+    ? averageBase.reduce((sum, point) => sum + point.seconds, 0) / averageBase.length
+    : 0;
+  const chartMaxSeconds = niceAppUsageChartMax(Math.max(maxSeconds, averageSeconds));
+  const valueTicks = appUsageChartTicks(chartMaxSeconds);
+  const averageRatio = chartMaxSeconds > 0 ? averageSeconds / chartMaxSeconds : 0;
+  const barWidth = points.length <= 1 ? 58 : points.length <= 7 ? 38 : points.length <= 12 ? 30 : points.length <= 24 ? 22 : 16;
   const canvasWidth = Math.max(300, points.length * barWidth);
 
   useEffect(() => {
@@ -3130,9 +3154,26 @@ function AppUsageTrendChart({ points }: { points: AppUsageTrendPoint[] }) {
       ref={canvasRef}
     >
       <div className="app-usage-chart" style={{ minWidth: `${canvasWidth}px` }}>
+        <div className="app-usage-chart-guides" aria-hidden="true">
+          {valueTicks.map((tick) => (
+            <div className="app-usage-chart-value-line" key={tick.value} style={{ "--line-top": `${100 - tick.ratio * 100}%` } as React.CSSProperties}>
+              <span>{tick.label}</span>
+            </div>
+          ))}
+          {averageSeconds > 0 ? (
+            <div className="app-usage-chart-average-line" style={{ "--line-top": `${100 - averageRatio * 100}%` } as React.CSSProperties}>
+              <span>平均 {formatCompactUsageDuration(averageSeconds)}</span>
+            </div>
+          ) : null}
+        </div>
+        <div className={`app-usage-chart-segments ${points.length === 1 ? "single" : ""}`} aria-hidden="true">
+          {points.map((point, index) => (
+            <i className={point.axisLabel ? "reference" : ""} key={`${point.label}-${index}`} />
+          ))}
+        </div>
         <div className={`app-usage-chart-bars ${points.length === 1 ? "single" : ""}`}>
           {points.map((point) => {
-            const height = `${Math.max(3, (point.seconds / maxSeconds) * 86)}%`;
+            const height = `${Math.max(3, chartMaxSeconds > 0 ? (point.seconds / chartMaxSeconds) * 100 : 0)}%`;
             return (
             <div
               className="app-usage-chart-bar"
@@ -3143,7 +3184,7 @@ function AppUsageTrendChart({ points }: { points: AppUsageTrendPoint[] }) {
               style={{ "--bar-height": height } as React.CSSProperties}
             >
                 <span style={{ height }} />
-                <small>{point.label}</small>
+                <small>{point.axisLabel ?? point.label}</small>
               </div>
             );
           })}
@@ -3157,7 +3198,7 @@ function AppUsageTrendChart({ points }: { points: AppUsageTrendPoint[] }) {
 function AppUsageChartTooltip({ hover }: { hover: { point: AppUsageTrendPoint; x: number; y: number } }) {
   return createPortal(
     <div className="app-usage-chart-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
-      <strong>{hover.point.label}：{formatUsageDuration(hover.point.seconds)}</strong>
+      <strong>{hover.point.hoverLabel ?? hover.point.label}：{formatUsageDuration(hover.point.seconds)}</strong>
       {hover.point.topApps.length > 0 ? (
         <div>
           {hover.point.topApps.map((app, index) => (
@@ -4234,9 +4275,13 @@ function formatClipboardDateTime(value: number | null) {
 function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsageRange, trendTarget: string) {
   const aliases = snapshot?.aliases ?? {};
   const days = snapshot?.days ?? {};
+  const hours = snapshot?.hours ?? {};
   const disabled = new Set(snapshot?.disabledProcesses ?? []);
   const trendDays = appUsageTrendKeys(range);
-  const includedDays = range === "year"
+  const todayKey = formatLocalDayKey(new Date());
+  const includedDays = range === "day"
+    ? [todayKey]
+    : range === "year"
     ? Object.keys(days).filter((day) => day.startsWith(`${new Date().getFullYear()}-`))
     : trendDays.map((point) => point.key);
   const appTotals = new Map<string, number>();
@@ -4250,28 +4295,46 @@ function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsa
     }
   }
 
-  const appRows = Array.from(appTotals.entries())
-    .map(([processName, seconds]) => ({
+  const monitoredProcesses = new Set<string>();
+  for (const apps of Object.values(days)) {
+    for (const processName of Object.keys(apps)) {
+      if (!disabled.has(processName)) {
+        monitoredProcesses.add(processName);
+      }
+    }
+  }
+  for (const processName of Object.keys(aliases)) {
+    if (!disabled.has(processName)) {
+      monitoredProcesses.add(processName);
+    }
+  }
+  const appRows = Array.from(monitoredProcesses)
+    .map((processName) => ({
       processName,
       displayName: appUsageDisplayName(processName, aliases),
-      seconds,
+      seconds: appTotals.get(processName) ?? 0,
     }))
-    .sort((a, b) => b.seconds - a.seconds || a.processName.localeCompare(b.processName));
+    .sort((a, b) => b.seconds - a.seconds || a.displayName.localeCompare(b.displayName) || a.processName.localeCompare(b.processName));
 
   const trend = trendDays.map((point) => {
+    if (range === "day") {
+      const apps = filterAppUsageStats(hours[todayKey]?.[point.key] ?? {}, disabled);
+      return appUsageTrendPoint(point.label, apps, aliases, trendTarget, point.axisLabel, point.hoverLabel, point.elapsed);
+    }
     if (range === "year") {
       const monthApps = mergeAppUsage(
         Object.entries(days)
           .filter(([day]) => day.startsWith(`${point.key}-`))
           .map(([, apps]) => filterAppUsageStats(apps, disabled)),
       );
-      return appUsageTrendPoint(point.label, monthApps, aliases, trendTarget);
+      return appUsageTrendPoint(point.label, monthApps, aliases, trendTarget, point.axisLabel, point.hoverLabel, point.elapsed);
     }
     const apps = filterAppUsageStats(days[point.key] ?? {}, disabled);
-    return appUsageTrendPoint(point.label, apps, aliases, trendTarget);
+    return appUsageTrendPoint(point.label, apps, aliases, trendTarget, point.axisLabel, point.hoverLabel, point.elapsed);
   });
 
   return {
+    activeAppCount: appTotals.size,
     appRows,
     maxAppSeconds: Math.max(0, ...appRows.map((row) => row.seconds)),
     totalSeconds,
@@ -4279,11 +4342,22 @@ function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsa
   };
 }
 
-function appUsageTrendPoint(label: string, apps: Record<string, number>, aliases: Record<string, string>, trendTarget: string): AppUsageTrendPoint {
+function appUsageTrendPoint(
+  label: string,
+  apps: Record<string, number>,
+  aliases: Record<string, string>,
+  trendTarget: string,
+  axisLabel?: string,
+  hoverLabel?: string,
+  elapsed = true,
+): AppUsageTrendPoint {
   if (trendTarget !== "__total") {
     const seconds = apps[trendTarget] ?? 0;
     return {
       label,
+      axisLabel,
+      hoverLabel,
+      elapsed,
       seconds,
       topApps: seconds > 0
         ? [{ displayName: appUsageDisplayName(trendTarget, aliases), seconds }]
@@ -4292,6 +4366,9 @@ function appUsageTrendPoint(label: string, apps: Record<string, number>, aliases
   }
   return {
     label,
+    axisLabel,
+    hoverLabel,
+    elapsed,
     seconds: sumAppUsageSeconds(apps),
     topApps: topAppUsageRows(apps, aliases, 5),
   };
@@ -4389,10 +4466,17 @@ function topAppUsageRows(apps: Record<string, number>, aliases: Record<string, s
     .map(({ displayName, seconds }) => ({ displayName, seconds }));
 }
 
-function appUsageTrendKeys(range: AppUsageRange) {
+function appUsageTrendKeys(range: AppUsageRange): AppUsageTrendKey[] {
   const today = new Date();
   if (range === "day") {
-    return [{ key: formatLocalDayKey(today), label: "今日" }];
+    const currentHour = today.getHours();
+    return Array.from({ length: 24 }, (_, index) => ({
+      key: String(index).padStart(2, "0"),
+      label: `${index}时`,
+      hoverLabel: `${index}时-${index + 1}时`,
+      axisLabel: index % 6 === 0 ? `${index}时` : "",
+      elapsed: index <= currentHour,
+    }));
   }
   if (range === "week") {
     const start = new Date(today);
@@ -4401,7 +4485,11 @@ function appUsageTrendKeys(range: AppUsageRange) {
     return Array.from({ length: 7 }, (_, index) => {
       const date = new Date(start);
       date.setDate(start.getDate() + index);
-      return { key: formatLocalDayKey(date), label: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][index] };
+      return {
+        key: formatLocalDayKey(date),
+        label: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][index],
+        elapsed: date.getTime() <= today.getTime(),
+      };
     });
   }
   if (range === "month") {
@@ -4410,13 +4498,18 @@ function appUsageTrendKeys(range: AppUsageRange) {
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     return Array.from({ length: daysInMonth }, (_, index) => {
       const date = new Date(year, month, index + 1);
-      return { key: formatLocalDayKey(date), label: String(index + 1).padStart(2, "0") };
+      return {
+        key: formatLocalDayKey(date),
+        label: String(index + 1).padStart(2, "0"),
+        elapsed: date.getTime() <= today.getTime(),
+      };
     });
   }
   const year = today.getFullYear();
   return Array.from({ length: 12 }, (_, index) => ({
     key: `${year}-${String(index + 1).padStart(2, "0")}`,
     label: `${index + 1}月`,
+    elapsed: index <= today.getMonth(),
   }));
 }
 
@@ -4450,8 +4543,40 @@ function formatUsageDuration(seconds: number) {
   return `${restSeconds}秒`;
 }
 
+function formatCompactUsageDuration(seconds: number) {
+  if (seconds < 60) {
+    return `${Math.max(0, Math.round(seconds))}秒`;
+  }
+  const totalMinutes = Math.max(0, Math.round(seconds / 60));
+  if (totalMinutes >= 60) {
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return minutes > 0 ? `${hours}小时${minutes}分` : `${hours}小时`;
+  }
+  return `${totalMinutes}分`;
+}
+
 function formatShortMinutes(seconds: number) {
   return `${Math.round(seconds / 60)}分`;
+}
+
+function niceAppUsageChartMax(seconds: number) {
+  if (seconds <= 0) {
+    return 60;
+  }
+  const padded = seconds * 1.08;
+  const magnitude = 10 ** Math.floor(Math.log10(padded));
+  const normalized = padded / magnitude;
+  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return step * magnitude;
+}
+
+function appUsageChartTicks(maxSeconds: number) {
+  const mid = maxSeconds / 2;
+  return [
+    { value: maxSeconds, ratio: 1, label: formatCompactUsageDuration(maxSeconds) },
+    { value: mid, ratio: 0.5, label: formatCompactUsageDuration(mid) },
+  ];
 }
 
 function rangeLabel(range: AppUsageRange) {
