@@ -5,7 +5,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::{
-    app_usage, clipboard, key_usage, push_debug_log, settings::AppSettings, timer, window_service,
+    app_usage, clipboard, key_usage, push_debug_log, settings::AppSettings, timer, window_pinner, window_service,
     AppState,
 };
 
@@ -32,7 +32,7 @@ const APP_HOTKEYS: [AppHotkeyDefinition; 1] = [AppHotkeyDefinition {
     default_hotkey: "CTRL+ALT+M",
 }];
 
-const TOOLS: [ToolDefinition; 4] = [
+const TOOLS: [ToolDefinition; 5] = [
     ToolDefinition {
         id: "clipboard",
         name: "剪贴板",
@@ -62,6 +62,14 @@ const TOOLS: [ToolDefinition; 4] = [
         name: "计时器",
         description: "正计时、倒计时与提醒管理",
         default_hotkey: None,
+        default_enabled: false,
+        implemented: true,
+    },
+    ToolDefinition {
+        id: "window_pinner",
+        name: "窗口置顶",
+        description: "使用快捷键置顶当前外部窗口并集中管理",
+        default_hotkey: Some("CTRL+ALT+T"),
         default_enabled: false,
         implemented: true,
     },
@@ -509,6 +517,9 @@ impl ToolRegistry {
                 format!("timer.lifecycle.stop_paused_running count={paused_count}"),
             );
         }
+        if tool.id == "window_pinner" {
+            window_pinner::unpin_all();
+        }
         if let Some(worker) = self.workers.remove(tool.id) {
             let _ = worker.stop.send(());
             let _ = worker.thread.join();
@@ -527,6 +538,7 @@ fn log_tool_lifecycle(app: &AppHandle, tool_id: &str, message: impl Into<String>
         "clipboard" => "clipboard",
         "key_usage" => "key_usage",
         "timer" => "timer",
+        "window_pinner" => "window_pinner",
         _ => "settings",
     };
     push_debug_log(&state, level, message);

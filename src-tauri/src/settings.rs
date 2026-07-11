@@ -42,6 +42,8 @@ pub struct AppSettings {
     pub auto_start: bool,
     #[serde(default)]
     pub main_window_always_on_top: bool,
+    #[serde(default = "default_window_pinner_max_pins")]
+    pub window_pinner_max_pins: usize,
     #[serde(default)]
     pub auto_check_updates: bool,
     #[serde(default)]
@@ -64,6 +66,7 @@ impl Default for AppSettings {
             theme: default_theme(),
             auto_start: false,
             main_window_always_on_top: false,
+            window_pinner_max_pins: default_window_pinner_max_pins(),
             auto_check_updates: true,
             show_update_notification: true,
             window_title: default_window_title(),
@@ -73,6 +76,8 @@ impl Default for AppSettings {
         }
     }
 }
+
+fn default_window_pinner_max_pins() -> usize { 10 }
 
 impl AppSettings {
     pub fn load(path: &Path) -> Result<Self, String> {

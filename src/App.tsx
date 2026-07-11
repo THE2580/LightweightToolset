@@ -5,7 +5,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { AnimatePresence, motion, Reorder, useDragControls } from "framer-motion";
-import type { PointerEvent as ReactPointerEvent, RefObject, WheelEvent as ReactWheelEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, RefObject, WheelEvent as ReactWheelEvent } from "react";
 import {
   Bell,
   BellOff,
@@ -209,6 +209,13 @@ type TimerCreateDraft = {
   notificationsEnabled: boolean;
 };
 
+type WindowPinnerSnapshot = {
+  windows: Array<{ hwnd: number; title: string }>;
+  maxPins: number;
+};
+
+type WindowPinnerAction = { snapshot: WindowPinnerSnapshot; message: string };
+
 type TimerDurationField = "hours" | "minutes" | "seconds";
 type TimerDurationParts = Pick<TimerCreateDraft, TimerDurationField>;
 
@@ -377,7 +384,7 @@ type NavigationTarget = {
 const DEFAULT_TITLE = "轻量化工具集";
 const APP_NAME = "LightweightToolset";
 const APP_SUBTITLE = "Windows 桌面工具集";
-const APP_VERSION = "0.3.5";
+const APP_VERSION = "0.4.0";
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const GITHUB_API_LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
@@ -388,9 +395,11 @@ const toolIcons = {
   app_usage: ChartNoAxesColumn,
   key_usage: Keyboard,
   timer: Clock,
+  window_pinner: Pin,
 };
 const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SUPER", "CMD", "COMMAND"]);
 const TOAST_DURATION_MS = 2400;
+const WINDOW_PIN_LIMITS = [1, 5, 10, 15, 20] as const;
 const CLIPBOARD_PAGE_SIZE = 10;
 const LOG_LEVEL_OPTIONS = [
   {
@@ -418,6 +427,106 @@ const LOG_LEVEL_OPTIONS = [
     ],
   },
 ];
+
+type SegmentedOption<T extends string | number> = { label: ReactNode; value: T };
+
+function SegmentedControl<T extends string | number>({
+  ariaLabel,
+  className = "",
+  onChange,
+  options,
+  value,
+}: {
+  ariaLabel: string;
+  className?: string;
+  onChange: (value: T) => void;
+  options: Array<SegmentedOption<T>>;
+  value: T;
+}) {
+  const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value));
+  const [displayIndex, setDisplayIndex] = useState(selectedIndex);
+  const [animate, setAnimate] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const pendingUserValueRef = useRef<T | null>(null);
+
+  useEffect(() => {
+    setDisplayIndex(selectedIndex);
+    if (pendingUserValueRef.current === value) {
+      pendingUserValueRef.current = null;
+      return;
+    }
+    setAnimate(false);
+  }, [selectedIndex, value]);
+
+  const indexAt = useCallback((clientX: number) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect) return selectedIndex;
+    const inset = 3;
+    const trackWidth = Math.max(1, rect.width - inset * 2);
+    return Math.max(0, Math.min(options.length - 1, Math.floor(((clientX - rect.left - inset) / trackWidth) * options.length)));
+  }, [options.length, selectedIndex]);
+
+  function selectIndex(index: number) {
+    setAnimate(true);
+    setDisplayIndex(index);
+    if (options[index].value !== value) {
+      pendingUserValueRef.current = options[index].value;
+      onChange(options[index].value);
+    }
+  }
+
+  function startDrag(event: ReactPointerEvent<HTMLSpanElement>) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setAnimate(false);
+    setDragging(true);
+    setDisplayIndex(indexAt(event.clientX));
+  }
+
+  function moveDrag(event: ReactPointerEvent<HTMLSpanElement>) {
+    if (dragging) setDisplayIndex(indexAt(event.clientX));
+  }
+
+  function finishDrag(event: ReactPointerEvent<HTMLSpanElement>) {
+    if (!dragging) return;
+    const index = indexAt(event.clientX);
+    setDragging(false);
+    selectIndex(index);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+
+  return (
+    <div
+      aria-label={ariaLabel}
+      className={`segmented ${animate ? "animate" : ""} ${className}`.trim()}
+      ref={trackRef}
+      role="tablist"
+      style={{ "--segment-count": options.length, "--segment-index": displayIndex } as CSSProperties}
+    >
+      <span
+        aria-hidden="true"
+        className={`segmented-slider ${dragging ? "dragging" : ""}`}
+        onPointerCancel={() => { setDragging(false); setDisplayIndex(selectedIndex); }}
+        onPointerDown={startDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={finishDrag}
+      />
+      {options.map((option, index) => (
+        <button
+          aria-selected={index === selectedIndex}
+          className={index === selectedIndex ? "active" : ""}
+          key={String(option.value)}
+          onClick={() => selectIndex(index)}
+          role="tab"
+          type="button"
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function isTextInputTarget(target: EventTarget | null) {
   const element = target instanceof HTMLElement ? target : null;
@@ -1212,6 +1321,9 @@ function ToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: Settin
   if (tool.id === "timer") {
     return <TimerToolPage tool={tool} />;
   }
+  if (tool.id === "window_pinner") {
+    return <WindowPinnerToolPage onOpenSettingsTab={onOpenSettingsTab} tool={tool} />;
+  }
 
   return (
     <section className="tool-page">
@@ -1340,11 +1452,17 @@ function SettingsView({
                 <h2>主题模式</h2>
                 <p>切换深色/浅色外观</p>
               </div>
-              <div className="segmented">
-                <button className={settings.theme === "system" ? "active" : ""} onClick={() => updateSettings({ theme: "system" })} type="button"><Monitor size={13} />跟随系统</button>
-                <button className={settings.theme === "light" ? "active" : ""} onClick={() => updateSettings({ theme: "light" })} type="button"><Sun size={13} />浅色</button>
-                <button className={settings.theme === "dark" ? "active" : ""} onClick={() => updateSettings({ theme: "dark" })} type="button"><Moon size={13} />深色</button>
-              </div>
+              <SegmentedControl
+                ariaLabel="主题模式"
+                className="theme-segmented"
+                onChange={(theme) => updateSettings({ theme })}
+                options={[
+                  { value: "system" as ThemeMode, label: <><Monitor size={13} />跟随系统</> },
+                  { value: "light" as ThemeMode, label: <><Sun size={13} />浅色</> },
+                  { value: "dark" as ThemeMode, label: <><Moon size={13} />深色</> },
+                ]}
+                value={settings.theme}
+              />
             </div>
             <div className="settings-row">
               <div>
@@ -1698,6 +1816,81 @@ function TimerReorderCard({
         {children(startDrag)}
       </article>
     </Reorder.Item>
+  );
+}
+
+function WindowPinnerToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: SettingsTab) => void; tool: Tool }) {
+  const [snapshot, setSnapshot] = useState<WindowPinnerSnapshot | null>(null);
+  const [dragLimitIndex, setDragLimitIndex] = useState<number | null>(null);
+  const limitOptionsRef = useRef<HTMLDivElement | null>(null);
+  const { pushToast } = useToastQueue();
+  const refresh = useCallback(async () => {
+    const next = await invoke<WindowPinnerSnapshot>("window_pinner_get_snapshot");
+    setSnapshot(next);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    let disposeChanged: (() => void) | undefined;
+    let disposeError: (() => void) | undefined;
+    void listen<WindowPinnerAction>("window-pinner-changed", ({ payload }) => {
+      setSnapshot(payload.snapshot);
+      pushToast(payload.message);
+    }).then((dispose) => { disposeChanged = dispose; });
+    void listen<string>("window-pinner-error", ({ payload }) => pushToast(payload)).then((dispose) => { disposeError = dispose; });
+    const timer = window.setInterval(() => void refresh(), 1500);
+    return () => { window.clearInterval(timer); disposeChanged?.(); disposeError?.(); };
+  }, [pushToast, refresh]);
+
+  async function saveMaxPins(value: number) {
+    const previous = snapshot;
+    setSnapshot((current) => current ? { ...current, maxPins: value } : current);
+    try {
+      setSnapshot(await invoke<WindowPinnerSnapshot>("window_pinner_set_max_pins", { maxPins: value }));
+      pushToast("最大置顶数量已保存");
+    } catch (error) { setSnapshot(previous); pushToast(String(error)); }
+  }
+
+  function limitIndexAt(clientX: number) {
+    const rect = limitOptionsRef.current?.getBoundingClientRect();
+    if (!rect) return 0;
+    return Math.max(0, Math.min(4, Math.floor(((clientX - rect.left) / rect.width) * 5)));
+  }
+
+  function startLimitDrag(event: ReactPointerEvent<HTMLSpanElement>) { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setDragLimitIndex(limitIndexAt(event.clientX)); }
+  function moveLimitDrag(event: ReactPointerEvent<HTMLSpanElement>) { if (dragLimitIndex !== null) setDragLimitIndex(limitIndexAt(event.clientX)); }
+  function finishLimitDrag(event: ReactPointerEvent<HTMLSpanElement>) { if (dragLimitIndex === null) return; const index = limitIndexAt(event.clientX); void saveMaxPins(WINDOW_PIN_LIMITS[index]); setDragLimitIndex(null); event.currentTarget.releasePointerCapture(event.pointerId); }
+
+  async function unpin(hwnd: number) {
+    setSnapshot(await invoke<WindowPinnerSnapshot>("window_pinner_unpin", { hwnd }));
+    pushToast("已取消窗口置顶");
+  }
+
+  async function unpinAll() {
+    setSnapshot(await invoke<WindowPinnerSnapshot>("window_pinner_unpin_all"));
+    pushToast("已取消全部窗口置顶");
+  }
+
+  return (
+    <section className="tool-page window-pinner-page">
+      <header className="window-pinner-header">
+        <div className="window-pinner-heading"><span className="window-pinner-title-icon"><Pin size={18} /></span><div><h1>窗口置顶</h1><p>按快捷键切换当前外部窗口的置顶状态。</p></div></div>
+        <div className="window-pinner-count"><strong>{snapshot?.windows.length ?? 0}</strong><span>/ {snapshot?.maxPins ?? 10}</span></div>
+      </header>
+      <div className="window-pinner-toolbar">
+        <span>快捷键 <kbd>{tool.hotkey || "未配置"}</kbd><button aria-label="前往快捷键设置" className="window-pinner-hotkey-link" onClick={() => onOpenSettingsTab("hotkey")} title="前往快捷键设置" type="button"><Settings size={13} /></button></span>
+        <div className="window-pinner-limit"><span>最大数量</span><div className="window-pinner-limit-stage"><div className="window-pinner-limit-picker" tabIndex={0} aria-label={`最大置顶数量，当前 ${snapshot?.maxPins ?? 10}`}><strong>{snapshot?.maxPins ?? 10}</strong><div className="window-pinner-limit-options" ref={limitOptionsRef}><span className={`window-pinner-limit-slider ${dragLimitIndex !== null ? "dragging" : ""}`} onPointerDown={startLimitDrag} onPointerMove={moveLimitDrag} onPointerUp={finishLimitDrag} onPointerCancel={() => setDragLimitIndex(null)} style={{ transform: `translateX(${(dragLimitIndex ?? WINDOW_PIN_LIMITS.indexOf((snapshot?.maxPins ?? 10) as typeof WINDOW_PIN_LIMITS[number])) * 100}%)` }}>{WINDOW_PIN_LIMITS[dragLimitIndex ?? WINDOW_PIN_LIMITS.indexOf((snapshot?.maxPins ?? 10) as typeof WINDOW_PIN_LIMITS[number])]}</span>{WINDOW_PIN_LIMITS.map((value) => <button aria-pressed={snapshot?.maxPins === value} className={snapshot?.maxPins === value ? "active" : ""} key={value} onClick={(event) => { event.currentTarget.blur(); void saveMaxPins(value); }} type="button">{value}</button>)}</div></div></div></div>
+        <button className="secondary-action danger" disabled={!snapshot?.windows.length} onClick={() => void unpinAll()} type="button"><Pin size={13} />全部取消</button>
+      </div>
+      <div className="window-pinner-list">
+        <div className="window-pinner-list-header"><span>已置顶窗口</span><span>{snapshot?.windows.length ?? 0} 项</span></div>
+        <div className="window-pinner-list-body">
+          {snapshot?.windows.length ? snapshot.windows.map((item) => (
+            <article key={item.hwnd}><span className="window-pinner-item-icon"><Pin size={15} /></span><span title={item.title}>{item.title}</span><button title="取消置顶" onClick={() => void unpin(item.hwnd)} type="button"><X size={14} /></button></article>
+          )) : <div className="window-pinner-empty"><Pin size={30} /><strong>暂无置顶窗口</strong><span>切换到目标窗口后按 {tool.hotkey || "已配置快捷键"}</span></div>}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -2442,16 +2635,13 @@ function TimerToolPage({ tool }: { tool: Tool }) {
                 <h2>添加计时器</h2>
                 <p>名称允许重复，软件内部会使用唯一 ID 管理。</p>
               </div>
-              <div className="timer-create-kind" role="tablist" aria-label="计时类型">
-                {([
-                  ["stopwatch", "正"],
-                  ["countdown", "倒"],
-                ] as Array<[TimerKind, string]>).map(([value, label]) => (
-                  <button className={createKind === value ? "active" : ""} key={value} onClick={() => setCreateKind(value)} type="button">
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl
+                ariaLabel="计时类型"
+                className="timer-create-kind"
+                onChange={setCreateKind}
+                options={[{ value: "stopwatch" as TimerKind, label: "正" }, { value: "countdown" as TimerKind, label: "倒" }]}
+                value={createKind}
+              />
               <button aria-label="关闭" className="dialog-close-button" onClick={closeCreateDialog} type="button"><X size={18} /></button>
             </header>
             <div className="timer-create-dialog-body">
@@ -2753,18 +2943,13 @@ function KeyUsageToolPage({ tool }: { tool: Tool }) {
           <Keyboard size={22} />
           <h1>{tool.name}</h1>
         </div>
-        <div className="segmented app-usage-range" role="tablist" aria-label="统计范围">
-          {([
-            ["day", "日"],
-            ["week", "周"],
-            ["month", "月"],
-            ["year", "年"],
-          ] as Array<[AppUsageRange, string]>).map(([value, label]) => (
-            <button className={range === value ? "active" : ""} key={value} onClick={() => setRange(value)} role="tab" type="button">
-              {label}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          ariaLabel="统计范围"
+          className="app-usage-range"
+          onChange={setRange}
+          options={["day", "week", "month", "year"].map((value, index) => ({ value: value as AppUsageRange, label: ["日", "周", "月", "年"][index] }))}
+          value={range}
+        />
       </header>
 
       <div className="app-usage-summary key-usage-summary">
@@ -3289,18 +3474,13 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
             <h1>{tool.name}</h1>
           </div>
         </div>
-        <div className="segmented app-usage-range" role="tablist" aria-label="统计范围">
-          {([
-            ["day", "日"],
-            ["week", "周"],
-            ["month", "月"],
-            ["year", "年"],
-          ] as Array<[AppUsageRange, string]>).map(([value, label]) => (
-            <button className={range === value ? "active" : ""} key={value} onClick={() => setRange(value)} role="tab" type="button">
-              {label}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          ariaLabel="统计范围"
+          className="app-usage-range"
+          onChange={setRange}
+          options={["day", "week", "month", "year"].map((value, index) => ({ value: value as AppUsageRange, label: ["日", "周", "月", "年"][index] }))}
+          value={range}
+        />
       </header>
 
       <div className="app-usage-summary">
@@ -3372,18 +3552,13 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
           <h2>离开状态判定</h2>
           <p>连续无输入达到阈值后暂停累计</p>
         </div>
-        <div className="segmented app-usage-afk">
-          {[60, 180, 300, 600, 900, 1800].map((value) => (
-            <button
-              className={snapshot?.settings.afkThresholdSec === value ? "active" : ""}
-              key={value}
-              onClick={() => void updateAfkThreshold(value)}
-              type="button"
-            >
-              {formatShortMinutes(value)}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          ariaLabel="离开状态判定阈值"
+          className="app-usage-afk"
+          onChange={(value) => void updateAfkThreshold(value)}
+          options={[60, 180, 300, 600, 900, 1800].map((value) => ({ value, label: formatShortMinutes(value) }))}
+          value={snapshot?.settings.afkThresholdSec ?? 300}
+        />
       </section>
 
       <section className={processListCollapsed ? "app-usage-process-panel collapsed" : "app-usage-process-panel"} ref={processPanelRef}>

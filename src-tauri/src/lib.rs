@@ -7,6 +7,7 @@ mod timer;
 mod tools;
 mod windows_notification;
 mod window_service;
+mod window_pinner;
 
 use std::{
     collections::VecDeque,
@@ -34,6 +35,7 @@ use clipboard::{
 use key_usage::KeyUsageSnapshot;
 use settings::{AppSettings, CloseBehavior, ThemeMode};
 use timer::{TimerCreateInput, TimerReorderInput, TimerSnapshot, TimerUpdateInput};
+use window_pinner::WindowPinnerSnapshot;
 use tools::{app_hotkey_snapshots, ToolRegistry, ToolSnapshot};
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -403,6 +405,38 @@ fn ensure_key_usage_enabled(state: &State<'_, AppState>) -> Result<(), String> {
 
 fn ensure_timer_enabled(state: &State<'_, AppState>) -> Result<(), String> {
     ensure_tool_enabled(state, "timer")
+}
+
+fn ensure_window_pinner_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    ensure_tool_enabled(state, "window_pinner")
+}
+
+#[tauri::command]
+fn window_pinner_get_snapshot(state: State<'_, AppState>) -> Result<WindowPinnerSnapshot, String> {
+    ensure_window_pinner_enabled(&state)?;
+    window_pinner::snapshot()
+}
+
+#[tauri::command]
+fn window_pinner_unpin(state: State<'_, AppState>, hwnd: isize) -> Result<WindowPinnerSnapshot, String> {
+    ensure_window_pinner_enabled(&state)?;
+    window_pinner::unpin(hwnd)
+}
+
+#[tauri::command]
+fn window_pinner_unpin_all(state: State<'_, AppState>) -> Result<WindowPinnerSnapshot, String> {
+    ensure_window_pinner_enabled(&state)?;
+    Ok(window_pinner::unpin_all())
+}
+
+#[tauri::command]
+fn window_pinner_set_max_pins(state: State<'_, AppState>, max_pins: usize) -> Result<WindowPinnerSnapshot, String> {
+    ensure_window_pinner_enabled(&state)?;
+    let snapshot = window_pinner::set_max_pins(max_pins)?;
+    let mut registry = state.registry.lock().map_err(|_| "工具状态不可用")?;
+    registry.settings_mut().window_pinner_max_pins = snapshot.max_pins;
+    save_app_settings(&state, registry.settings())?;
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -870,6 +904,7 @@ fn update_app_settings(
         app_usage::relocate(&next_storage_dir)?;
         key_usage::relocate(&next_storage_dir)?;
         timer::relocate(&next_storage_dir)?;
+        window_pinner::relocate(&next_storage_dir)?;
     }
     save_app_settings(&state, registry.settings())?;
     push_debug_log(&state, "settings", "app.settings.saved");
@@ -906,6 +941,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 app_usage::stop();
                 key_usage::stop();
                 timer::stop();
+                window_pinner::unpin_all();
                 app.exit(0);
             }
             _ => {}
@@ -942,6 +978,7 @@ pub fn run() {
                 .with_handler(|app, shortcut, event| {
                     if event.state() == ShortcutState::Pressed {
                         let mut handled = false;
+                        let mut window_pinner_hotkey = false;
                         if let Some(state) = app.try_state::<AppState>() {
                             push_debug_log(
                                 &state,
@@ -953,6 +990,9 @@ pub fn run() {
                                 let app_hotkey = registry.app_hotkey_for_shortcut(&shortcut_text);
                                 if app_hotkey.as_deref() == Some("main_window") {
                                     handled = false;
+                                } else if registry.tool_for_shortcut(&shortcut_text).as_deref() == Some("window_pinner") {
+                                    window_pinner_hotkey = true;
+                                    handled = true;
                                 } else if registry.tool_for_shortcut(&shortcut_text).as_deref()
                                     == Some("clipboard")
                                     || registry.only_enabled_tool().as_deref() == Some("clipboard")
@@ -960,6 +1000,15 @@ pub fn run() {
                                     handled = true;
                                 }
                             }
+                            if window_pinner_hotkey {
+                                match window_pinner::toggle_foreground(std::process::id()) {
+                                    Ok(action) => { let _ = app.emit("window-pinner-changed", &action); }
+                                    Err(error) => { let _ = app.emit("window-pinner-error", error); }
+                                }
+                            }
+                        }
+                        if window_pinner_hotkey {
+                            return;
                         }
                         if handled {
                             if let Err(error) = window_service::open_clipboard_popup(app) {
@@ -1016,7 +1065,11 @@ pub fn run() {
             timer::init(&storage_dir)?;
             let settings_path = settings_path_for(&storage_dir);
             let settings = AppSettings::load(&settings_path)?;
+            window_pinner::init(&storage_dir, settings.window_pinner_max_pins)?;
             let mut registry = ToolRegistry::new(settings);
+            if !registry.is_enabled("window_pinner") {
+                window_pinner::unpin_all();
+            }
             if registry.settings().auto_start {
                 let _ = set_auto_start_plugin(app.handle(), true);
             }
@@ -1076,6 +1129,10 @@ pub fn run() {
             timer_open_free_window,
             timer_open_clock_window,
             timer_get_free_window_count,
+            window_pinner_get_snapshot,
+            window_pinner_unpin,
+            window_pinner_unpin_all,
+            window_pinner_set_max_pins,
             clipboard_get_snapshot,
             clipboard_query,
             clipboard_update_settings,
