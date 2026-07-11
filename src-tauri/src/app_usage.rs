@@ -2,15 +2,14 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc, Arc, Mutex, OnceLock,
-    },
+    sync::{mpsc, Arc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
+
+use crate::input_monitor;
 
 const APP_USAGE_DIR: &str = "app_usage";
 const APP_USAGE_FILE: &str = "app_usage.json";
@@ -19,7 +18,6 @@ const SAVE_INTERVAL_MS: u64 = 10_000;
 const DEFAULT_AFK_THRESHOLD_SEC: u32 = 300;
 
 static APP_USAGE: OnceLock<Mutex<AppUsageManager>> = OnceLock::new();
-static LAST_PHYSICAL_INPUT_MS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,17 +104,8 @@ struct AppUsageRuntime {
 struct AppUsageWorker {
     stop: mpsc::Sender<()>,
     thread: thread::JoinHandle<()>,
-    input_monitor: PhysicalInputMonitor,
+    input_monitor: input_monitor::ActivityMonitor,
 }
-
-#[cfg(target_os = "windows")]
-struct PhysicalInputMonitor {
-    thread_id: u32,
-    thread: thread::JoinHandle<()>,
-}
-
-#[cfg(not(target_os = "windows"))]
-struct PhysicalInputMonitor;
 
 struct AppUsageManager {
     path: PathBuf,
@@ -175,9 +164,9 @@ pub fn start() -> Result<(), String> {
     let runtime = Arc::clone(&manager.runtime);
     let path = manager.path.clone();
     let ignored = ignored_processes();
-    let input_monitor = start_physical_input_monitor()?;
+    let input_monitor = input_monitor::start_activity_monitor()?;
     let (stop, receiver) = mpsc::channel();
-    let thread = thread::Builder::new()
+    let thread = match thread::Builder::new()
         .name("tool-app-usage".to_owned())
         .spawn(move || {
             let mut last_sample_at = Instant::now();
@@ -207,7 +196,7 @@ pub fn start() -> Result<(), String> {
                     .lock()
                     .map(|guard| guard.settings.afk_threshold_sec)
                     .unwrap_or(DEFAULT_AFK_THRESHOLD_SEC);
-                let is_afk = physical_idle_seconds() >= afk_threshold_sec;
+                let is_afk = input_monitor::physical_idle_seconds() >= afk_threshold_sec;
 
                 if let Ok(mut state) = runtime.lock() {
                     state.active_process = active_process.clone();
@@ -227,8 +216,13 @@ pub fn start() -> Result<(), String> {
                     last_save_at = Instant::now();
                 }
             }
-        })
-        .map_err(|error| format!("启动软件使用统计失败: {error}"))?;
+        }) {
+        Ok(thread) => thread,
+        Err(error) => {
+            input_monitor::stop_activity_monitor(input_monitor);
+            return Err(format!("启动软件使用统计失败: {error}"));
+        }
+    };
 
     manager.worker = Some(AppUsageWorker {
         stop,
@@ -257,7 +251,7 @@ pub fn stop() {
 fn stop_worker(worker: AppUsageWorker) {
     let _ = worker.stop.send(());
     let _ = worker.thread.join();
-    worker.input_monitor.stop();
+    input_monitor::stop_activity_monitor(worker.input_monitor);
 }
 
 pub fn snapshot() -> Result<AppUsageSnapshot, String> {
@@ -449,141 +443,6 @@ fn local_day_string() -> String {
 #[cfg(not(target_os = "windows"))]
 fn local_day_hour() -> (String, String) {
     ("1970-01-01".to_owned(), "00".to_owned())
-}
-
-#[cfg(target_os = "windows")]
-fn start_physical_input_monitor() -> Result<PhysicalInputMonitor, String> {
-    use windows_sys::Win32::{
-        System::Threading::GetCurrentThreadId,
-        System::SystemInformation::GetTickCount64,
-        UI::WindowsAndMessaging::{
-            GetMessageW, PeekMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-            DispatchMessageW, MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL,
-        },
-    };
-
-    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-    let thread = thread::Builder::new()
-        .name("tool-app-usage-input".to_owned())
-        .spawn(move || unsafe {
-            let mut message = std::mem::zeroed::<MSG>();
-            PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
-
-            let keyboard_hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(physical_keyboard_hook), std::ptr::null_mut(), 0);
-            if keyboard_hook.is_null() {
-                let _ = ready_tx.send(Err("启动键盘空闲监听失败".to_owned()));
-                return;
-            }
-            let mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, Some(physical_mouse_hook), std::ptr::null_mut(), 0);
-            if mouse_hook.is_null() {
-                UnhookWindowsHookEx(keyboard_hook);
-                let _ = ready_tx.send(Err("启动鼠标空闲监听失败".to_owned()));
-                return;
-            }
-
-            LAST_PHYSICAL_INPUT_MS.store(GetTickCount64(), Ordering::Release);
-            let _ = ready_tx.send(Ok(GetCurrentThreadId()));
-            while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
-                TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
-            UnhookWindowsHookEx(mouse_hook);
-            UnhookWindowsHookEx(keyboard_hook);
-        })
-        .map_err(|error| format!("启动物理输入监听线程失败: {error}"))?;
-    let thread_id = match ready_rx.recv() {
-        Ok(Ok(thread_id)) => thread_id,
-        Ok(Err(error)) => {
-            let _ = thread.join();
-            return Err(error);
-        }
-        Err(_) => {
-            let _ = thread.join();
-            return Err("物理输入监听线程未能初始化".to_owned());
-        }
-    };
-    Ok(PhysicalInputMonitor { thread_id, thread })
-}
-
-#[cfg(not(target_os = "windows"))]
-fn start_physical_input_monitor() -> Result<PhysicalInputMonitor, String> {
-    Ok(PhysicalInputMonitor)
-}
-
-#[cfg(target_os = "windows")]
-impl PhysicalInputMonitor {
-    fn stop(self) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
-        unsafe {
-            PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
-        }
-        let _ = self.thread.join();
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-impl PhysicalInputMonitor {
-    fn stop(self) {}
-}
-
-#[cfg(target_os = "windows")]
-fn physical_idle_seconds() -> u32 {
-    use windows_sys::Win32::System::SystemInformation::GetTickCount64;
-    let last_input_ms = LAST_PHYSICAL_INPUT_MS.load(Ordering::Acquire);
-    if last_input_ms == 0 {
-        return 0;
-    }
-    ((unsafe { GetTickCount64() }).saturating_sub(last_input_ms) / 1000).min(u32::MAX as u64) as u32
-}
-
-#[cfg(not(target_os = "windows"))]
-fn physical_idle_seconds() -> u32 {
-    0
-}
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn physical_keyboard_hook(
-    code: i32,
-    w_param: windows_sys::Win32::Foundation::WPARAM,
-    l_param: windows_sys::Win32::Foundation::LPARAM,
-) -> windows_sys::Win32::Foundation::LRESULT {
-    use windows_sys::Win32::{
-        System::SystemInformation::GetTickCount64,
-        UI::WindowsAndMessaging::{CallNextHookEx, KBDLLHOOKSTRUCT, LLKHF_INJECTED, WM_KEYDOWN, WM_SYSKEYDOWN},
-    };
-    if code == 0 && (w_param as u32 == WM_KEYDOWN || w_param as u32 == WM_SYSKEYDOWN) && l_param != 0 {
-        let input = &*(l_param as *const KBDLLHOOKSTRUCT);
-        if input.flags & LLKHF_INJECTED == 0 {
-            LAST_PHYSICAL_INPUT_MS.store(GetTickCount64(), Ordering::Release);
-        }
-    }
-    CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param)
-}
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn physical_mouse_hook(
-    code: i32,
-    w_param: windows_sys::Win32::Foundation::WPARAM,
-    l_param: windows_sys::Win32::Foundation::LPARAM,
-) -> windows_sys::Win32::Foundation::LRESULT {
-    use windows_sys::Win32::{
-        System::SystemInformation::GetTickCount64,
-        UI::WindowsAndMessaging::{
-            CallNextHookEx, MSLLHOOKSTRUCT, LLMHF_INJECTED, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
-            WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_XBUTTONDOWN,
-        },
-    };
-    let message = w_param as u32;
-    if code == 0
-        && matches!(message, WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_MOUSEWHEEL | WM_XBUTTONDOWN)
-        && l_param != 0
-    {
-        let input = &*(l_param as *const MSLLHOOKSTRUCT);
-        if input.flags & LLMHF_INJECTED == 0 {
-            LAST_PHYSICAL_INPUT_MS.store(GetTickCount64(), Ordering::Release);
-        }
-    }
-    CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param)
 }
 
 #[cfg(target_os = "windows")]

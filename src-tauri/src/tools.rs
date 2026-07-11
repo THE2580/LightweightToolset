@@ -4,7 +4,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
-use crate::{app_usage, clipboard, push_debug_log, settings::AppSettings, timer, window_service, AppState};
+use crate::{
+    app_usage, clipboard, key_usage, push_debug_log, settings::AppSettings, timer, window_service,
+    AppState,
+};
 
 struct ToolDefinition {
     id: &'static str,
@@ -29,7 +32,7 @@ const APP_HOTKEYS: [AppHotkeyDefinition; 1] = [AppHotkeyDefinition {
     default_hotkey: "CTRL+ALT+M",
 }];
 
-const TOOLS: [ToolDefinition; 3] = [
+const TOOLS: [ToolDefinition; 4] = [
     ToolDefinition {
         id: "clipboard",
         name: "剪贴板",
@@ -42,6 +45,14 @@ const TOOLS: [ToolDefinition; 3] = [
         id: "app_usage",
         name: "软件使用统计",
         description: "统计本机应用使用时长与活跃窗口",
+        default_hotkey: None,
+        default_enabled: false,
+        implemented: true,
+    },
+    ToolDefinition {
+        id: "key_usage",
+        name: "按键使用统计",
+        description: "统计物理按键次数、趋势与高频按键",
         default_hotkey: None,
         default_enabled: false,
         implemented: true,
@@ -455,6 +466,9 @@ impl ToolRegistry {
         if tool.id == "app_usage" {
             app_usage::start()?;
         }
+        if tool.id == "key_usage" {
+            key_usage::start()?;
+        }
         if tool.id == "timer" {
             timer::start()?;
         }
@@ -484,6 +498,9 @@ impl ToolRegistry {
         if tool.id == "app_usage" {
             app_usage::stop();
         }
+        if tool.id == "key_usage" {
+            key_usage::stop();
+        }
         if tool.id == "timer" {
             let paused_count = timer::stop();
             log_tool_lifecycle(
@@ -508,6 +525,7 @@ fn log_tool_lifecycle(app: &AppHandle, tool_id: &str, message: impl Into<String>
     let level = match tool_id {
         "app_usage" => "app_usage",
         "clipboard" => "clipboard",
+        "key_usage" => "key_usage",
         "timer" => "timer",
         _ => "settings",
     };

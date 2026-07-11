@@ -1,5 +1,7 @@
 mod app_usage;
 mod clipboard;
+mod input_monitor;
+mod key_usage;
 mod settings;
 mod timer;
 mod tools;
@@ -29,6 +31,7 @@ use clipboard::{
     ClipboardEntry, ClipboardEntryPatch, ClipboardPasteResult, ClipboardQueryInput,
     ClipboardQueryResult, ClipboardSettingsPatch, ClipboardSnapshot,
 };
+use key_usage::KeyUsageSnapshot;
 use settings::{AppSettings, CloseBehavior, ThemeMode};
 use timer::{TimerCreateInput, TimerReorderInput, TimerSnapshot, TimerUpdateInput};
 use tools::{app_hotkey_snapshots, ToolRegistry, ToolSnapshot};
@@ -212,6 +215,17 @@ fn migrate_storage_files(
         fs::copy(&source_timer, &target_timer)
             .map_err(|error| format!("迁移计时器数据失败: {error}"))?;
     }
+
+    let source_key_usage = default_config_dir.join("key_usage").join("key_usage.json");
+    let target_key_usage = storage_dir.join("key_usage").join("key_usage.json");
+    if source_key_usage.exists() && !target_key_usage.exists() {
+        if let Some(parent) = target_key_usage.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建按键统计存储目录失败: {error}"))?;
+        }
+        fs::copy(&source_key_usage, &target_key_usage)
+            .map_err(|error| format!("迁移按键统计数据失败: {error}"))?;
+    }
     Ok(())
 }
 
@@ -286,6 +300,7 @@ fn normalize_debug_log_level(level: String) -> &'static str {
         "error" => "error",
         "frontend" => "frontend",
         "hotkey" => "hotkey",
+        "key_usage" => "key_usage",
         "settings" => "settings",
         "storage" => "storage",
         "system" => "system",
@@ -382,6 +397,10 @@ fn ensure_app_usage_enabled(state: &State<'_, AppState>) -> Result<(), String> {
     ensure_tool_enabled(state, "app_usage")
 }
 
+fn ensure_key_usage_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    ensure_tool_enabled(state, "key_usage")
+}
+
 fn ensure_timer_enabled(state: &State<'_, AppState>) -> Result<(), String> {
     ensure_tool_enabled(state, "timer")
 }
@@ -418,6 +437,20 @@ fn app_usage_clear(state: State<'_, AppState>) -> Result<AppUsageSnapshot, Strin
     ensure_app_usage_enabled(&state)?;
     push_debug_log(&state, "app_usage", "app_usage.clear_requested");
     app_usage::clear()
+}
+
+#[tauri::command]
+fn key_usage_get_snapshot(state: State<'_, AppState>) -> Result<KeyUsageSnapshot, String> {
+    ensure_key_usage_enabled(&state)?;
+    push_debug_log(&state, "key_usage", "key_usage.snapshot.requested");
+    key_usage::snapshot()
+}
+
+#[tauri::command]
+fn key_usage_clear(state: State<'_, AppState>) -> Result<KeyUsageSnapshot, String> {
+    ensure_key_usage_enabled(&state)?;
+    push_debug_log(&state, "key_usage", "key_usage.clear_requested");
+    key_usage::clear()
 }
 
 #[tauri::command]
@@ -835,6 +868,7 @@ fn update_app_settings(
         write_storage_pointer(&state.default_config_dir, &next_storage_dir)?;
         clipboard::relocate(&next_storage_dir)?;
         app_usage::relocate(&next_storage_dir)?;
+        key_usage::relocate(&next_storage_dir)?;
         timer::relocate(&next_storage_dir)?;
     }
     save_app_settings(&state, registry.settings())?;
@@ -870,6 +904,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 window_service::close_clipboard_popup(app);
                 clipboard::stop();
                 app_usage::stop();
+                key_usage::stop();
                 timer::stop();
                 app.exit(0);
             }
@@ -977,6 +1012,7 @@ pub fn run() {
             write_storage_pointer(&config_dir, &storage_dir)?;
             clipboard::init(&storage_dir)?;
             app_usage::init(&storage_dir)?;
+            key_usage::init(&storage_dir)?;
             timer::init(&storage_dir)?;
             let settings_path = settings_path_for(&storage_dir);
             let settings = AppSettings::load(&settings_path)?;
@@ -1025,6 +1061,8 @@ pub fn run() {
             app_usage_update_settings,
             app_usage_update_process,
             app_usage_clear,
+            key_usage_get_snapshot,
+            key_usage_clear,
             timer_get_snapshot,
             timer_create,
             timer_update,

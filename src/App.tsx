@@ -28,6 +28,7 @@ import {
   Maximize2,
   Minus,
   Monitor,
+  MousePointer2,
   Moon,
   Pause,
   Pencil,
@@ -137,6 +138,7 @@ type AppUsageTrendPoint = {
   hoverLabel?: string;
   elapsed: boolean;
   seconds: number;
+  targeted: boolean;
   topApps: Array<{ displayName: string; seconds: number }>;
 };
 
@@ -155,6 +157,25 @@ type AppUsageProcessRow = {
   monitored: boolean;
   seconds: number;
 };
+
+type KeyUsageSnapshot = {
+  today: string;
+  running: boolean;
+  storageBytes: number;
+  days: Record<string, Record<string, number>>;
+  hours: Record<string, Record<string, Record<string, number>>>;
+};
+
+type KeyUsageTrendPoint = {
+  label: string;
+  axisLabel?: string;
+  hoverLabel?: string;
+  elapsed: boolean;
+  count: number;
+  topKeys: Array<{ key: string; count: number }>;
+};
+
+type KeyUsageCategory = "character" | "modifier" | "navigation" | "function" | "editing" | "numpad" | "mouse" | "other";
 
 type TimerKind = "stopwatch" | "countdown";
 type TimerStatus = "paused" | "running" | "finished";
@@ -283,6 +304,9 @@ type ToastMessage = {
   text: string;
 };
 
+const GLOBAL_TOAST_EVENT = "lightweight-toolset:toast";
+let nextToastId = 1;
+
 type AppSettings = {
   tools: Record<string, boolean>;
   theme: ThemeMode;
@@ -353,7 +377,7 @@ type NavigationTarget = {
 const DEFAULT_TITLE = "轻量化工具集";
 const APP_NAME = "LightweightToolset";
 const APP_SUBTITLE = "Windows 桌面工具集";
-const APP_VERSION = "0.2.2";
+const APP_VERSION = "0.3.5";
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const GITHUB_API_LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
@@ -362,10 +386,11 @@ const AUTHOR_EMAILS = ["2021289500@qq.com", "liangneng20060725@gmail.com"];
 const toolIcons = {
   clipboard: ClipboardList,
   app_usage: ChartNoAxesColumn,
+  key_usage: Keyboard,
   timer: Clock,
 };
 const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SUPER", "CMD", "COMMAND"]);
-const TOAST_DURATION_MS = 1400;
+const TOAST_DURATION_MS = 2400;
 const CLIPBOARD_PAGE_SIZE = 10;
 const LOG_LEVEL_OPTIONS = [
   {
@@ -388,6 +413,7 @@ const LOG_LEVEL_OPTIONS = [
     options: [
       { label: "Clipboard", value: "clipboard" },
       { label: "App usage", value: "app_usage" },
+      { label: "Key usage", value: "key_usage" },
       { label: "Timer", value: "timer" },
     ],
   },
@@ -520,10 +546,9 @@ function useUpdateChecker(settings?: AppSettings) {
   };
 }
 
-function useToastQueue(durationMs = TOAST_DURATION_MS) {
+function useToastQueue(durationMs = TOAST_DURATION_MS, renderToast = false) {
   const [current, setCurrent] = useState<ToastMessage | null>(null);
   const timerRef = useRef<number | null>(null);
-  const nextIdRef = useRef(1);
 
   const clearCurrent = useCallback(() => {
     setCurrent(null);
@@ -531,21 +556,31 @@ function useToastQueue(durationMs = TOAST_DURATION_MS) {
   }, []);
 
   const pushToast = useCallback((text: string) => {
-    const next = { id: nextIdRef.current, text };
-    nextIdRef.current += 1;
-    if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    setCurrent(next);
-    timerRef.current = window.setTimeout(clearCurrent, durationMs);
-  }, [clearCurrent, durationMs]);
-
-  useEffect(() => () => {
-    if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current);
-    }
+    const next = { id: nextToastId, text };
+    nextToastId += 1;
+    window.dispatchEvent(new CustomEvent<ToastMessage>(GLOBAL_TOAST_EVENT, { detail: next }));
   }, []);
+
+  useEffect(() => {
+    if (!renderToast) {
+      return;
+    }
+    function handleToast(event: Event) {
+      const next = (event as CustomEvent<ToastMessage>).detail;
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+      }
+      setCurrent(next);
+      timerRef.current = window.setTimeout(clearCurrent, durationMs);
+    }
+    window.addEventListener(GLOBAL_TOAST_EVENT, handleToast);
+    return () => {
+      window.removeEventListener(GLOBAL_TOAST_EVENT, handleToast);
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+      }
+    };
+  }, [clearCurrent, durationMs, renderToast]);
 
   return { pushToast, toast: current };
 }
@@ -565,7 +600,7 @@ function App() {
   const tools = snapshot?.tools ?? [];
   const settings = snapshot?.settings;
   const updateChecker = useUpdateChecker(settings);
-  const { pushToast: pushAppToast, toast: appToast } = useToastQueue();
+  const { pushToast: pushAppToast, toast: appToast } = useToastQueue(TOAST_DURATION_MS, true);
   const windowTitle = settings?.windowTitle || DEFAULT_TITLE;
   const isHistoryBackAvailable = canNavigateHistory(-1);
   const isHistoryForwardAvailable = canNavigateHistory(1);
@@ -1170,6 +1205,9 @@ function ToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: Settin
   }
   if (tool.id === "app_usage") {
     return <AppUsageToolPage tool={tool} />;
+  }
+  if (tool.id === "key_usage") {
+    return <KeyUsageToolPage tool={tool} />;
   }
   if (tool.id === "timer") {
     return <TimerToolPage tool={tool} />;
@@ -2625,6 +2663,410 @@ function pad2(value: number) {
   return String(value).padStart(2, "0");
 }
 
+function KeyUsageToolPage({ tool }: { tool: Tool }) {
+  const [snapshot, setSnapshot] = useState<KeyUsageSnapshot | null>(null);
+  const [range, setRange] = useState<AppUsageRange>("day");
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearClosing, setClearClosing] = useState(false);
+  const [trendTarget, setTrendTarget] = useState("__total");
+  const [previewExpanded, setPreviewExpanded] = useState(false);
+  const [rankingScrolled, setRankingScrolled] = useState(false);
+  const pageRef = useRef<HTMLElement | null>(null);
+  const rankingRef = useRef<HTMLDivElement | null>(null);
+  const { pushToast, toast: currentToast } = useToastQueue();
+
+  useEffect(() => {
+    let active = true;
+    async function refresh() {
+      const nextSnapshot = await invoke<KeyUsageSnapshot>("key_usage_get_snapshot");
+      if (active) {
+        setSnapshot(nextSnapshot);
+      }
+    }
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 1000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    const ranges: AppUsageRange[] = ["day", "week", "month", "year"];
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || isTextInputTarget(event.target)) {
+        return;
+      }
+      const element = event.target instanceof HTMLElement ? event.target : null;
+      if (element?.closest('[role="dialog"]')) {
+        return;
+      }
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+        return;
+      }
+      const currentIndex = ranges.indexOf(range);
+      const nextIndex = event.key === "ArrowLeft"
+        ? (currentIndex - 1 + ranges.length) % ranges.length
+        : (currentIndex + 1) % ranges.length;
+      event.preventDefault();
+      setRange(ranges[nextIndex]);
+      pushToast(`${event.key === "ArrowLeft" ? "←" : "→"} ${formatAppUsageRangeSubtitle(ranges[nextIndex])}`);
+    }
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [pushToast, range]);
+
+  const rangeData = useMemo(() => buildKeyUsageRangeData(snapshot, range, trendTarget), [range, snapshot, trendTarget]);
+  const selectedKey = trendTarget === "__total" ? null : trendTarget;
+
+  useEffect(() => {
+    if (selectedKey && !rangeData.keyCounts[selectedKey]) {
+      setTrendTarget("__total");
+    }
+  }, [rangeData.keyCounts, selectedKey]);
+
+  function selectKey(key: string, scrollToChart = false) {
+    setTrendTarget((current) => current === key ? "__total" : key);
+    if (scrollToChart) {
+      pageRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }
+
+  function closeClearDialog() {
+    setClearClosing(true);
+    window.setTimeout(() => {
+      setClearOpen(false);
+      setClearClosing(false);
+    }, 170);
+  }
+
+  async function clearUsage() {
+    setSnapshot(await invoke<KeyUsageSnapshot>("key_usage_clear"));
+    closeClearDialog();
+    pushToast("按键统计已清空");
+  }
+
+  return (
+    <section className="tool-page app-usage-page key-usage-page" ref={pageRef}>
+      <header className="app-usage-header">
+        <div className="app-usage-heading">
+          <Keyboard size={22} />
+          <h1>{tool.name}</h1>
+        </div>
+        <div className="segmented app-usage-range" role="tablist" aria-label="统计范围">
+          {([
+            ["day", "日"],
+            ["week", "周"],
+            ["month", "月"],
+            ["year", "年"],
+          ] as Array<[AppUsageRange, string]>).map(([value, label]) => (
+            <button className={range === value ? "active" : ""} key={value} onClick={() => setRange(value)} role="tab" type="button">
+              {label}
+            </button>
+          ))}
+        </div>
+      </header>
+
+      <div className="app-usage-summary key-usage-summary">
+        <article>
+          <div><Gauge size={14} />总计按下</div>
+          <strong>{formatKeyCount(rangeData.totalCount)}<small>次</small></strong>
+        </article>
+        <article>
+          <div><Keyboard size={14} />键盘按下</div>
+          <strong>{formatKeyCount(rangeData.keyboardCount)}<small>次</small></strong>
+        </article>
+        <article>
+          <div><MousePointer2 size={14} />鼠标按下</div>
+          <strong>{formatKeyCount(rangeData.mouseCount)}<small>次</small></strong>
+        </article>
+        <article>
+          <div><Keyboard size={14} />使用按键数</div>
+          <strong>{rangeData.uniqueKeyCount}<small>个</small></strong>
+        </article>
+      </div>
+
+      <div className="app-usage-main-grid key-usage-main-grid">
+        <section className="app-usage-panel app-usage-chart-panel">
+          <div className="app-usage-panel-title key-usage-panel-title">
+            <h2>按键趋势</h2>
+            <div className="app-usage-trend-reset-slot">
+              {selectedKey ? (
+                <button className="app-usage-trend-reset" title="切换到总次数" aria-label="切换到总次数" onClick={() => setTrendTarget("__total")} type="button">
+                  <RotateCcw size={12} />
+                </button>
+              ) : null}
+            </div>
+            <div className="app-usage-trend-controls">
+              <strong>{selectedKey ? keyUsageDisplayName(selectedKey) : "总次数"}</strong>
+              <span>{formatAppUsageRangeSubtitle(range)}</span>
+            </div>
+          </div>
+          <KeyUsageTrendChart points={rangeData.trend} selectedKey={selectedKey} />
+        </section>
+
+        <section className="app-usage-panel app-usage-ranking-panel">
+          <div className="app-usage-panel-title">
+            <h2>{rangeLabel(range)}按键排行</h2>
+            {rankingScrolled ? (
+              <button className="app-usage-ranking-top" title="回到排行顶部" aria-label="回到排行顶部" onClick={() => rankingRef.current?.scrollTo({ top: 0, behavior: "smooth" })} type="button">
+                <ChevronUp size={13} />
+              </button>
+            ) : null}
+          </div>
+          <div className="app-usage-ranking" onScroll={(event) => setRankingScrolled(event.currentTarget.scrollTop > 0)} ref={rankingRef}>
+            {rangeData.keyRows.map((row, index) => (
+              <button className={`app-usage-rank-row key-usage-rank-row ${selectedKey === row.key ? "active" : ""}`} key={row.key} onClick={() => selectKey(row.key)} type="button">
+                <div>
+                  <span>{index + 1}. <KeyUsageRankingKey keyName={row.key} /></span>
+                  <strong>{formatKeyCount(row.count)} 次</strong>
+                </div>
+                <i style={{ "--progress": `${rangeData.maxKeyCount > 0 ? Math.max(4, (row.count / rangeData.maxKeyCount) * 100) : 0}%` } as React.CSSProperties} />
+              </button>
+            ))}
+            {rangeData.keyRows.length === 0 ? <p className="app-usage-empty">等待物理按键输入</p> : null}
+          </div>
+        </section>
+      </div>
+
+      <section className={`key-usage-category-panel ${previewExpanded ? "expanded" : "collapsed"}`}>
+        <button className="key-usage-category-heading" onClick={() => {
+          setPreviewExpanded((expanded) => !expanded);
+          if (previewExpanded) setTrendTarget("__total");
+        }} type="button">
+          <div>
+            <h2>全按键预览</h2>
+            <p>按用途聚合，不记录输入内容与按键序列</p>
+          </div>
+          <span>{formatKeyCount(rangeData.totalCount)} 次 <ChevronDown className={previewExpanded ? "open" : ""} size={13} /></span>
+        </button>
+        <div className="key-usage-categories">
+          {rangeData.categories.map((item) => (
+            <article key={item.category}>
+              <div>
+                <span>{item.label}</span>
+                <strong>{formatKeyCount(item.count)}</strong>
+              </div>
+              <i style={{ "--progress": `${rangeData.totalCount > 0 ? (item.count / rangeData.totalCount) * 100 : 0}%` } as React.CSSProperties} />
+            </article>
+          ))}
+        </div>
+        <div className="key-usage-preview-body">
+          <div>
+            <KeyUsageKeyboardPreview keyCounts={rangeData.keyCounts} maxCount={rangeData.maxKeyCount} selectedKey={selectedKey} onSelect={(key) => selectKey(key, true)} />
+            <div className="key-usage-preview-secondary-row">
+              <KeyUsageNavigationPreview keyCounts={rangeData.keyCounts} maxCount={rangeData.maxKeyCount} selectedKey={selectedKey} onSelect={(key) => selectKey(key, true)} />
+              <KeyUsageNumpadPreview keyCounts={rangeData.keyCounts} maxCount={rangeData.maxKeyCount} selectedKey={selectedKey} onSelect={(key) => selectKey(key, true)} />
+              <KeyUsageMousePreview keyCounts={rangeData.keyCounts} maxCount={rangeData.maxKeyCount} selectedKey={selectedKey} onSelect={(key) => selectKey(key, true)} />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="app-usage-setting-card">
+        <div>
+          <h2>本地数据与隐私</h2>
+          <p>仅记录物理按键名称和聚合次数；不保存文本、组合序列、窗口或进程信息</p>
+          <p>存储占用：{formatStorageSize(snapshot?.storageBytes ?? 0)}</p>
+        </div>
+        <button className="secondary-action icon-text-action danger-action" onClick={() => setClearOpen(true)} type="button">
+          <Trash2 size={13} />清除统计
+        </button>
+      </section>
+
+      {clearOpen ? <KeyUsageClearDialog closing={clearClosing} onClose={closeClearDialog} onConfirm={() => void clearUsage()} /> : null}
+      {currentToast ? createPortal(<div className="app-toast" key={currentToast.id}>{currentToast.text}</div>, document.body) : null}
+    </section>
+  );
+}
+
+function KeyUsageTrendChart({ points, selectedKey }: { points: KeyUsageTrendPoint[]; selectedKey: string | null }) {
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ active: boolean; scrollLeft: number; x: number }>({ active: false, scrollLeft: 0, x: 0 });
+  const [hoverPoint, setHoverPoint] = useState<{ point: KeyUsageTrendPoint; x: number; y: number } | null>(null);
+  const maxCount = Math.max(0, ...points.map((point) => point.count));
+  const averagePoints = points.filter((point) => point.elapsed);
+  const averageBase = averagePoints.length > 0 ? averagePoints : points;
+  const averageCount = averageBase.length > 0
+    ? averageBase.reduce((sum, point) => sum + point.count, 0) / averageBase.length
+    : 0;
+  const chartMax = niceKeyUsageChartMax(Math.max(maxCount, averageCount));
+  const ticks = keyUsageChartTicks(chartMax);
+  const averageRatio = chartMax > 0 ? averageCount / chartMax : 0;
+  const barWidth = points.length <= 7 ? 38 : points.length <= 12 ? 30 : points.length <= 24 ? 22 : 16;
+  const canvasWidth = Math.max(300, points.length * barWidth);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const target = canvas;
+    function handleWheel(event: WheelEvent) {
+      event.preventDefault();
+      event.stopPropagation();
+      target.scrollLeft += event.deltaY || event.deltaX;
+    }
+    target.addEventListener("wheel", handleWheel, { passive: false });
+    return () => target.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  function startDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    dragRef.current = {
+      active: true,
+      scrollLeft: canvas.scrollLeft,
+      x: event.clientX,
+    };
+    canvas.setPointerCapture(event.pointerId);
+  }
+
+  function dragCanvas(event: React.PointerEvent<HTMLDivElement>) {
+    const canvas = canvasRef.current;
+    if (!canvas || !dragRef.current.active) {
+      return;
+    }
+    canvas.scrollLeft = dragRef.current.scrollLeft - (event.clientX - dragRef.current.x);
+  }
+
+  function stopDrag(event: React.PointerEvent<HTMLDivElement>) {
+    dragRef.current.active = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  return (
+    <div
+      className="app-usage-chart-canvas key-usage-chart-canvas"
+      onPointerCancel={stopDrag}
+      onPointerDown={startDrag}
+      onPointerLeave={(event) => {
+        if (dragRef.current.active) {
+          stopDrag(event);
+        }
+      }}
+      onPointerMove={dragCanvas}
+      onPointerUp={stopDrag}
+      ref={canvasRef}
+    >
+      <div className="app-usage-chart" style={{ minWidth: `${canvasWidth}px` }}>
+        <div className="app-usage-chart-guides" aria-hidden="true">
+          {ticks.map((tick) => (
+            <div className="app-usage-chart-value-line" key={tick.value} style={{ "--line-top": `${100 - tick.ratio * 100}%` } as React.CSSProperties}>
+              <span>{formatKeyCount(tick.value)}</span>
+            </div>
+          ))}
+          {averageCount > 0 ? (
+            <div className="app-usage-chart-average-line" style={{ "--line-top": `${100 - averageRatio * 100}%` } as React.CSSProperties}>
+              <span>平均 {formatKeyCount(averageCount)}</span>
+            </div>
+          ) : null}
+        </div>
+        <div className={`app-usage-chart-segments ${points.length === 1 ? "single" : ""}`} aria-hidden="true">
+          {points.map((point, index) => <i className={point.axisLabel ? "reference" : ""} key={`${point.label}-${index}`} />)}
+        </div>
+        <div className={`app-usage-chart-bars ${points.length === 1 ? "single" : ""}`}>
+          {points.map((point) => {
+            const height = `${Math.max(3, chartMax > 0 ? (point.count / chartMax) * 100 : 0)}%`;
+            return (
+              <div className="app-usage-chart-bar key-usage-chart-bar" key={point.label} onMouseEnter={(event) => setHoverPoint({ point, x: event.clientX, y: event.clientY })} onMouseLeave={() => setHoverPoint(null)} onMouseMove={(event) => setHoverPoint({ point, x: event.clientX, y: event.clientY })}>
+                <span style={{ height }} />
+                <small>{point.axisLabel ?? point.label}</small>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      {hoverPoint ? <KeyUsageChartTooltip hover={hoverPoint} selectedKey={selectedKey} /> : null}
+    </div>
+  );
+}
+
+function KeyUsageChartTooltip({ hover, selectedKey }: { hover: { point: KeyUsageTrendPoint; x: number; y: number }; selectedKey: string | null }) {
+  return createPortal(
+    <div className="app-usage-chart-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
+      <strong>{hover.point.hoverLabel ?? hover.point.label}：{formatKeyCount(hover.point.count)} 次</strong>
+      {!selectedKey && hover.point.topKeys.length > 0 ? <div>{hover.point.topKeys.map((item, index) => <span key={item.key}><em>{index + 1}. {keyUsageDisplayName(item.key)}</em><b>{formatKeyCount(item.count)} 次</b></span>)}</div> : null}
+      {!selectedKey && hover.point.topKeys.length === 0 ? <span>暂无按键记录</span> : null}
+    </div>, document.body,
+  );
+}
+
+const KEYBOARD_PREVIEW_ROWS = [
+  ["Escape", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "PrintScreen", "ScrollLock"],
+  ["Backquote", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "Minus", "Equal", "Backspace"],
+  ["Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "BracketLeft", "BracketRight", "Backslash"],
+  ["CapsLock", "A", "S", "D", "F", "G", "H", "J", "K", "L", "Semicolon", "Quote", "Enter"],
+  ["Shift", "Z", "X", "C", "V", "B", "N", "M", "Comma", "Period", "Slash", "Shift"],
+  ["Ctrl", "Win", "Alt", "Space", "Alt", "Ctrl", "ArrowLeft", "ArrowUp", "ArrowDown", "ArrowRight"],
+];
+
+const NUMPAD_PREVIEW_KEYS = ["NumLock", "NumDivide", "NumMultiply", "NumSubtract", "Num7", "Num8", "Num9", "NumAdd", "Num4", "Num5", "Num6", "Num1", "Num2", "Num3", "Num0", "NumDecimal"];
+const NAVIGATION_PREVIEW_KEYS = ["Insert", "Home", "PageUp", "Delete", "End", "PageDown"];
+
+function KeyUsageKeyboardPreview({ keyCounts, maxCount, selectedKey, onSelect }: { keyCounts: Record<string, number>; maxCount: number; selectedKey: string | null; onSelect: (key: string) => void }) {
+  return <div className="key-usage-device key-usage-keyboard"><header><Keyboard size={14} /><span>主键盘</span></header><div className="key-usage-keyboard-main">{KEYBOARD_PREVIEW_ROWS.map((row, rowIndex) => <div className="key-usage-key-row" key={rowIndex}>{row.map((key, keyIndex) => <KeyUsagePreviewKey key={`${key}-${keyIndex}`} keyName={key} count={keyCounts[key] ?? 0} maxCount={maxCount} active={selectedKey === key} onSelect={onSelect} />)}</div>)}</div></div>;
+}
+
+function KeyUsageNavigationPreview({ keyCounts, maxCount, selectedKey, onSelect }: { keyCounts: Record<string, number>; maxCount: number; selectedKey: string | null; onSelect: (key: string) => void }) {
+  return <div className="key-usage-device key-usage-navigation-device"><header><span>导航区</span></header><div className="key-usage-navigation">{NAVIGATION_PREVIEW_KEYS.map((key) => <KeyUsagePreviewKey key={key} keyName={key} count={keyCounts[key] ?? 0} maxCount={maxCount} active={selectedKey === key} onSelect={onSelect} />)}</div></div>;
+}
+
+function KeyUsageNumpadPreview({ keyCounts, maxCount, selectedKey, onSelect }: { keyCounts: Record<string, number>; maxCount: number; selectedKey: string | null; onSelect: (key: string) => void }) {
+  return <div className="key-usage-device key-usage-numpad-device"><header><Keyboard size={14} /><span>小键盘</span></header><div className="key-usage-numpad">{NUMPAD_PREVIEW_KEYS.map((key) => <KeyUsagePreviewKey key={key} keyName={key} count={keyCounts[key] ?? 0} maxCount={maxCount} active={selectedKey === key} onSelect={onSelect} />)}</div></div>;
+}
+
+function KeyUsagePreviewKey({ keyName, count, maxCount, active, onSelect }: { keyName: string; count: number; maxCount: number; active: boolean; onSelect: (key: string) => void }) {
+  const intensity = maxCount > 0 ? count / maxCount : 0;
+  return <button className={active ? "active" : ""} onClick={() => onSelect(keyName)} style={{ "--heat": `${Math.round(intensity * 78)}%` } as React.CSSProperties} title={`${keyUsageDisplayName(keyName)}：${formatKeyCount(count)} 次`} type="button">{keyUsagePreviewLabel(keyName)}</button>;
+}
+
+function KeyUsageRankingKey({ keyName }: { keyName: string }) {
+  if (!["MouseLeft", "MouseRight", "MouseMiddle"].includes(keyName)) {
+    return <kbd>{keyUsageDisplayName(keyName)}</kbd>;
+  }
+  return (
+    <span aria-label={keyUsageDisplayName(keyName)} className={`key-usage-ranking-mouse ${keyName}`} role="img" title={keyUsageDisplayName(keyName)}>
+      <span className="mouse-left" />
+      <span className="mouse-right" />
+      <span className="mouse-wheel" />
+      <span className="mouse-palm" />
+    </span>
+  );
+}
+
+function KeyUsageMousePreview({ keyCounts, maxCount, selectedKey, onSelect }: { keyCounts: Record<string, number>; maxCount: number; selectedKey: string | null; onSelect: (key: string) => void }) {
+  const heat = (key: string) => `${Math.round((maxCount > 0 ? (keyCounts[key] ?? 0) / maxCount : 0) * 78)}%`;
+  const mouseButton = (key: string, label: string, className: string) => <button aria-label={label} className={`${className} ${selectedKey === key ? "active" : ""}`} onClick={() => onSelect(key)} style={{ "--heat": heat(key) } as React.CSSProperties} title={`${label}：${formatKeyCount(keyCounts[key] ?? 0)} 次`} type="button" />;
+  return <div className="key-usage-device key-usage-mouse"><header><MousePointer2 size={14} /><span>鼠标</span></header><div className="key-usage-mouse-shell">{mouseButton("MouseLeft", "鼠标左键", "mouse-left")} {mouseButton("MouseRight", "鼠标右键", "mouse-right")} {mouseButton("MouseMiddle", "鼠标中键", "mouse-wheel")}<div className="mouse-palm" aria-hidden="true" /></div></div>;
+}
+
+function KeyUsageClearDialog({ closing, onClose, onConfirm }: { closing: boolean; onClose: () => void; onConfirm: () => void }) {
+  return createPortal(
+    <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
+      <section aria-label="清除按键统计" aria-modal="true" className={`update-dialog ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog">
+        <header className="update-dialog-header">
+          <div className="update-dialog-icon danger"><Trash2 size={16} /></div>
+          <div>
+            <h2>清除按键统计</h2>
+            <p>所有按键次数与趋势记录将被永久清空。</p>
+          </div>
+          <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
+        </header>
+        <footer className="update-dialog-actions">
+          <button className="secondary-action" onClick={onClose} type="button">取消</button>
+          <button className="primary-action" onClick={onConfirm} type="button">确认清除</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 const APP_USAGE_STATUS_NAME_MAX_FONT_SIZE = 14;
 const APP_USAGE_STATUS_NAME_MIN_FONT_SIZE = 8;
 
@@ -3199,7 +3641,7 @@ function AppUsageChartTooltip({ hover }: { hover: { point: AppUsageTrendPoint; x
   return createPortal(
     <div className="app-usage-chart-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
       <strong>{hover.point.hoverLabel ?? hover.point.label}：{formatUsageDuration(hover.point.seconds)}</strong>
-      {hover.point.topApps.length > 0 ? (
+      {!hover.point.targeted && hover.point.topApps.length > 0 ? (
         <div>
           {hover.point.topApps.map((app, index) => (
             <span key={`${app.displayName}-${index}`}>
@@ -3208,7 +3650,7 @@ function AppUsageChartTooltip({ hover }: { hover: { point: AppUsageTrendPoint; x
             </span>
           ))}
         </div>
-      ) : <span>暂无软件记录</span>}
+      ) : !hover.point.targeted ? <span>暂无软件记录</span> : null}
     </div>,
     document.body,
   );
@@ -4272,6 +4714,221 @@ function formatClipboardDateTime(value: number | null) {
   return new Date(value).toLocaleString("zh-CN");
 }
 
+function buildKeyUsageRangeData(snapshot: KeyUsageSnapshot | null, range: AppUsageRange, trendTarget = "__total") {
+  const today = snapshot?.today ?? formatLocalDayKey(new Date());
+  const dayKeys: string[] = [];
+  const trendKeys = appUsageTrendKeys(range);
+  const trend: KeyUsageTrendPoint[] = trendKeys.map((trendKey) => {
+    if (range === "day") {
+      const keys = filterKeyUsageCounts(snapshot?.hours[today]?.[trendKey.key]);
+      return {
+        label: trendKey.label,
+        axisLabel: trendKey.axisLabel,
+        hoverLabel: trendKey.hoverLabel,
+        elapsed: trendKey.elapsed ?? true,
+        count: trendTarget === "__total" ? sumKeyUsageCounts(keys) : keys[trendTarget] ?? 0,
+        topKeys: topKeyUsageRows(keys, 5),
+      };
+    }
+    if (range === "year") {
+      const prefix = `${trendKey.key}-`;
+      const monthDays = Object.keys(snapshot?.days ?? {}).filter((dayKey) => dayKey.startsWith(prefix));
+      dayKeys.push(...monthDays);
+      const keys = mergeKeyUsageCounts(monthDays.map((dayKey) => snapshot?.days[dayKey]));
+      return {
+        label: trendKey.label,
+        axisLabel: trendKey.axisLabel,
+        hoverLabel: trendKey.hoverLabel,
+        elapsed: trendKey.elapsed ?? true,
+        count: trendTarget === "__total" ? sumKeyUsageCounts(keys) : keys[trendTarget] ?? 0,
+        topKeys: topKeyUsageRows(keys, 5),
+      };
+    }
+    dayKeys.push(trendKey.key);
+    const keys = filterKeyUsageCounts(snapshot?.days[trendKey.key]);
+    return {
+      label: trendKey.label,
+      axisLabel: trendKey.axisLabel,
+      hoverLabel: trendKey.hoverLabel,
+      elapsed: trendKey.elapsed ?? true,
+      count: trendTarget === "__total" ? sumKeyUsageCounts(keys) : keys[trendTarget] ?? 0,
+      topKeys: topKeyUsageRows(keys, 5),
+    };
+  });
+
+  if (range === "day") {
+    dayKeys.push(today);
+  }
+
+  const keyCounts: Record<string, number> = {};
+  for (const dayKey of dayKeys) {
+    for (const [key, count] of Object.entries(snapshot?.days[dayKey] ?? {})) {
+      if (key === "VK_FF") {
+        continue;
+      }
+      keyCounts[key] = (keyCounts[key] ?? 0) + count;
+    }
+  }
+  const keyRows = Object.entries(keyCounts)
+    .map(([key, count]) => ({ key, count }))
+    .sort((left, right) => right.count - left.count || left.key.localeCompare(right.key));
+  const categories = keyUsageCategoryDefinitions().map(({ category, label }) => ({
+    category,
+    label,
+    count: Object.entries(keyCounts).reduce(
+      (sum, [key, count]) => sum + (keyUsageCategory(key) === category ? count : 0),
+      0,
+    ),
+  }));
+
+  return {
+    totalCount: Object.values(keyCounts).reduce((sum, count) => sum + count, 0),
+    keyboardCount: Object.entries(keyCounts).reduce((sum, [key, count]) => sum + (key.startsWith("Mouse") ? 0 : count), 0),
+    mouseCount: Object.entries(keyCounts).reduce((sum, [key, count]) => sum + (key.startsWith("Mouse") ? count : 0), 0),
+    uniqueKeyCount: Object.keys(keyCounts).length,
+    keyRows,
+    maxKeyCount: keyRows[0]?.count ?? 0,
+    keyCounts,
+    categories,
+    trend,
+  };
+}
+
+function mergeKeyUsageCounts(groups: Array<Record<string, number> | undefined>) {
+  const merged: Record<string, number> = {};
+  for (const group of groups) for (const [key, count] of Object.entries(group ?? {})) {
+    if (key !== "VK_FF") merged[key] = (merged[key] ?? 0) + count;
+  }
+  return merged;
+}
+
+function filterKeyUsageCounts(group: Record<string, number> | undefined) {
+  return Object.fromEntries(Object.entries(group ?? {}).filter(([key]) => key !== "VK_FF"));
+}
+
+function topKeyUsageRows(keys: Record<string, number>, limit: number) {
+  return Object.entries(keys).map(([key, count]) => ({ key, count })).sort((left, right) => right.count - left.count || left.key.localeCompare(right.key)).slice(0, limit);
+}
+
+function sumKeyUsageCounts(keys: Record<string, number> | undefined) {
+  return Object.values(keys ?? {}).reduce((sum, count) => sum + count, 0);
+}
+
+function keyUsageCategoryDefinitions(): Array<{ category: KeyUsageCategory; label: string }> {
+  return [
+    { category: "character", label: "字符" },
+    { category: "modifier", label: "修饰" },
+    { category: "navigation", label: "导航" },
+    { category: "function", label: "功能" },
+    { category: "editing", label: "编辑" },
+    { category: "numpad", label: "数字键盘" },
+    { category: "mouse", label: "鼠标" },
+    { category: "other", label: "其他" },
+  ];
+}
+
+function keyUsageCategory(key: string): KeyUsageCategory {
+  if (key.startsWith("Mouse")) {
+    return "mouse";
+  }
+  if (/^[A-Z0-9]$/.test(key) || ["Space", "Comma", "Period", "Semicolon", "Equal", "Minus", "Slash", "Backquote", "BracketLeft", "Backslash", "BracketRight", "Quote"].includes(key)) {
+    return "character";
+  }
+  if (["Shift", "Ctrl", "Alt", "Win", "CapsLock"].includes(key)) {
+    return "modifier";
+  }
+  if (key.startsWith("Arrow") || ["PageUp", "PageDown", "Home", "End"].includes(key)) {
+    return "navigation";
+  }
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(key) || ["Escape", "PrintScreen", "ScrollLock"].includes(key)) {
+    return "function";
+  }
+  if (["Backspace", "Delete", "Enter", "Tab", "Insert"].includes(key)) {
+    return "editing";
+  }
+  if (key.startsWith("Num")) {
+    return "numpad";
+  }
+  return "other";
+}
+
+function keyUsageDisplayName(key: string) {
+  return ({
+    Escape: "Esc",
+    PrintScreen: "PrtSc",
+    ScrollLock: "ScrLk",
+    Backspace: "Back",
+    CapsLock: "Caps",
+    PageUp: "PgUp",
+    PageDown: "PgDn",
+    ArrowDown: "↓",
+    ArrowLeft: "←",
+    ArrowRight: "→",
+    ArrowUp: "↑",
+    Backquote: "`",
+    BracketLeft: "[",
+    BracketRight: "]",
+    Backslash: "\\",
+    Comma: ",",
+    Equal: "=",
+    Minus: "-",
+    Period: ".",
+    Quote: "'",
+    Semicolon: ";",
+    Slash: "/",
+    Space: "空格",
+    NumLock: "数字键盘 Lock",
+    NumDivide: "数字键盘 /",
+    NumMultiply: "数字键盘 *",
+    NumSubtract: "数字键盘 −",
+    NumAdd: "数字键盘 +",
+    NumDecimal: "数字键盘 .",
+    Num0: "数字键盘 0",
+    Num1: "数字键盘 1",
+    Num2: "数字键盘 2",
+    Num3: "数字键盘 3",
+    Num4: "数字键盘 4",
+    Num5: "数字键盘 5",
+    Num6: "数字键盘 6",
+    Num7: "数字键盘 7",
+    Num8: "数字键盘 8",
+    Num9: "数字键盘 9",
+    MouseLeft: "鼠标左键",
+    MouseRight: "鼠标右键",
+    MouseMiddle: "鼠标中键",
+    MouseX1: "鼠标侧键 1",
+    MouseX2: "鼠标侧键 2",
+  } as Record<string, string>)[key] ?? key;
+}
+
+function keyUsagePreviewLabel(key: string) {
+  return key.startsWith("Num") ? keyUsageDisplayName(key).replace("数字键盘 ", "") : keyUsageDisplayName(key);
+}
+
+function formatKeyCount(count: number) {
+  if (count >= 10_000) {
+    return `${(count / 10_000).toFixed(count >= 100_000 ? 0 : 1)}万`;
+  }
+  return Math.round(count).toLocaleString("zh-CN");
+}
+
+function niceKeyUsageChartMax(value: number) {
+  if (value <= 0) {
+    return 10;
+  }
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const normalized = value / magnitude;
+  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return step * magnitude;
+}
+
+function keyUsageChartTicks(max: number) {
+  return [0.25, 0.5, 0.75, 1].map((ratio) => ({
+    ratio,
+    value: Math.round(max * ratio),
+  }));
+}
+
 function buildAppUsageRangeData(snapshot: AppUsageSnapshot | null, range: AppUsageRange, trendTarget: string) {
   const aliases = snapshot?.aliases ?? {};
   const days = snapshot?.days ?? {};
@@ -4359,9 +5016,8 @@ function appUsageTrendPoint(
       hoverLabel,
       elapsed,
       seconds,
-      topApps: seconds > 0
-        ? [{ displayName: appUsageDisplayName(trendTarget, aliases), seconds }]
-        : [],
+      targeted: true,
+      topApps: [],
     };
   }
   return {
@@ -4370,6 +5026,7 @@ function appUsageTrendPoint(
     hoverLabel,
     elapsed,
     seconds: sumAppUsageSeconds(apps),
+    targeted: false,
     topApps: topAppUsageRows(apps, aliases, 5),
   };
 }
