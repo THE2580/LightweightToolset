@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Copy, ExternalLink, Info, Pin, Scissors, Trash2, X } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -25,6 +26,8 @@ type ClipboardQueryResult = {
   entries: ClipboardEntry[];
   total: number;
 };
+
+type ThemeMode = "light" | "dark" | "system";
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -64,6 +67,33 @@ function PopupApp() {
   const shouldRevealSelectedRef = useRef(false);
   const toastTimerRef = useRef<number | null>(null);
   const toastCloseTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    let theme: ThemeMode = "system";
+    let disposeThemeListener: (() => void) | undefined;
+    const applyTheme = () => {
+      document.documentElement.dataset.theme = theme === "system" ? (media.matches ? "dark" : "light") : theme;
+    };
+    const handleSystemTheme = () => applyTheme();
+    media.addEventListener("change", handleSystemTheme);
+    void listen<ThemeMode>("app-theme-changed", ({ payload }) => {
+      theme = payload;
+      applyTheme();
+    }).then((dispose) => {
+      disposeThemeListener = dispose;
+    });
+    invoke<{ settings?: { theme?: ThemeMode } }>("get_app_snapshot")
+      .then((snapshot) => {
+        theme = snapshot.settings?.theme ?? "system";
+        applyTheme();
+      })
+      .catch(applyTheme);
+    return () => {
+      media.removeEventListener("change", handleSystemTheme);
+      disposeThemeListener?.();
+    };
+  }, []);
 
   const pageCount = Math.max(1, Math.ceil(allEntries.length / POPUP_PAGE_SIZE));
   const pageEntries = useMemo(

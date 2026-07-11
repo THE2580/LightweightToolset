@@ -1,12 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Copy, Pause, Play, RotateCcw, Square, X } from "lucide-react";
-import React, { useEffect, useMemo, useState } from "react";
+import { Copy, Moon, Pause, Play, RotateCcw, Square, Sun, X } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import "./free.css";
 
 type TimerKind = "stopwatch" | "countdown";
 type TimerStatus = "paused" | "running" | "finished";
+type ThemeMode = "light" | "dark" | "system";
 
 type TimerEntry = {
   id: string;
@@ -58,6 +60,37 @@ function Shell({
   children: React.ReactNode;
 }) {
   const [isMaximized, setIsMaximized] = useState(false);
+  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">("light");
+  const manualThemeRef = useRef<"light" | "dark" | null>(null);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    let appTheme: ThemeMode = "system";
+    let disposeThemeListener: (() => void) | undefined;
+    const applyTheme = () => {
+      if (manualThemeRef.current) return;
+      const nextTheme = appTheme === "system" ? (media.matches ? "dark" : "light") : appTheme;
+      document.documentElement.dataset.theme = nextTheme;
+      setResolvedTheme(nextTheme);
+    };
+    media.addEventListener("change", applyTheme);
+    void listen<ThemeMode>("app-theme-changed", ({ payload }) => {
+      appTheme = payload;
+      applyTheme();
+    }).then((dispose) => {
+      disposeThemeListener = dispose;
+    });
+    invoke<{ settings?: { theme?: ThemeMode } }>("get_app_snapshot")
+      .then((snapshot) => {
+        appTheme = snapshot.settings?.theme ?? "system";
+        applyTheme();
+      })
+      .catch(applyTheme);
+    return () => {
+      media.removeEventListener("change", applyTheme);
+      disposeThemeListener?.();
+    };
+  }, []);
 
   useEffect(() => {
     const currentWindow = getCurrentWindow();
@@ -86,12 +119,22 @@ function Shell({
     setIsMaximized(await currentWindow.isMaximized());
   }
 
+  function toggleTheme(event: React.MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const nextTheme = resolvedTheme === "dark" ? "light" : "dark";
+    manualThemeRef.current = nextTheme;
+    document.documentElement.dataset.theme = nextTheme;
+    setResolvedTheme(nextTheme);
+  }
+
   return (
     <main className={`free-shell ${status ?? ""}`}>
       <header className="free-titlebar" onPointerDown={() => void getCurrentWindow().startDragging()}>
         <span className="free-window-title">{title}</span>
         <div className="free-title-actions">
           {badge ? <span className={`free-type-badge ${kind ?? ""}`}>{badge}</span> : null}
+          <button aria-label={`切换为${resolvedTheme === "dark" ? "浅色" : "深色"}主题`} onClick={toggleTheme} onPointerDown={(event) => event.stopPropagation()} title={`切换为${resolvedTheme === "dark" ? "浅色" : "深色"}主题`} type="button">{resolvedTheme === "dark" ? <Sun size={18} /> : <Moon size={18} />}</button>
           <button aria-label={isMaximized ? "还原窗口" : "窗口化全屏"} onClick={(event) => void toggleMaximized(event)} onPointerDown={(event) => event.stopPropagation()} title={isMaximized ? "还原窗口" : "窗口化全屏"} type="button">{isMaximized ? <Copy size={18} strokeWidth={2} /> : <Square size={17} strokeWidth={2} />}</button>
           <button aria-label="关闭" onClick={(event) => void closeWindow(event)} onPointerDown={(event) => event.stopPropagation()} type="button"><X size={18} /></button>
         </div>

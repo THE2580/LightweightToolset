@@ -850,6 +850,7 @@ fn update_app_settings(
 ) -> Result<AppSnapshot, String> {
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     let settings = registry.settings_mut();
+    let updated_theme = patch.theme.clone();
     if let Some(theme) = patch.theme {
         settings.theme = theme;
     }
@@ -907,6 +908,9 @@ fn update_app_settings(
         window_pinner::relocate(&next_storage_dir)?;
     }
     save_app_settings(&state, registry.settings())?;
+    if let Some(theme) = updated_theme {
+        let _ = app.emit("app-theme-changed", theme);
+    }
     push_debug_log(&state, "settings", "app.settings.saved");
     app_snapshot(&state, &registry)
 }
@@ -1002,7 +1006,10 @@ pub fn run() {
                             }
                             if window_pinner_hotkey {
                                 match window_pinner::toggle_foreground(std::process::id()) {
-                                    Ok(action) => { let _ = app.emit("window-pinner-changed", &action); }
+                                    Ok(action) => {
+                                        windows_notification::notify_window_pinner(&action.message);
+                                        let _ = app.emit("window-pinner-changed", &action);
+                                    }
                                     Err(error) => { let _ = app.emit("window-pinner-error", error); }
                                 }
                             }

@@ -70,15 +70,18 @@ button { font: inherit; }
   width: 26px;
   height: 26px;
   place-items: center;
+  padding: 0;
   border: 0;
   border-radius: 7px;
   color: #64748b;
   background: transparent;
   cursor: pointer;
+  line-height: 0;
   transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
 }
 
 .free-title-actions button svg {
+  display: block;
   width: 18px;
   height: 18px;
 }
@@ -196,6 +199,32 @@ button { font: inherit; }
   color: #fff;
   background: #1d4ed8;
 }
+
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] .free-shell { color: #ececec; background: #171717; }
+:root[data-theme="dark"] .free-titlebar { border-color: #3a3a3a; background: rgba(29, 29, 29, 0.92); }
+:root[data-theme="dark"] .free-shell.running .free-titlebar { background: #242a35; }
+:root[data-theme="dark"] .free-shell.paused .free-titlebar { background: #302b20; }
+:root[data-theme="dark"] .free-shell.finished .free-titlebar { background: #302225; }
+:root[data-theme="dark"] .free-window-title,
+:root[data-theme="dark"] .free-readout,
+:root[data-theme="dark"] .free-clock-card strong { color: #ececec; }
+:root[data-theme="dark"] .free-title-actions button { color: #b4b4b4; }
+:root[data-theme="dark"] .free-title-actions button:hover { color: #ececec; background: #333; }
+:root[data-theme="dark"] .free-type-badge.stopwatch { color: #74d9c9; background: #233936; }
+:root[data-theme="dark"] .free-type-badge.countdown { color: #f2b65d; background: #3b321f; }
+:root[data-theme="dark"] .free-timer-card,
+:root[data-theme="dark"] .free-clock-card { background: #171717; }
+:root[data-theme="dark"] .free-status,
+:root[data-theme="dark"] .free-duration,
+:root[data-theme="dark"] .free-empty,
+:root[data-theme="dark"] .free-clock-card span { color: #b4b4b4; }
+:root[data-theme="dark"] .free-error { color: #ff7b82; }
+:root[data-theme="dark"] .free-actions button { border-color: #484848; color: #d4d4d4; background: #212121; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28); }
+:root[data-theme="dark"] .free-actions button:hover { border-color: #606060; color: #ececec; background: #2a2a2a; }
+:root[data-theme="dark"] .free-actions button.primary { border-color: #668eea; color: #a9c0ff; background: #292f3c; box-shadow: inset 0 0 0 1px rgba(126, 162, 255, 0.08); }
+:root[data-theme="dark"] .free-actions button.primary:hover { border-color: #8aa9f5; color: #d1dcff; background: #30394b; box-shadow: inset 0 0 0 1px rgba(126, 162, 255, 0.12), 0 4px 10px rgba(0, 0, 0, 0.24); }
 
 .free-clock-card strong {
   display: block;

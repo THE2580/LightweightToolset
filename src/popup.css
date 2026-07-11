@@ -89,6 +89,93 @@ button:focus-visible { outline: 2px solid rgba(47, 94, 232, 0.28); outline-offse
 .popup-token-grid button { max-width: 100%; min-width: 0; padding: 6px 10px; border: 1px solid #d8e1ef; border-radius: 7px; color: #172033; background: #fff; cursor: pointer; font: inherit; font-family: Consolas, "Cascadia Mono", monospace; font-size: 10px; line-height: 1.18; overflow-wrap: anywhere; white-space: normal; text-align: center; transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease; }
 .popup-token-grid button:hover { border-color: #aac1f1; background: #f6f8fb; }
 .popup-token-grid button.selected { border-color: #2f5ee8; color: #2f5ee8; background: #edf3ff; }
+
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="dark"] body { color: #edf2f9; background: transparent; }
+:root[data-theme="dark"] .popup-shell { border-color: #465671; background: #182337; box-shadow: 0 18px 42px rgba(4, 9, 18, 0.48); }
+:root[data-theme="dark"] .popup-drag-strip-wrap { background: #182337; }
+:root[data-theme="dark"] .popup-drag-strip { background: #52617a; }
+:root[data-theme="dark"] .popup-toolbar { border-color: #303e54; }
+:root[data-theme="dark"] .popup-toolbar input { border-color: #52617a; color: #edf2f9; background: #202d42; }
+:root[data-theme="dark"] .popup-toolbar input::placeholder { color: #8795aa; }
+:root[data-theme="dark"] .popup-icon-button { border-color: #465671; color: #dce5f2; background: #202d42; }
+:root[data-theme="dark"] .popup-icon-button:hover,
+:root[data-theme="dark"] .popup-icon-button.active { border-color: #6079a3; color: #9bb6ff; background: #2b3e60; }
+:root[data-theme="dark"] .popup-label { color: #9aa8bc; }
+:root[data-theme="dark"] .popup-empty { color: #8795aa; }
+:root[data-theme="dark"] .popup-error { border-color: #75424c; color: #ff9ca1; background: #402a34; }
+:root[data-theme="dark"] .popup-error span { color: #ffb0b5; }
+:root[data-theme="dark"] .popup-error button,
+:root[data-theme="dark"] .popup-secondary-action { border-color: #465671; color: #9bb6ff; background: #202d42; }
+:root[data-theme="dark"] .popup-error button:hover,
+:root[data-theme="dark"] .popup-secondary-action:hover:not(:disabled) { border-color: #6079a3; background: #2b3e60; }
+:root[data-theme="dark"] .popup-entry { border-color: #3d4c63; background: #202d42; }
+:root[data-theme="dark"] .popup-entry:hover { border-color: #6079a3; background: #26364d; box-shadow: inset 0 0 0 1px rgba(126, 162, 255, 0.1), 0 4px 12px rgba(4, 9, 18, 0.24); }
+:root[data-theme="dark"] .popup-entry.selected { border-color: #7ea2ff; background: #263957; box-shadow: 0 0 0 2px rgba(126, 162, 255, 0.2); }
+:root[data-theme="dark"] .popup-entry.actions-open { border-color: #6079a3; }
+:root[data-theme="dark"] .popup-entry-surface { background: #202d42; }
+:root[data-theme="dark"] .popup-entry-title strong { color: #edf2f9; }
+:root[data-theme="dark"] .popup-entry-title span,
+:root[data-theme="dark"] .popup-entry-main p { color: #aebbd0; }
+:root[data-theme="dark"] .popup-entry-title .popup-entry-source { color: #b7c3d5; background: #2d3b50; }
+:root[data-theme="dark"] .popup-entry-title .popup-entry-source.derived { color: #9bb6ff; background: #2b3e60; }
+:root[data-theme="dark"] .popup-entry-actions { background: rgba(32, 45, 66, 0.82); box-shadow: 0 4px 12px rgba(4, 9, 18, 0.24); }
+:root[data-theme="dark"] .popup-entry-actions button { color: #9aa8bc; }
+:root[data-theme="dark"] .popup-entry-actions button:hover { color: #edf2f9; background: #314159; }
+:root[data-theme="dark"] .popup-entry-workspace { border-color: #52617a; background: #26364d; }
+:root[data-theme="dark"] .popup-entry-workspace button { color: #9bb6ff; }
+:root[data-theme="dark"] .popup-entry-workspace button:hover { color: #c3d2ff; background: #31466a; }
+:root[data-theme="dark"] .popup-entry-workspace button.danger { color: #ff8f96; background: #402a34; }
+:root[data-theme="dark"] .popup-entry-workspace button.danger:hover { color: #ffb0b5; background: #4a2c37; }
+:root[data-theme="dark"] .popup-page-status { border-color: #465671; color: #aebbd0; background: rgba(32, 45, 66, 0.94); box-shadow: 0 4px 10px rgba(4, 9, 18, 0.28); }
+:root[data-theme="dark"] .popup-dialog-backdrop { background: rgba(4, 9, 18, 0.62); }
+:root[data-theme="dark"] .popup-dialog { border-color: #465671; background: #202d42; box-shadow: 0 18px 45px rgba(4, 9, 18, 0.52); }
+:root[data-theme="dark"] .popup-dialog-header { border-color: #303e54; background: #1b2639; }
+:root[data-theme="dark"] .popup-dialog-header h2,
+:root[data-theme="dark"] .popup-dialog-close { color: #edf2f9; }
+:root[data-theme="dark"] .popup-dialog-header p,
+:root[data-theme="dark"] .popup-extract-dialog .popup-dialog-header p,
+:root[data-theme="dark"] .popup-detail-body details { color: #aebbd0; }
+:root[data-theme="dark"] .popup-dialog-icon { color: #9bb6ff; background: #2b3e60; }
+:root[data-theme="dark"] .popup-dialog-close:hover { color: #9bb6ff; background: #2b3e60; }
+:root[data-theme="dark"] .popup-detail-body pre { border-color: #3d4c63; color: #edf2f9; background: #1b2639; scrollbar-color: #65748c transparent; }
+:root[data-theme="dark"] .popup-detail-body pre::-webkit-scrollbar-thumb,
+:root[data-theme="dark"] .popup-token-grid::-webkit-scrollbar-thumb { background: #65748c; }
+:root[data-theme="dark"] .popup-token-grid { border-color: #303e54; scrollbar-color: #65748c transparent; }
+:root[data-theme="dark"] .popup-token-grid button { border-color: #465671; color: #dce5f2; background: #26344a; }
+:root[data-theme="dark"] .popup-token-grid button:hover { border-color: #6079a3; background: #314159; }
+:root[data-theme="dark"] .popup-token-grid button.selected { border-color: #7ea2ff; color: #9bb6ff; background: #2b3e60; }
+
+/* Neutral GPT-like dark surfaces. */
+:root[data-theme="dark"] .popup-shell,
+:root[data-theme="dark"] .popup-drag-strip-wrap { background: #171717; }
+:root[data-theme="dark"] .popup-shell { border-color: #3f3f3f; }
+:root[data-theme="dark"] .popup-drag-strip { background: #555; }
+:root[data-theme="dark"] .popup-toolbar,
+:root[data-theme="dark"] .popup-dialog-header,
+:root[data-theme="dark"] .popup-token-grid { border-color: #333; }
+:root[data-theme="dark"] .popup-toolbar input,
+:root[data-theme="dark"] .popup-icon-button,
+:root[data-theme="dark"] .popup-error button,
+:root[data-theme="dark"] .popup-secondary-action { border-color: #4a4a4a; background: #212121; }
+:root[data-theme="dark"] .popup-icon-button:hover,
+:root[data-theme="dark"] .popup-icon-button.active,
+:root[data-theme="dark"] .popup-dialog-close:hover { background: #303746; }
+:root[data-theme="dark"] .popup-entry { border-color: #3f3f3f; background: #212121; }
+:root[data-theme="dark"] .popup-entry:hover { border-color: #555; background: #292929; }
+:root[data-theme="dark"] .popup-entry.selected { border-color: #7ea2ff; background: #2b303b; }
+:root[data-theme="dark"] .popup-entry-surface { background: #212121; }
+:root[data-theme="dark"] .popup-entry-title .popup-entry-source { background: #303030; }
+:root[data-theme="dark"] .popup-entry-actions { background: rgba(33, 33, 33, 0.86); }
+:root[data-theme="dark"] .popup-entry-actions button:hover { background: #333; }
+:root[data-theme="dark"] .popup-entry-workspace { border-color: #4a4a4a; background: #292929; }
+:root[data-theme="dark"] .popup-page-status { border-color: #4a4a4a; background: rgba(33, 33, 33, 0.95); }
+:root[data-theme="dark"] .popup-dialog { border-color: #444; background: #212121; }
+:root[data-theme="dark"] .popup-dialog-header,
+:root[data-theme="dark"] .popup-detail-body pre { background: #1b1b1b; }
+:root[data-theme="dark"] .popup-detail-body pre { border-color: #3f3f3f; }
+:root[data-theme="dark"] .popup-token-grid button { border-color: #484848; background: #292929; }
+:root[data-theme="dark"] .popup-token-grid button:hover { border-color: #606060; background: #333; }
 @keyframes popup-page-swap { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
 @keyframes popup-toast-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes popup-toast-out { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(5px); } }

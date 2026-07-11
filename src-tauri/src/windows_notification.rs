@@ -29,6 +29,23 @@ pub fn notify_timer_finished(name: &str) {
     }
 }
 
+pub fn notify_window_pinner(message: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = notify_rust::Notification::new()
+            .app_id(APP_ID)
+            .summary("窗口置顶")
+            .body(message)
+            .auto_icon()
+            .show();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = message;
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn set_process_app_id() {
     use std::os::windows::ffi::OsStrExt;
@@ -49,14 +66,12 @@ fn ensure_start_menu_shortcut() -> Result<(), String> {
     use windows::{
         core::{Interface, HSTRING},
         Win32::{
+            System::Com::StructuredStorage::{InitPropVariantFromStringAsVector, PropVariantClear},
             System::Com::{
                 CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
                 COINIT_APARTMENTTHREADED,
             },
-            System::Com::StructuredStorage::{InitPropVariantFromStringAsVector, PropVariantClear},
-            UI::Shell::{
-                PropertiesSystem::IPropertyStore, IShellLinkW, ShellLink,
-            },
+            UI::Shell::{IShellLinkW, PropertiesSystem::IPropertyStore, ShellLink},
         },
     };
 
@@ -77,9 +92,8 @@ fn ensure_start_menu_shortcut() -> Result<(), String> {
 
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let shell_link: IShellLinkW =
-            CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
-                .map_err(|error| error.to_string())?;
+        let shell_link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
+            .map_err(|error| error.to_string())?;
         shell_link
             .SetPath(&HSTRING::from(exe.display().to_string()))
             .map_err(|error| error.to_string())?;
@@ -109,6 +123,6 @@ fn ensure_start_menu_shortcut() -> Result<(), String> {
 #[cfg(target_os = "windows")]
 const PKEY_APP_USER_MODEL_ID: windows::Win32::Foundation::PROPERTYKEY =
     windows::Win32::Foundation::PROPERTYKEY {
-    fmtid: windows::core::GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
-    pid: 5,
-};
+        fmtid: windows::core::GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
+        pid: 5,
+    };

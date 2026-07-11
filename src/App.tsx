@@ -384,7 +384,7 @@ type NavigationTarget = {
 const DEFAULT_TITLE = "轻量化工具集";
 const APP_NAME = "LightweightToolset";
 const APP_SUBTITLE = "Windows 桌面工具集";
-const APP_VERSION = "0.4.0";
+const APP_VERSION = "0.4.1";
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const GITHUB_API_LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
@@ -3001,7 +3001,7 @@ function KeyUsageToolPage({ tool }: { tool: Tool }) {
           </div>
           <div className="app-usage-ranking" onScroll={(event) => setRankingScrolled(event.currentTarget.scrollTop > 0)} ref={rankingRef}>
             {rangeData.keyRows.map((row, index) => (
-              <button className={`app-usage-rank-row key-usage-rank-row ${selectedKey === row.key ? "active" : ""}`} key={row.key} onClick={() => selectKey(row.key)} type="button">
+              <button className={`app-usage-rank-row key-usage-rank-row ${selectedKey === row.key ? "active" : ""}`} key={row.key} onClick={() => selectKey(row.key)} title={`查看 ${keyUsageDisplayName(row.key)} 的按键趋势`} type="button">
                 <div>
                   <span>{index + 1}. <KeyUsageRankingKey keyName={row.key} /></span>
                   <strong>{formatKeyCount(row.count)} 次</strong>
@@ -3207,7 +3207,7 @@ function KeyUsageNumpadPreview({ keyCounts, maxCount, selectedKey, onSelect }: {
 
 function KeyUsagePreviewKey({ keyName, count, maxCount, active, onSelect }: { keyName: string; count: number; maxCount: number; active: boolean; onSelect: (key: string) => void }) {
   const intensity = maxCount > 0 ? count / maxCount : 0;
-  return <button className={active ? "active" : ""} onClick={() => onSelect(keyName)} style={{ "--heat": `${Math.round(intensity * 78)}%` } as React.CSSProperties} title={`${keyUsageDisplayName(keyName)}：${formatKeyCount(count)} 次`} type="button">{keyUsagePreviewLabel(keyName)}</button>;
+  return <button className={active ? "active" : ""} onClick={() => onSelect(keyName)} style={{ "--heat": `${Math.round(intensity * 78)}%`, "--dark-heat": `${Math.round(Math.sqrt(intensity) * 88)}%` } as React.CSSProperties} title={`${keyUsageDisplayName(keyName)}：${formatKeyCount(count)} 次`} type="button">{keyUsagePreviewLabel(keyName)}</button>;
 }
 
 function KeyUsageRankingKey({ keyName }: { keyName: string }) {
