@@ -56,6 +56,14 @@ pub fn mark_process_start() {
     PROCESS_STARTED_AT.get_or_init(Instant::now);
 }
 
+pub fn run_window_pinner_watchdog_from_args() -> bool {
+    window_pinner::run_watchdog_from_args()
+}
+
+pub fn run_elevated_input_helper_from_args() -> bool {
+    input_monitor::run_elevated_helper_from_args()
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSnapshot {
@@ -1066,6 +1074,7 @@ pub fn run() {
             let storage_dir = initial_storage_dir(&config_dir)?;
             migrate_storage_files(&config_dir, &storage_dir)?;
             write_storage_pointer(&config_dir, &storage_dir)?;
+            input_monitor::configure_elevated_helper_dir(&config_dir)?;
             clipboard::init(&storage_dir)?;
             app_usage::init(&storage_dir)?;
             key_usage::init(&storage_dir)?;
@@ -1073,6 +1082,7 @@ pub fn run() {
             let settings_path = settings_path_for(&storage_dir);
             let settings = AppSettings::load(&settings_path)?;
             window_pinner::init(&storage_dir, settings.window_pinner_max_pins)?;
+            window_pinner::start_watchdog(&storage_dir)?;
             let mut registry = ToolRegistry::new(settings);
             if !registry.is_enabled("window_pinner") {
                 window_pinner::unpin_all();

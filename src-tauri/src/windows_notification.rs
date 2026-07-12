@@ -36,6 +36,7 @@ pub fn notify_window_pinner(message: &str) {
             .app_id(APP_ID)
             .summary("窗口置顶")
             .body(message)
+            .sound_name("Default")
             .auto_icon()
             .show();
     }

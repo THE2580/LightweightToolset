@@ -384,7 +384,7 @@ type NavigationTarget = {
 const DEFAULT_TITLE = "轻量化工具集";
 const APP_NAME = "LightweightToolset";
 const APP_SUBTITLE = "Windows 桌面工具集";
-const APP_VERSION = "0.4.1";
+const APP_VERSION = "0.4.2";
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const GITHUB_API_LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
@@ -736,10 +736,16 @@ function App() {
 
   useEffect(() => {
     const theme = settings?.theme ?? "system";
-    const resolved = theme === "system"
-      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
-      : theme;
-    document.documentElement.dataset.theme = resolved;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const applyTheme = () => {
+      document.documentElement.dataset.theme = theme === "system"
+        ? (media.matches ? "dark" : "light")
+        : theme;
+    };
+    applyTheme();
+    if (theme !== "system") return;
+    media.addEventListener("change", applyTheme);
+    return () => media.removeEventListener("change", applyTheme);
   }, [settings?.theme]);
 
   async function setToolEnabled(tool: Tool, enabled: boolean) {

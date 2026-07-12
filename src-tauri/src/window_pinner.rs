@@ -1,12 +1,18 @@
 use std::{
-    fs,
+    env, fs,
+    os::windows::process::CommandExt,
     path::{Path, PathBuf},
+    process::Command,
     sync::{Mutex, OnceLock},
 };
 
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::{
-    Foundation::{GetLastError, HWND},
+    Foundation::{CloseHandle, GetLastError, HWND, WAIT_FAILED, WAIT_OBJECT_0},
+    System::Threading::{
+        OpenProcess, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP,
+        CREATE_NO_WINDOW,
+    },
     UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
         GetWindowThreadProcessId, IsWindow, IsWindowVisible, SetWindowPos, GWL_EXSTYLE,
@@ -42,6 +48,9 @@ struct State {
 }
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+const WATCHDOG_ARG: &str = "--window-pinner-watchdog";
+const WATCHDOG_PREFIX: &str = "window_pinner_watchdog_";
+const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
 
 fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| {
@@ -72,6 +81,120 @@ pub fn init(storage_dir: &Path, max_pins: usize) -> Result<(), String> {
     Ok(())
 }
 
+pub fn start_watchdog(storage_dir: &Path) -> Result<(), String> {
+    let parent_pid = std::process::id();
+    let state_path = storage_dir.join("window_pinner_state.json");
+    let current_exe =
+        env::current_exe().map_err(|error| format!("定位窗口置顶监护程序失败: {error}"))?;
+    let metadata = fs::metadata(&current_exe)
+        .map_err(|error| format!("读取窗口置顶监护程序信息失败: {error}"))?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let helper_path = storage_dir.join(format!(
+        "{WATCHDOG_PREFIX}{}_{}.exe",
+        metadata.len(),
+        modified
+    ));
+    cleanup_stale_watchdogs(storage_dir, Some(&helper_path));
+    if !helper_path.exists() {
+        fs::copy(&current_exe, &helper_path)
+            .map_err(|error| format!("准备窗口置顶监护程序失败: {error}"))?;
+    }
+
+    let spawn = |flags| {
+        let mut command = Command::new(&helper_path);
+        command
+            .arg(WATCHDOG_ARG)
+            .arg(parent_pid.to_string())
+            .arg(&state_path);
+        command.creation_flags(flags).spawn()
+    };
+    let base_flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+    spawn(base_flags | CREATE_BREAKAWAY_FROM_JOB)
+        .or_else(|_| spawn(base_flags))
+        .map(|_| ())
+        .map_err(|error| format!("启动窗口置顶监护程序失败: {error}"))
+}
+
+pub fn run_watchdog_from_args() -> bool {
+    let mut args = env::args_os();
+    let _ = args.next();
+    if args.next().as_deref() != Some(std::ffi::OsStr::new(WATCHDOG_ARG)) {
+        return false;
+    }
+    let Some(parent_pid) = args
+        .next()
+        .and_then(|value| value.to_string_lossy().parse::<u32>().ok())
+    else {
+        return true;
+    };
+    let Some(state_path) = args.next().map(PathBuf::from) else {
+        return true;
+    };
+    run_watchdog(parent_pid, &state_path);
+    true
+}
+
+fn run_watchdog(parent_pid: u32, state_path: &Path) {
+    let process = unsafe { OpenProcess(SYNCHRONIZE_ACCESS, 0, parent_pid) };
+    if process.is_null() {
+        cleanup_after_parent_exit(state_path, &[]);
+        return;
+    }
+    let mut cached = Vec::new();
+    loop {
+        if let Some(windows) = read_responsibility_list(state_path) {
+            cached = windows;
+        }
+        let wait = unsafe { WaitForSingleObject(process, 100) };
+        if wait == WAIT_OBJECT_0 || wait == WAIT_FAILED {
+            break;
+        }
+    }
+    unsafe { CloseHandle(process) };
+    cleanup_after_parent_exit(state_path, &cached);
+}
+
+fn cleanup_after_parent_exit(state_path: &Path, cached: &[PinnedWindow]) {
+    if !state_path.exists() {
+        return;
+    }
+    let windows = read_responsibility_list(state_path).unwrap_or_else(|| cached.to_vec());
+    for item in windows {
+        let hwnd = item.hwnd as HWND;
+        if unsafe { IsWindow(hwnd) } != 0 && window_title(hwnd) == item.title {
+            let _ = set_topmost(hwnd, false);
+        }
+    }
+    let _ = fs::remove_file(state_path);
+}
+
+fn read_responsibility_list(path: &Path) -> Option<Vec<PinnedWindow>> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+}
+
+fn cleanup_stale_watchdogs(storage_dir: &Path, keep: Option<&Path>) {
+    let Ok(entries) = fs::read_dir(storage_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_watchdog = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(WATCHDOG_PREFIX) && name.ends_with(".exe"));
+        if is_watchdog && keep != Some(path.as_path()) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 pub fn relocate(storage_dir: &Path) -> Result<(), String> {
     let mut state = state().lock().map_err(|_| "窗口置顶状态不可用")?;
     let old_path = state
@@ -83,7 +206,8 @@ pub fn relocate(storage_dir: &Path) -> Result<(), String> {
             let _ = fs::remove_file(old_path);
         }
     }
-    Ok(())
+    drop(state);
+    start_watchdog(storage_dir)
 }
 
 pub fn snapshot() -> Result<WindowPinnerSnapshot, String> {
@@ -258,5 +382,69 @@ fn window_title(hwnd: HWND) -> String {
         format!("窗口 0x{:X}", hwnd as usize)
     } else {
         title
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!("lightweight-toolset-{name}-{unique}"))
+    }
+
+    #[test]
+    fn watchdog_treats_missing_state_as_normal_cleanup() {
+        let directory = test_dir("watchdog-normal-exit");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("window_pinner_state.json");
+
+        cleanup_after_parent_exit(
+            &path,
+            &[PinnedWindow {
+                hwnd: 1,
+                title: "cached".to_owned(),
+            }],
+        );
+
+        assert!(!path.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn watchdog_removes_empty_responsibility_file_after_abnormal_exit() {
+        let directory = test_dir("watchdog-abnormal-exit");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("window_pinner_state.json");
+        fs::write(&path, "[]").unwrap();
+
+        cleanup_after_parent_exit(&path, &[]);
+
+        assert!(!path.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn startup_removes_stale_watchdog_copies_only() {
+        let directory = test_dir("watchdog-stale-copy");
+        fs::create_dir_all(&directory).unwrap();
+        let stale = directory.join("window_pinner_watchdog_123.exe");
+        let current = directory.join("window_pinner_watchdog_current.exe");
+        let unrelated = directory.join("keep.exe");
+        fs::write(&stale, b"stale").unwrap();
+        fs::write(&current, b"current").unwrap();
+        fs::write(&unrelated, b"keep").unwrap();
+
+        cleanup_stale_watchdogs(&directory, Some(&current));
+
+        assert!(!stale.exists());
+        assert!(current.exists());
+        assert!(unrelated.exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 }
