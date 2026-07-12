@@ -384,7 +384,9 @@ type NavigationTarget = {
 const DEFAULT_TITLE = "轻量化工具集";
 const APP_NAME = "LightweightToolset";
 const APP_SUBTITLE = "Windows 桌面工具集";
-const APP_VERSION = "0.4.2";
+const APP_VERSION = "0.4.3";
+const STARTUP_SNAPSHOT_RETRY_DELAY_MS = 200;
+const STARTUP_SNAPSHOT_MAX_ATTEMPTS = 150;
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const GITHUB_API_LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
@@ -721,17 +723,28 @@ function App() {
     return targets;
   }, [tools]);
 
-  const loadSnapshot = useCallback(async () => {
-    try {
-      setSnapshot(await invoke<AppSnapshot>("get_app_snapshot"));
-      setError(null);
-    } catch (reason) {
-      setError(String(reason));
+  const loadSnapshot = useCallback(async (retryWhileStarting = false) => {
+    for (let attempt = 0; attempt < STARTUP_SNAPSHOT_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        setSnapshot(await invoke<AppSnapshot>("get_app_snapshot"));
+        setError(null);
+        return;
+      } catch (reason) {
+        const message = String(reason);
+        const shouldRetry = retryWhileStarting
+          && message.includes("state not managed for field `state` on command `get_app_snapshot`")
+          && attempt + 1 < STARTUP_SNAPSHOT_MAX_ATTEMPTS;
+        if (!shouldRetry) {
+          setError(message);
+          return;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, STARTUP_SNAPSHOT_RETRY_DELAY_MS));
+      }
     }
   }, []);
 
   useEffect(() => {
-    void loadSnapshot();
+    void loadSnapshot(true);
   }, [loadSnapshot]);
 
   useEffect(() => {
