@@ -14,7 +14,10 @@ use std::{
     fs,
     path::PathBuf,
     process::Command,
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, OnceLock,
+    },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -44,10 +47,14 @@ const STORAGE_POINTER_FILE: &str = "storage_path.txt";
 pub struct AppState {
     registry: Mutex<ToolRegistry>,
     default_config_dir: PathBuf,
+    runtime_storage_dir: PathBuf,
     settings_path: Mutex<PathBuf>,
     process_started_at: Instant,
     cold_start_ms: Mutex<Option<u128>>,
     debug_logs: Mutex<VecDeque<DebugLogEntry>>,
+    runtime_started: AtomicBool,
+    runtime_ready: AtomicBool,
+    runtime_error: Mutex<Option<String>>,
 }
 
 static PROCESS_STARTED_AT: OnceLock<Instant> = OnceLock::new();
@@ -71,6 +78,8 @@ pub struct AppSnapshot {
     app_hotkeys: Vec<ToolSnapshot>,
     cold_start_ms: u128,
     settings: AppSettings,
+    runtime_ready: bool,
+    runtime_error: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -100,12 +109,50 @@ fn cold_start_ms(state: &AppState) -> Result<u128, String> {
 }
 
 fn app_snapshot(state: &AppState, registry: &ToolRegistry) -> Result<AppSnapshot, String> {
+    let runtime_error = state
+        .runtime_error
+        .lock()
+        .map_err(|_| "运行时状态不可用")?
+        .clone();
     Ok(AppSnapshot {
         tools: registry.snapshot(),
         app_hotkeys: app_hotkey_snapshots(registry.settings()),
         cold_start_ms: cold_start_ms(state)?,
         settings: registry.settings().clone(),
+        runtime_ready: state.runtime_ready.load(Ordering::Acquire),
+        runtime_error,
     })
+}
+
+fn start_runtime_initialization(app: AppHandle, storage_dir: PathBuf) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| -> Result<(), String> {
+            window_pinner::start_watchdog(&storage_dir)?;
+
+            let state = app.state::<AppState>();
+            let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+            if registry.settings().auto_start {
+                let _ = set_auto_start_plugin(&app, true);
+            }
+            registry.start_enabled(&app)?;
+            if let Err(error) = registry.register_app_hotkeys(&app) {
+                eprintln!("[hotkey] app hotkey registration skipped: {error}");
+            }
+            Ok(())
+        })();
+
+        let state = app.state::<AppState>();
+        if let Err(error) = &result {
+            if let Ok(mut runtime_error) = state.runtime_error.lock() {
+                *runtime_error = Some(error.clone());
+            }
+            push_debug_log(&state, "error", format!("app.runtime.start_failed error={error}"));
+        } else {
+            push_debug_log(&state, "app", "app.runtime.started");
+        }
+        state.runtime_ready.store(true, Ordering::Release);
+        let _ = app.emit("app-runtime-state-changed", ());
+    });
 }
 
 fn save_app_settings(state: &AppState, settings: &AppSettings) -> Result<(), String> {
@@ -278,9 +325,19 @@ fn set_auto_start_plugin(app: &AppHandle, enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
-    let registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
-    app_snapshot(&state, &registry)
+fn get_app_snapshot(app: AppHandle, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let snapshot = {
+        let registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+        app_snapshot(&state, &registry)?
+    };
+    if state
+        .runtime_started
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        start_runtime_initialization(app, state.runtime_storage_dir.clone());
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -1082,17 +1139,9 @@ pub fn run() {
             let settings_path = settings_path_for(&storage_dir);
             let settings = AppSettings::load(&settings_path)?;
             window_pinner::init(&storage_dir, settings.window_pinner_max_pins)?;
-            window_pinner::start_watchdog(&storage_dir)?;
-            let mut registry = ToolRegistry::new(settings);
+            let registry = ToolRegistry::new(settings);
             if !registry.is_enabled("window_pinner") {
                 window_pinner::unpin_all();
-            }
-            if registry.settings().auto_start {
-                let _ = set_auto_start_plugin(app.handle(), true);
-            }
-            registry.start_enabled(app.handle())?;
-            if let Err(error) = registry.register_app_hotkeys(app.handle()) {
-                eprintln!("[hotkey] app hotkey registration skipped: {error}");
             }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title(&registry.settings().window_title);
@@ -1101,6 +1150,7 @@ pub fn run() {
             app.manage(AppState {
                 registry: Mutex::new(registry),
                 default_config_dir: config_dir,
+                runtime_storage_dir: storage_dir,
                 settings_path: Mutex::new(settings_path),
                 process_started_at: *PROCESS_STARTED_AT.get_or_init(Instant::now),
                 cold_start_ms: Mutex::new(None),
@@ -1112,6 +1162,9 @@ pub fn run() {
                     level: "app",
                     message: "app.started profile=development".to_owned(),
                 }])),
+                runtime_started: AtomicBool::new(false),
+                runtime_ready: AtomicBool::new(false),
+                runtime_error: Mutex::new(None),
             });
             build_tray(app.handle())?;
             Ok(())

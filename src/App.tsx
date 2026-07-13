@@ -334,6 +334,8 @@ type AppSnapshot = {
   appHotkeys: Tool[];
   coldStartMs: number;
   settings: AppSettings;
+  runtimeReady: boolean;
+  runtimeError: string | null;
 };
 
 type CaptureHotkeyDraft = {
@@ -384,9 +386,7 @@ type NavigationTarget = {
 const DEFAULT_TITLE = "轻量化工具集";
 const APP_NAME = "LightweightToolset";
 const APP_SUBTITLE = "Windows 桌面工具集";
-const APP_VERSION = "0.4.3";
-const STARTUP_SNAPSHOT_RETRY_DELAY_MS = 200;
-const STARTUP_SNAPSHOT_MAX_ATTEMPTS = 150;
+const APP_VERSION = "0.4.4";
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const GITHUB_API_LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
@@ -723,28 +723,23 @@ function App() {
     return targets;
   }, [tools]);
 
-  const loadSnapshot = useCallback(async (retryWhileStarting = false) => {
-    for (let attempt = 0; attempt < STARTUP_SNAPSHOT_MAX_ATTEMPTS; attempt += 1) {
-      try {
-        setSnapshot(await invoke<AppSnapshot>("get_app_snapshot"));
-        setError(null);
-        return;
-      } catch (reason) {
-        const message = String(reason);
-        const shouldRetry = retryWhileStarting
-          && message.includes("state not managed for field `state` on command `get_app_snapshot`")
-          && attempt + 1 < STARTUP_SNAPSHOT_MAX_ATTEMPTS;
-        if (!shouldRetry) {
-          setError(message);
-          return;
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, STARTUP_SNAPSHOT_RETRY_DELAY_MS));
-      }
+  const loadSnapshot = useCallback(async () => {
+    try {
+      const nextSnapshot = await invoke<AppSnapshot>("get_app_snapshot");
+      setSnapshot(nextSnapshot);
+      setError(nextSnapshot.runtimeError);
+    } catch (reason) {
+      setError(String(reason));
     }
   }, []);
 
   useEffect(() => {
-    void loadSnapshot(true);
+    let dispose: (() => void) | undefined;
+    void loadSnapshot();
+    void listen("app-runtime-state-changed", () => void loadSnapshot())
+      .then((nextDispose) => { dispose = nextDispose; })
+      .catch((reason) => setError(String(reason)));
+    return () => dispose?.();
   }, [loadSnapshot]);
 
   useEffect(() => {
@@ -1088,7 +1083,7 @@ function App() {
               </section>
 
               <section className="status-strip" aria-label="基础服务状态">
-                <div><Gauge size={14} /><span>基础服务运行中</span></div>
+                <div><Gauge size={14} /><span>{snapshot?.runtimeError ? "基础服务启动异常" : snapshot?.runtimeReady ? "基础服务运行中" : "基础服务启动中"}</span></div>
                 <p>冷启动 {snapshot?.coldStartMs ?? "--"} ms</p>
                 <p>{tools.filter((tool) => tool.workerRunning).length}/{tools.length} 个工具运行中</p>
               </section>
