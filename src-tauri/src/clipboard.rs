@@ -54,6 +54,8 @@ pub struct ClipboardSettings {
     pub panel_width: u32,
     #[serde(default = "default_panel_height")]
     pub panel_height: u32,
+    #[serde(default = "default_notifications")]
+    pub notifications: bool,
 }
 
 impl Default for ClipboardSettings {
@@ -64,6 +66,7 @@ impl Default for ClipboardSettings {
             max_text_bytes: DEFAULT_MAX_TEXT_BYTES,
             panel_width: DEFAULT_PANEL_WIDTH,
             panel_height: DEFAULT_PANEL_HEIGHT,
+            notifications: default_notifications(),
         }
     }
 }
@@ -105,6 +108,7 @@ pub struct ClipboardSettingsPatch {
     pub max_text_bytes: Option<usize>,
     pub panel_width: Option<u32>,
     pub panel_height: Option<u32>,
+    pub notifications: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -236,6 +240,7 @@ pub fn start() -> Result<(), String> {
                     }
                 };
                 if changed {
+                    crate::clipboard_notify::on_clipboard_changed();
                     let _ = save_store(&path, &store);
                 }
             }
@@ -243,6 +248,7 @@ pub fn start() -> Result<(), String> {
         .map_err(|error| format!("启动剪贴板监听失败: {error}"))?;
 
     manager.worker = Some(ClipboardWorker { stop, thread });
+    crate::clipboard_notify::start_copy_listener();
     Ok(())
 }
 
@@ -257,6 +263,8 @@ pub fn stop() {
         let _ = worker.stop.send(());
         let _ = worker.thread.join();
     }
+    crate::clipboard_notify::stop_copy_listener();
+    crate::clipboard_notify::cancel_all();
 }
 
 pub fn snapshot() -> Result<ClipboardSnapshot, String> {
@@ -317,6 +325,9 @@ pub fn update_settings(patch: ClipboardSettingsPatch) -> Result<ClipboardSnapsho
         if let Some(panel_height) = patch.panel_height {
             store.settings.panel_height = panel_height.clamp(300, 900);
         }
+        if let Some(notifications) = patch.notifications {
+            store.settings.notifications = notifications;
+        }
         if should_cleanup {
             cleanup_store(&mut store);
         }
@@ -324,6 +335,19 @@ pub fn update_settings(patch: ClipboardSettingsPatch) -> Result<ClipboardSnapsho
     save_store(&manager.path, &manager.store)?;
     drop(manager);
     snapshot()
+}
+
+pub fn notifications_enabled() -> bool {
+    let Some(manager_lock) = CLIPBOARD.get() else {
+        return false;
+    };
+    let Ok(manager) = manager_lock.lock() else {
+        return false;
+    };
+    let Ok(store) = manager.store.lock() else {
+        return false;
+    };
+    store.settings.notifications
 }
 
 pub fn create_manual(title: String, text: String) -> Result<Option<ClipboardEntry>, String> {
@@ -522,6 +546,22 @@ pub fn purge_entries(ids: Vec<String>) -> Result<(), String> {
     save_store(&manager.path, &manager.store)
 }
 
+pub fn purge_trash() -> Result<usize, String> {
+    let manager_lock = CLIPBOARD.get().ok_or("剪贴板服务未初始化")?;
+    let manager = manager_lock.lock().map_err(|_| "剪贴板服务不可用")?;
+    let removed;
+    {
+        let mut store = manager.store.lock().map_err(|_| "剪贴板数据不可用")?;
+        let before = store.entries.len();
+        store.entries.retain(|entry| entry.deleted_at.is_none());
+        removed = before - store.entries.len();
+    }
+    if removed > 0 {
+        save_store(&manager.path, &manager.store)?;
+    }
+    Ok(removed)
+}
+
 pub fn clear_history() -> Result<(), String> {
     let manager_lock = CLIPBOARD.get().ok_or("剪贴板服务未初始化")?;
     let manager = manager_lock.lock().map_err(|_| "剪贴板服务不可用")?;
@@ -663,6 +703,10 @@ fn default_panel_width() -> u32 {
 
 fn default_panel_height() -> u32 {
     DEFAULT_PANEL_HEIGHT
+}
+
+fn default_notifications() -> bool {
+    true
 }
 
 #[cfg(target_os = "windows")]

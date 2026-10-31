@@ -9,10 +9,16 @@ button:focus-visible { outline: 2px solid rgba(47, 94, 232, 0.28); outline-offse
 .popup-drag-strip-wrap { display: grid; height: clamp(12px, min(4.6vw, 3.9vh), 22px); flex: 0 0 auto; place-items: center; background: #f8fafc; }
 .popup-drag-strip { width: clamp(68px, min(20vw, 17vh), 118px); height: clamp(4px, min(1.4vw, 1.2vh), 8px); border-radius: 999px; background: #d2dbe8; cursor: grab; }
 .popup-drag-strip:active { cursor: grabbing; }
-.popup-toolbar { --popup-control-size: clamp(28px, min(10.5vw, 8.1vh), 46px); display: grid; grid-template-columns: minmax(0, 1fr) var(--popup-control-size) var(--popup-control-size); gap: clamp(6px, min(2.4vw, 2vh), 12px); padding: clamp(2px, min(0.9vw, 0.8vh), 5px) clamp(8px, min(3vw, 2.5vh), 14px) clamp(5px, min(2vw, 1.7vh), 9px); border-bottom: 1px solid #e2e8f0; -webkit-app-region: no-drag; }
-.popup-toolbar input { width: 100%; height: var(--popup-control-size); padding: 0 clamp(8px, min(2.6vw, 2.2vh), 13px); border: 1px solid #9ab0d1; border-radius: clamp(7px, min(2.6vw, 2.3vh), 11px); outline: none; background: #fff; color: #172033; font-size: clamp(11px, min(3.7vw, 3vh), 16px); user-select: text; }
+.popup-toolbar { --popup-control-size: clamp(28px, min(10.5vw, 8.1vh), 46px); --popup-toolbar-gap: clamp(6px, min(2.4vw, 2vh), 12px); display: flex; align-items: center; gap: var(--popup-toolbar-gap); padding: clamp(2px, min(0.9vw, 0.8vh), 5px) clamp(8px, min(3vw, 2.5vh), 14px) clamp(5px, min(2vw, 1.7vh), 9px); border-bottom: 1px solid #e2e8f0; -webkit-app-region: no-drag; }
+.popup-toolbar input { flex: 1 1 0; min-width: 0; height: var(--popup-control-size); padding: 0 clamp(8px, min(2.6vw, 2.2vh), 13px); border: 1px solid #9ab0d1; border-radius: clamp(7px, min(2.6vw, 2.3vh), 11px); outline: none; background: #fff; color: #172033; font-size: clamp(11px, min(3.7vw, 3vh), 16px); user-select: text; }
 .popup-toolbar input:focus { border-color: #3b6df0; box-shadow: 0 0 0 2px rgba(59, 109, 240, 0.14); }
-.popup-icon-button { display: grid; width: var(--popup-control-size); height: var(--popup-control-size); place-items: center; padding: 0; border: 1px solid #d8e1ef; border-radius: clamp(7px, min(2.6vw, 2.3vh), 11px); color: #172033; background: #fff; cursor: pointer; transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease; }
+.popup-scope-switch { --popup-scope-size: clamp(24px, min(8vw, 6.2vh), 32px); display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; width: calc(var(--popup-scope-size) * 2 + 10px); padding: 3px; border: 1px solid #d8e1ef; border-radius: clamp(7px, min(2.6vw, 2.3vh), 11px); background: #fff; overflow: hidden; transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1), padding 220ms cubic-bezier(0.22, 1, 0.36, 1), border-width 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms ease, margin-right 220ms cubic-bezier(0.22, 1, 0.36, 1); }
+.popup-scope-switch button { flex: 0 0 auto; display: grid; width: var(--popup-scope-size); height: clamp(22px, min(7.4vw, 5.8vh), 30px); place-items: center; padding: 0; border: 0; border-radius: 6px; color: #65748b; background: transparent; cursor: pointer; transition: color 140ms ease, background-color 140ms ease; }
+.popup-toolbar.searching .popup-scope-switch { width: 0; margin-right: calc(-1 * var(--popup-toolbar-gap)); padding: 0; border-width: 0; opacity: 0; pointer-events: none; }
+.popup-scope-switch button svg { width: clamp(13px, min(4.4vw, 3.6vh), 17px); height: clamp(13px, min(4.4vw, 3.6vh), 17px); }
+.popup-scope-switch button:not(.active):hover { color: #172033; background: #eef3fb; }
+.popup-scope-switch button.active { color: #fff; background: #3b6df0; box-shadow: 0 2px 6px rgba(59, 109, 240, 0.28); }
+.popup-icon-button { flex: 0 0 auto; display: grid; width: var(--popup-control-size); height: var(--popup-control-size); place-items: center; padding: 0; border: 1px solid #d8e1ef; border-radius: clamp(7px, min(2.6vw, 2.3vh), 11px); color: #172033; background: #fff; cursor: pointer; transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease; }
 .popup-icon-button svg { width: clamp(16px, min(5.7vw, 4.5vh), 24px); height: clamp(16px, min(5.7vw, 4.5vh), 24px); }
 .popup-icon-button:hover, .popup-icon-button.active { color: #2f5ee8; border-color: #b9caf8; background: #edf3ff; }
 .popup-list { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 8px; overflow-x: hidden; overflow-y: auto; padding: 8px 10px 36px; scrollbar-width: none; }
@@ -98,6 +104,10 @@ button:focus-visible { outline: 2px solid rgba(47, 94, 232, 0.28); outline-offse
 :root[data-theme="dark"] .popup-toolbar { border-color: #303e54; }
 :root[data-theme="dark"] .popup-toolbar input { border-color: #52617a; color: #edf2f9; background: #202d42; }
 :root[data-theme="dark"] .popup-toolbar input::placeholder { color: #8795aa; }
+:root[data-theme="dark"] .popup-scope-switch { border-color: #465671; background: #202d42; }
+:root[data-theme="dark"] .popup-scope-switch button { color: #8795aa; }
+:root[data-theme="dark"] .popup-scope-switch button:not(.active):hover { color: #dce5f2; background: #26344a; }
+:root[data-theme="dark"] .popup-scope-switch button.active { color: #fff; background: #3b6df0; }
 :root[data-theme="dark"] .popup-icon-button { border-color: #465671; color: #dce5f2; background: #202d42; }
 :root[data-theme="dark"] .popup-icon-button:hover,
 :root[data-theme="dark"] .popup-icon-button.active { border-color: #6079a3; color: #9bb6ff; background: #2b3e60; }
@@ -161,6 +171,8 @@ button:focus-visible { outline: 2px solid rgba(47, 94, 232, 0.28); outline-offse
 :root[data-theme="dark"] .popup-icon-button:hover,
 :root[data-theme="dark"] .popup-icon-button.active,
 :root[data-theme="dark"] .popup-dialog-close:hover { background: #303746; }
+:root[data-theme="dark"] .popup-scope-switch { border-color: #4a4a4a; background: #212121; }
+:root[data-theme="dark"] .popup-scope-switch button:not(.active):hover { background: #333; }
 :root[data-theme="dark"] .popup-entry { border-color: #3f3f3f; background: #212121; }
 :root[data-theme="dark"] .popup-entry:hover { border-color: #555; background: #292929; }
 :root[data-theme="dark"] .popup-entry.selected { border-color: #7ea2ff; background: #2b303b; }

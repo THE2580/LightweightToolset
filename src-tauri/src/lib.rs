@@ -1,5 +1,6 @@
 mod app_usage;
 mod clipboard;
+mod clipboard_notify;
 mod input_monitor;
 mod key_usage;
 mod settings;
@@ -689,7 +690,9 @@ fn clipboard_update_settings(
 ) -> Result<ClipboardSnapshot, String> {
     ensure_clipboard_enabled(&state)?;
     push_debug_log(&state, "clipboard", "clipboard.settings.update_requested");
-    clipboard::update_settings(patch)
+    let snapshot = clipboard::update_settings(patch)?;
+    clipboard_notify::refresh();
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -739,6 +742,7 @@ fn clipboard_paste(
     push_debug_log(&state, "clipboard", format!("clipboard.paste.requested id={id}"));
     let result = clipboard::paste_entry(id)?;
     if result.copied {
+        clipboard_notify::notify_pasted();
         if window_service::is_clipboard_popup_pinned() {
             window_service::refocus_clipboard_popup_after_paste(&app);
         } else {
@@ -810,10 +814,23 @@ fn clipboard_restore(state: State<'_, AppState>, ids: Vec<String>) -> Result<(),
 }
 
 #[tauri::command]
+fn clipboard_notify_ready() {
+    clipboard_notify::mark_ready();
+}
+
+#[tauri::command]
 fn clipboard_purge(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
     ensure_clipboard_enabled(&state)?;
     push_debug_log(&state, "clipboard", format!("clipboard.purge.requested count={}", ids.len()));
     clipboard::purge_entries(ids)
+}
+
+#[tauri::command]
+fn clipboard_purge_trash(state: State<'_, AppState>) -> Result<usize, String> {
+    ensure_clipboard_enabled(&state)?;
+    let removed = clipboard::purge_trash()?;
+    push_debug_log(&state, "clipboard", format!("clipboard.purge_trash count={removed}"));
+    Ok(removed)
 }
 
 #[tauri::command]
@@ -1166,6 +1183,7 @@ pub fn run() {
                 runtime_ready: AtomicBool::new(false),
                 runtime_error: Mutex::new(None),
             });
+            clipboard_notify::init(app.handle());
             build_tray(app.handle())?;
             Ok(())
         })
@@ -1216,6 +1234,8 @@ pub fn run() {
             clipboard_delete,
             clipboard_restore,
             clipboard_purge,
+            clipboard_purge_trash,
+            clipboard_notify_ready,
             clipboard_clear_history,
             clipboard_open_panel,
             clipboard_close_panel,

@@ -92,6 +92,7 @@ type ClipboardSettings = {
   maxTextBytes: number;
   panelWidth: number;
   panelHeight: number;
+  notifications: boolean;
 };
 
 type ClipboardSnapshot = {
@@ -3883,6 +3884,8 @@ function ClipboardToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (ta
   const [trashOpen, setTrashOpen] = useState(false);
   const [trashPage, setTrashPage] = useState(0);
   const [trashTotal, setTrashTotal] = useState(0);
+  const [trashClearOpen, setTrashClearOpen] = useState(false);
+  const [trashClearClosing, setTrashClearClosing] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [detailEntry, setDetailEntry] = useState<ClipboardEntry | null>(null);
   const [extractEntry, setExtractEntry] = useState<ClipboardEntry | null>(null);
@@ -3995,6 +3998,17 @@ function ClipboardToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (ta
       if (event.defaultPrevented || isTextInputTarget(event.target)) {
         return;
       }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+        if (settingsOpen || manualOpen || detailEntry || extractEntry || trashOpen) {
+          return;
+        }
+        if (entries.length === 0) {
+          return;
+        }
+        event.preventDefault();
+        toggleSelectAll();
+        return;
+      }
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
         return;
       }
@@ -4021,7 +4035,7 @@ function ClipboardToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (ta
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [detailEntry, extractEntry, manualOpen, page, pageCount, settingsOpen, trashOpen, trashPage, trashPageCount]);
+  }, [detailEntry, entries, extractEntry, manualOpen, page, pageCount, settingsOpen, trashOpen, trashPage, trashPageCount]);
 
   function registerEntryNode(id: string, node: HTMLElement | null) {
     if (node) {
@@ -4158,6 +4172,28 @@ function ClipboardToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (ta
     toast(`已彻底删除${ids.length}个记录`);
     await loadTrash(trashPage);
     await loadClipboard();
+  }
+
+  async function clearTrash() {
+    const removed = await invoke<number>("clipboard_purge_trash");
+    toast(removed > 0 ? `已清空回收站，共${removed}个记录` : "回收站已为空");
+    setSelectedIds(new Set());
+    await loadTrash(0);
+    setTrashPage(0);
+    await loadClipboard();
+  }
+
+  function closeTrashClearConfirm() {
+    setTrashClearClosing(true);
+    window.setTimeout(() => {
+      setTrashClearOpen(false);
+      setTrashClearClosing(false);
+    }, 180);
+  }
+
+  async function confirmClearTrash() {
+    closeTrashClearConfirm();
+    await clearTrash();
   }
 
   async function changeTrashPage(page: number) {
@@ -4364,13 +4400,23 @@ function ClipboardToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (ta
         <ClipboardTrashDialog
           closing={closingDialog === "trash"}
           entries={trashEntries}
+          keyboardBlocked={Boolean(detailEntry || extractEntry || settingsOpen || manualOpen)}
           page={trashPage}
           total={trashTotal}
           onClose={() => closeClipboardDialog("trash")}
           onOpenDetail={(entry) => setDetailEntry(entry)}
           onPageChange={(page) => void changeTrashPage(page)}
+          onClearAll={() => setTrashClearOpen(true)}
           onPurge={(ids) => void purgeTrashEntries(ids)}
           onRestore={(ids) => void restoreTrashEntries(ids)}
+        />
+      ) : null}
+
+      {trashClearOpen ? (
+        <ClipboardTrashClearDialog
+          closing={trashClearClosing}
+          onClose={closeTrashClearConfirm}
+          onConfirm={() => void confirmClearTrash()}
         />
       ) : null}
 
@@ -4446,6 +4492,12 @@ function ClipboardSettingsDialog({
             label="全局监听"
             onChange={(value) => void onUpdateSettings({ listening: value })}
           />
+          <ToggleRow
+            checked={snapshot.settings.notifications}
+            description="真实 Ctrl+C 复制与快捷粘贴时，在屏幕左下角显示提示"
+            label="系统通知"
+            onChange={(value) => void onUpdateSettings({ notifications: value })}
+          />
           <div className="clipboard-setting-grid">
             <label>
               保存天数
@@ -4497,8 +4549,10 @@ function ClipboardSettingsDialog({
 function ClipboardTrashDialog({
   closing,
   entries,
+  keyboardBlocked,
   page,
   total,
+  onClearAll,
   onClose,
   onOpenDetail,
   onPageChange,
@@ -4507,8 +4561,10 @@ function ClipboardTrashDialog({
 }: {
   closing: boolean;
   entries: ClipboardEntry[];
+  keyboardBlocked: boolean;
   page: number;
   total: number;
+  onClearAll: () => void;
   onClose: () => void;
   onOpenDetail: (entry: ClipboardEntry) => void;
   onPageChange: (page: number) => void;
@@ -4524,6 +4580,25 @@ function ClipboardTrashDialog({
   useEffect(() => {
     setSelectedIds((current) => new Set(entries.filter((entry) => current.has(entry.id)).map((entry) => entry.id)));
   }, [entries]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (keyboardBlocked || event.defaultPrevented || isTextInputTarget(event.target)) {
+        return;
+      }
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") {
+        return;
+      }
+      if (entries.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      toggleSelectAll();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [entries, keyboardBlocked, selectedIds]);
 
   function toggleSelected(id: string) {
     setSelectedIds((current) => {
@@ -4562,7 +4637,10 @@ function ClipboardTrashDialog({
             <h2>回收站</h2>
             <p>删除记录最长保留 30 天。</p>
           </div>
-          <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
+          <div className="clipboard-trash-header-actions">
+            <button className="secondary-action icon-text-action danger-action" disabled={total === 0} onClick={onClearAll} type="button"><Trash2 size={12} />全部清空</button>
+            <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
+          </div>
         </header>
         <div className="clipboard-modal-body clipboard-trash-list" key={page}>
           {entries.map((entry) => (
@@ -4599,6 +4677,36 @@ function ClipboardTrashDialog({
             <span>{page + 1} / {pageCount}</span>
             <button aria-label="下一页" disabled={page >= pageCount - 1} onClick={() => onPageChange(page + 1)} type="button"><ChevronRight size={13} /></button>
           </div>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function ClipboardTrashClearDialog({
+  closing,
+  onClose,
+  onConfirm,
+}: {
+  closing: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return createPortal(
+    <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
+      <section aria-label="清空回收站" aria-modal="true" className={`update-dialog ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog">
+        <header className="update-dialog-header">
+          <div className="update-dialog-icon danger"><Trash2 size={16} /></div>
+          <div>
+            <h2>清空回收站</h2>
+            <p>将永久删除回收站内全部记录，删除后无法恢复。</p>
+          </div>
+          <button aria-label="关闭" className="dialog-close-button" onClick={onClose} type="button"><X size={13} /></button>
+        </header>
+        <footer className="update-dialog-actions">
+          <button className="secondary-action" onClick={onClose} type="button">取消</button>
+          <button className="primary-action" onClick={onConfirm} type="button">确认清空</button>
         </footer>
       </section>
     </div>,

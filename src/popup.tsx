@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Copy, ExternalLink, Info, Pin, Scissors, Trash2, X } from "lucide-react";
+import { Copy, ExternalLink, FileText, Info, Pin, Scissors, Trash2, X } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactDOM from "react-dom/client";
@@ -48,6 +48,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 function PopupApp() {
   const [allEntries, setAllEntries] = useState<ClipboardEntry[]>([]);
   const [search, setSearch] = useState("");
+  const [scope, setScope] = useState<"history" | "pinned">("history");
+  const searching = search.trim().length > 0;
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [page, setPage] = useState(0);
   const [pageAnimating, setPageAnimating] = useState(false);
@@ -67,6 +69,8 @@ function PopupApp() {
   const shouldRevealSelectedRef = useRef(false);
   const toastTimerRef = useRef<number | null>(null);
   const toastCloseTimerRef = useRef<number | null>(null);
+  const dialogOpenRef = useRef(false);
+  dialogOpenRef.current = detailEntry !== null || extractEntry !== null;
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -134,15 +138,24 @@ function PopupApp() {
       setLoading(true);
     }
     try {
-      const [pinnedResult, historyResult] = await withTimeout(
-        Promise.all([
-          invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "pinned", search, offset: 0, limit: 500 } }),
-          invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "history", search, offset: 0, limit: 500 } }),
-        ]),
-        1800,
-        "clipboard query",
-      );
-      setAllEntries([...pinnedResult.entries, ...historyResult.entries]);
+      if (searching) {
+        const [pinnedResult, historyResult] = await withTimeout(
+          Promise.all([
+            invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "pinned", search, offset: 0, limit: 500 } }),
+            invoke<ClipboardQueryResult>("clipboard_query", { input: { scope: "history", search, offset: 0, limit: 500 } }),
+          ]),
+          1800,
+          "clipboard query",
+        );
+        setAllEntries([...pinnedResult.entries, ...historyResult.entries]);
+      } else {
+        const result = await withTimeout(
+          invoke<ClipboardQueryResult>("clipboard_query", { input: { scope, search, offset: 0, limit: 500 } }),
+          1800,
+          "clipboard query",
+        );
+        setAllEntries(result.entries);
+      }
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -151,7 +164,7 @@ function PopupApp() {
         setLoading(false);
       }
     }
-  }, [search]);
+  }, [scope, search, searching]);
 
   useEffect(() => {
     void invoke("push_frontend_debug_log", { level: "frontend", message: "clipboard_popup.mounted" });
@@ -170,7 +183,7 @@ function PopupApp() {
     setPage(0);
     setSelectedIndex(0);
     setOpenActionId(null);
-  }, [search]);
+  }, [scope, search]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadEntries(), 120);
@@ -411,6 +424,18 @@ function PopupApp() {
     return current === previous ? null : current;
   }
 
+  function refocusSearchOnBlur(event: React.FocusEvent<HTMLInputElement>) {
+    const next = event.relatedTarget;
+    if (next instanceof Element && !document.querySelector(".popup-shell")?.contains(next)) {
+      return;
+    }
+    window.setTimeout(() => {
+      if (!dialogOpenRef.current && document.hasFocus()) {
+        inputRef.current?.focus({ preventScroll: true });
+      }
+    }, 0);
+  }
+
   return (
     <main className="popup-shell" onContextMenu={(event) => event.preventDefault()} onPointerDownCapture={closeOpenActionsFromOutside}>
       <div className="popup-drag-strip-wrap">
@@ -426,8 +451,12 @@ function PopupApp() {
           onMouseUp={() => setWindowDragging(false)}
         />
       </div>
-      <section className="popup-toolbar">
-        <input ref={inputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索剪贴板历史" />
+      <section className={`popup-toolbar ${searching ? "searching" : ""}`}>
+        <div aria-hidden={searching} aria-label="切换历史与固定" className="popup-scope-switch" inert={searching} role="tablist">
+          <button aria-label="历史" aria-selected={scope === "history"} className={scope === "history" ? "active" : ""} onClick={() => setScope("history")} role="tab" title="历史" type="button"><FileText size={15} /></button>
+          <button aria-label="固定" aria-selected={scope === "pinned"} className={scope === "pinned" ? "active" : ""} onClick={() => setScope("pinned")} role="tab" title="固定" type="button"><Pin size={15} fill={scope === "pinned" ? "currentColor" : "none"} /></button>
+        </div>
+        <input ref={inputRef} onBlur={refocusSearchOnBlur} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索剪贴板" />
         <button aria-label={pinned ? "Unpin window" : "Pin window"} className={`popup-icon-button popup-pin-button ${pinned ? "active" : ""}`} onClick={toggleWindowPinned} title={pinned ? "Unpin" : "Pin"} type="button">
           <Pin size={18} fill={pinned ? "currentColor" : "none"} />
         </button>
@@ -444,10 +473,10 @@ function PopupApp() {
             <button onClick={() => void loadEntries()} type="button">重试</button>
           </div>
         ) : null}
-        {!loading && !error && pageEntries.length === 0 ? <p className="popup-empty">暂无剪贴板历史</p> : null}
+        {!loading && !error && pageEntries.length === 0 ? <p className="popup-empty">{searching ? "没有匹配的内容" : scope === "pinned" ? "暂无固定内容" : "暂无剪贴板历史"}</p> : null}
         {!loading && !error ? pageEntries.map((entry, index) => (
           <React.Fragment key={entry.id}>
-            {sectionLabelFor(entry, index) ? <p className="popup-label">{sectionLabelFor(entry, index)}</p> : null}
+            {searching && sectionLabelFor(entry, index) ? <p className="popup-label">{sectionLabelFor(entry, index)}</p> : null}
             <PopupEntryCard
               actionsOpen={openActionId === entry.id}
               entry={entry}

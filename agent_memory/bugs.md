@@ -13,6 +13,11 @@
 - `.codex/config.toml`（`sandbox_mode = "danger-full-access"`）是 Codex 遗留本地配置，DSH 不读取；保持未跟踪，不提交、不复制到其他环境。
 - Git Bash 的 PATH 中没有 `npm`（仅 `node`）；构建命令需在 PowerShell 执行，否则会把环境缺失误判为构建失败。
 - 本机 DSH Windows 沙箱下 `vite build` 会因 esbuild 子进程管道返回 `spawn EPERM`；这是沙箱限制，不是项目故障。验证时可用 `npx tsc --noEmit`，或对 `npm run build` 一次性放宽沙箱权限。
+- 2026-10-31 发现：系统 `%TEMP%`（`C:\\Users\\THE\\AppData\\Local\\Temp`）对测试子进程返回 `Os { code: 5, PermissionDenied }`，导致 `window_pinner` 3 个使用 `env::temp_dir()` 的测试失败；PowerShell 本身可正常写该目录。将 `TEMP`/`TMP` 指向 `src-tauri/target/test-tmp` 后 12/12 全部通过。属环境问题，不是代码回归；后续跑测试若再遇此错误，先改临时目录。
+- 2026-10-31 发现（重要）：**在工作区内编译出的 EXE 会被 DSH 执行沙箱限制为只能写工作区**。直接 `npm run tauri dev` 会在 setup 阶段 panic：`保存存储定位文件失败: 拒绝访问 (os error 5)`；同一 EXE 复制到 `%TEMP%` 或 `E:\devtools` 运行正常。可用启动方式：先 `npm run dev` 起 Vite，再把 `src-tauri/target/debug/lightweight-toolset.exe` 复制到 `%TEMP%` 下运行。
+- 2026-10-31 通知限制：`Ctrl+C / Ctrl+X / Ctrl+V` 由普通权限低级键盘钩子捕获，**管理员权限窗口里的按键不会触发提示**（已与用户确认放弃提权）；浮窗只出现在主显示器；Win11 才有 DWM 圆角/半透明材质，其余系统退回纯色卡片。
+- 2026-10-31 通知确认机制：复制/剪切必须处于 800ms 意图窗口内且 `WM_CLIPBOARDUPDATE` 到达才提示；程序化写入、界面复制按钮不会提示；快捷弹窗的模拟粘贴由命令直接触发“已粘贴”。
+- 开发版与已安装版共享同一 App ID 与数据目录（当前定位文件指向 `D:\轻量化工具集`），本机测试会读写真实剪贴板数据；执行“全部清空”等破坏性操作前要确认数据归属。
 
 # 失败尝试 / 限制
 

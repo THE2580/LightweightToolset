@@ -1,26 +1,30 @@
 # Goal
 
-- 完成项目从 Codex 到 DSH 的接管：把 `LightweightToolset` 完整迁入 `E:\DeepSeek_Harness\Workspace\LightweightToolset`，补齐项目级 `AGENTS.md`，并把 `agent_memory/` 从本机忽略状态改为随仓库版本控制。
+- 剪贴板工具优化迭代：按用户逐项给出的清单改进现有功能、增加新功能；当前第 1 项为回收站“全部清空”。
 
 # Current Focus
 
-- 状态：迁移与治理完成，已本地提交（`docs: add agents guide and track project memory`），未推送，`master` 领先远程 1 个提交。
-- 2026-10-23 完成：完整复制（含 Git 历史、`node_modules`、`target`）；新增 `AGENTS.md`；`.gitignore` 移除 `/agent_memory/`；五个记忆文件按新现场刷新。
-- 迁移后验证通过：`git log`/`git status` 与原仓库一致；`tsc`、`npm run build`、`cargo check` 均通过；串行库测试 12/12 通过。
-- 保留现场：`M src-tauri/src/window_service.rs`（纯格式化噪声）、`?? .codex/`，不处理、不提交。
+- 状态：剪贴板迭代 6 项全部验收通过，已本地提交（`feat: improve clipboard workflows and notifications`，未推送）。
+- 第 1 项已实现：回收站标题栏右侧“全部清空”按钮 + 后端 `clipboard_purge_trash`；空回收站禁用；点击先弹二次确认（不可恢复提示），确认后清空并 Toast 回报条数、刷新列表与统计；取消不改数据。
+- 第 2 项已实现：`Ctrl+A` 全选当前页，历史/固定/回收站三处生效；不跨页、不抢占输入框；已全选时再按取消。
+- 第 3 项已实现：快捷弹窗标题栏单行紧凑布局 + 仅图标“历史/固定”分段（默认历史）；列表与搜索只作用于当前分段；面板宽高仍由设置控制。
+- 第 4 项已实现：搜索改为全局；非搜索保持分段布局，搜索有内容时隐藏分段、搜索框铺满，结果合并固定/历史、固定置顶并显示分组标签；固定操作立即重排；清空搜索恢复原布局与分段。布局切换已补 220ms 过渡（分段收起/淡出、搜索框连续变宽），非硬切。
+- 第 5 项已实现：快捷弹窗焦点驻留——点击面板内任意非输入区域后焦点回到搜索框（异步拉回，不阻断点击）；详情/提取弹窗打开或窗口失焦时不抢焦点。
+- 第 6 项已按 WinTips 落地并验收：单浮窗、任务栏上方居中、×N 计数不排队；复制/剪切经 800ms 意图 + 剪贴板更新确认，粘贴即时；2s 停留；宽度随位数扩展；按住 0.5s 节流；图标/徽章动效；保留“系统通知”开关与工具生命周期联动。
+- 改动已提交；自动化验证均通过，真机 UI 已由用户验收。
 
 # Remaining
 
-- 推送 `master` 需用户明确授权；后续版本发布同样需授权。
+- 等待用户验证第 6 项系统通知（真实复制、粘贴、排队、开关、停用）。
+- 后续剪贴板条目待用户给出；本地提交与推送均需用户明确授权。
 
 # Verification
 
-- `git log --oneline -n 3`：`7f9d66d`（v0.4.4）、`f3e47e6`、`2a464cc`，与原仓库一致。
-- `npx tsc --noEmit` 退出码 0；`npm run build` 成功（7.27s）；`cargo check` 成功（3m48s）。
-- 成功标准：项目可在新路径直接开发；记忆缺失/丢失风险消除（入库）；规范可被下一个线程直接读取。
+- `npx tsc --noEmit` 通过；`npm run build` 通过；`cargo check`/`cargo build` 通过（通知模块无警告）；串行 12/12 单测通过（`TEMP` 需指向工作区，见 `bugs.md`）。
+- 第 6 项成功标准：真实 Ctrl+C/X 在剪贴板更新后提示、Ctrl+V 即时提示、程序化复制不提示；同动作显示 ×N；2.4s 后淡出；开关关闭或工具停用后完全不弹；浮窗点击穿透、不抢焦点。
 
 # Resume Here
 
-- 先执行 `git status --short` 与 `git log --oneline -n 3`，确认提交存在且工作树只剩既有现场（`M src-tauri/src/window_service.rs`、`?? .codex/`）。
-- 进入等待状态；用户给出新任务时，先读 `AGENTS.md`、`context.md`、`progress.md`、`bugs.md`，再读相关源码。
-- 需要推送时先取得用户明确授权。
+- 先 `git status --short` 确认改动清单与既有现场；再读 `src-tauri/src/clipboard_notify.rs`（队列/窗口/钩子）与 `src/notification.tsx`。
+- 若通知未出现：查应用内调试日志与 `%TEMP%\lt-dev-run\stderr.log`，优先确认 `tool-clipboard-notify` 窗口是否创建、`clipboard_notify_ready` 是否到达。
+- 跑验证时设置 `TEMP`/`TMP` 到工作区临时目录，再执行 `cargo test --lib -- --test-threads=1`；改 Rust 后需重新 build + 复制到 `%TEMP%` 重启开发版。

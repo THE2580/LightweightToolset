@@ -648,6 +648,8 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .clipboard-trash-restore { display: grid; width: 24px; height: 24px; place-self: start center; margin-top: 8px; place-items: center; border: 0; border-radius: 5px; color: var(--muted-text); background: transparent; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity 140ms ease, background-color 140ms ease, color 140ms ease; }
 .clipboard-trash-entry:hover .clipboard-trash-restore, .clipboard-trash-entry:focus-within .clipboard-trash-restore { opacity: 1; pointer-events: auto; }
 .clipboard-trash-restore:hover { color: var(--primary); background: var(--primary-soft); }
+.clipboard-trash-header-actions { display: inline-flex; align-items: center; gap: 6px; }
+.clipboard-trash-header-actions .secondary-action { height: 26px; padding: 0 8px; border-radius: 6px; white-space: nowrap; font-size: 10px; }
 .clipboard-trash-actions { align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; padding: 5px 14px; border-top: 1px solid var(--border); background: var(--panel-bg); }
 .clipboard-trash-bulk-actions { display: inline-flex; min-width: 0; min-height: 28px; align-items: center; gap: 8px; opacity: 0; pointer-events: none; transform: translateY(3px); transition: opacity 150ms ease, transform 150ms ease; }
 .clipboard-trash-bulk-actions .secondary-action { height: 28px; min-width: 76px; flex: 0 0 auto; padding: 0 7px; border-radius: 6px; white-space: nowrap; font-size: 9px; }
