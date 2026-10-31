@@ -5,9 +5,9 @@
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD 为本次 `feat: improve clipboard workflows and notifications` 提交（本地，未推送），领先 `origin/master` 2 个提交。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD `76f438f`，已推送 `origin/master`，工作树与远程同步。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`?? .codex/`。
-- 本轮改动已提交（剪贴板 6 项 + 记忆更新）；提交后新增未暂存改动：`src/App.css`（设置弹窗 400px、分词标题单行）、`src/App.tsx` / `src/popup.tsx`（顺序化分词、下标选择、标题布局）、`src/popup.css`（分词标题 flex 单行）。
+- 剪贴板迭代全部改动已提交并推送（`feat: improve clipboard workflows and notifications`、`fix: refine clipboard token extraction and settings dialog`）。
 
 # Active Files
 

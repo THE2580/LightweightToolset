@@ -29,7 +29,7 @@
 # 已完成里程碑
 
 - 2026-10-31：分词逻辑定稿并通过验收，不再改动。已知不完美（接受）：序号 `1.` `2.` 会带句点成词、`×N` 只保留 `N`、`Intl.Segmenter` 会把“的/和/就”等单字虚词保留为词。后续如要再动，按 `bugs.md` 的升级方向处理。
-- 2026-10-31：剪贴板迭代 6 项（回收站全部清空、Ctrl+A、快捷弹窗分段、全局搜索与过渡、焦点驻留、WinTips 式系统通知）全部实现并经用户验收，已本地提交（`feat: improve clipboard workflows and notifications`，未推送）。
+- 2026-10-31：剪贴板迭代 7 项全部实现并经用户验收，已提交并推送 `origin/master`（`feat: improve clipboard workflows and notifications` + `fix: refine clipboard token extraction and settings dialog`，HEAD `76f438f`）。
 
 - 五个工具已实现并发布；窗口置顶第一版、深浅主题、跨窗口主题同步、通知、管理员游戏输入和修饰符去重均已通过相应自动或真机验收。
 - `v0.4.3` 已发布，但其 `200ms × 150` 精确字符串匹配轮询被确认只是绕过错误，不是有效根因修复。
