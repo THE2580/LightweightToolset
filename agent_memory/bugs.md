@@ -15,6 +15,7 @@
 - 本机 DSH Windows 沙箱下 `vite build` 会因 esbuild 子进程管道返回 `spawn EPERM`；这是沙箱限制，不是项目故障。验证时可用 `npx tsc --noEmit`，或对 `npm run build` 一次性放宽沙箱权限。
 - 2026-10-31 发现：系统 `%TEMP%`（`C:\\Users\\THE\\AppData\\Local\\Temp`）对测试子进程返回 `Os { code: 5, PermissionDenied }`，导致 `window_pinner` 3 个使用 `env::temp_dir()` 的测试失败；PowerShell 本身可正常写该目录。将 `TEMP`/`TMP` 指向 `src-tauri/target/test-tmp` 后 12/12 全部通过。属环境问题，不是代码回归；后续跑测试若再遇此错误，先改临时目录。
 - 2026-10-31 发现（重要）：**在工作区内编译出的 EXE 会被 DSH 执行沙箱限制为只能写工作区**。直接 `npm run tauri dev` 会在 setup 阶段 panic：`保存存储定位文件失败: 拒绝访问 (os error 5)`；同一 EXE 复制到 `%TEMP%` 或 `E:\devtools` 运行正常。可用启动方式：先 `npm run dev` 起 Vite，再把 `src-tauri/target/debug/lightweight-toolset.exe` 复制到 `%TEMP%` 下运行。
+- 2026-10-31 提权后的已知尾巴：此前生成的管理员输入 helper 副本（`%APPDATA%\com.the.lightweight-toolset\elevated_input_helper_*.exe`）不会自动删除，可在确认新版本稳定后手动清理；`window_pinner_watchdog_*.exe` 仍由看门狗机制管理，不受影响。
 - 分词已定稿但仍有已知不完美（2026-10-31 与用户确认接受）：① 序号 `1.` `2.` 因通用字符类包含 `.`，会带句点成词；② `×N` 中 `×` 被当作非字母符号过滤，只剩 `N`；③ `Intl.Segmenter` 保留“的/和/就”等单字虚词。若后续要优化，优先去掉序号末尾标点、把 `×N` 合并为整词，再考虑虚词过滤。
 - 2026-10-31 布局陷阱：本机显示缩放 135%，主窗口 912×598 的 CSS 视口只有 676×443；给固定高度弹窗写死大尺寸会溢出窗口。弹窗高度需用 `100vh` 兜底，不能只按逻辑像素估算。
 - 2026-10-31 通知限制：`Ctrl+C / Ctrl+X / Ctrl+V` 由普通权限低级键盘钩子捕获，**管理员权限窗口里的按键不会触发提示**（已与用户确认放弃提权）；浮窗只出现在主显示器。

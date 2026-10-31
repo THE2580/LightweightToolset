@@ -28,7 +28,7 @@
 
 # 已完成里程碑
 
-- 2026-10-31：分词逻辑定稿并通过验收，不再改动。已知不完美（接受）：序号 `1.` `2.` 会带句点成词、`×N` 只保留 `N`、`Intl.Segmenter` 会把“的/和/就”等单字虚词保留为词。后续如要再动，按 `bugs.md` 的升级方向处理。
+- 2026-10-31：正式采用整体提权（`requireAdministrator`，`src-tauri/windows-app-manifest.xml`），并移除按键统计的管理员输入 helper（TCP IPC、自我复制 EXE、`--elevated-input-helper` 分支、`ELEVATED_INPUT_ACTIVE` 门控及相关测试）。主程序 High 后进程内钩子已覆盖同级及更低完整性窗口；UAC 安全桌面/System 进程仍不可见。构建与 11/11 单测通过，待真机复测按键统计。
 - 2026-10-31：剪贴板迭代 7 项全部实现并经用户验收，已提交并推送 `origin/master`（`feat: improve clipboard workflows and notifications` + `fix: refine clipboard token extraction and settings dialog`，HEAD `76f438f`）。
 
 - 五个工具已实现并发布；窗口置顶第一版、深浅主题、跨窗口主题同步、通知、管理员游戏输入和修饰符去重均已通过相应自动或真机验收。
