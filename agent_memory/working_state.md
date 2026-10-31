@@ -7,7 +7,7 @@
 
 - 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD `76f438f`，已推送 `origin/master`，工作树与远程同步。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`?? .codex/`。
-- 剪贴板迭代全部改动已提交并推送；提权已正式落地（`9ee7668 feat: run application as administrator`），按键统计 helper 已移除（待提交）。工作树仅剩 `window_service.rs` 与 `.codex/` 现场。
+- 剪贴板迭代全部改动已提交并推送；提权已正式落地（`9ee7668 feat: run application as administrator`），按键统计 helper 已移除并推送（`e1cbcf2 refactor: drop elevated input helper`）。工作树仅剩 `window_service.rs` 与 `.codex/` 现场。
 
 # Active Files
 
@@ -25,8 +25,8 @@
 - 2026-10-31 `cargo check` 通过（无警告）；`cargo build` 通过（细节修正后 35.76s）。
 - 2026-10-31 `npx tsc --noEmit` 通过；`npm run build` 通过（分词定位版 5.79s）。
 - 2026-10-31 分词抽样（修正后）：路径整体保留、后续句子正常切词、三个“方案”独立；全选提取含首尾标点可还原原句。
-- 2026-10-31 串行全量单测 12/12 通过（`TEMP`/`TMP` 需指向 `src-tauri/target/test-tmp`，见 `bugs.md`）。
-- 开发版已重启：Vite `http://localhost:1420`（后台任务 `pwsh-fdd9ad1fdcc449e2`）+ `%TEMP%\lt-dev-run\` 的 debug EXE（pid 24348（提权实验版，`elevated=True`）。
+- 2026-10-31 串行全量单测 11/11 通过（移除 helper 后；`TEMP`/`TMP` 需指向 `src-tauri/target/test-tmp`，见 `bugs.md`）。
+- 开发版已重启：Vite `http://localhost:1420`（后台任务 `pwsh-fdd9ad1fdcc449e2`）+ `%TEMP%\lt-dev-run\` 的 debug EXE（pid 22796（提权正式版，helper 已移除）。
 - 2026-10-31 CDP 实测：窗口 CSS 视口 676×443（135% 缩放）；设置弹窗最终固定 400px，落在 403px 可用区中央（预计 21.5px 上下留白），主体可滚动。
 - 未做：浮窗外观、×N 宽度自适应、按住 0.5s 节流与图标动效未真机验证；注入键被忽略，自动化无法模拟真实复制。
 
