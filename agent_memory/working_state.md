@@ -5,9 +5,9 @@
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD `76f438f`，已推送 `origin/master`，工作树与远程同步。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；`v0.5.0` 已发布（tag 指向 `8c68e2b`），已推送 `origin/master` 与 tag。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`?? .codex/`。
-- 剪贴板迭代全部改动已提交并推送；提权已正式落地（`9ee7668 feat: run application as administrator`），按键统计 helper 已移除并推送（`e1cbcf2 refactor: drop elevated input helper`）。工作树仅剩 `window_service.rs` 与 `.codex/` 现场。
+- 提权（`9ee7668`）、helper 移除（`e1cbcf2`）、版本（`8c68e2b`）均已推送；GitHub Release 资产 `LightweightToolset_0.5.0_x64-setup.exe`。
 
 # Active Files
 

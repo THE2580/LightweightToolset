@@ -47,6 +47,8 @@
 
 # 发布索引
 
+- `v0.5.0` / `8c68e2b`：剪贴板七项（回收站全部清空、Ctrl+A、快捷弹窗分段/全局搜索/过渡/焦点驻留、分词重构、系统通知）、整体提权（`requireAdministrator`）、移除管理员输入 helper。资产 `LightweightToolset_0.5.0_x64-setup.exe`，SHA-256 `4E1CE15BD8836E2332032732AAE7F2EF2DA5936E184C84A86F98DDD3EA36CD6F`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.5.0`。
+
 - `v0.4.4` / `7f9d66d`：AppState 提前注册、首次快照后后台初始化 watchdog/helper/tools/hotkeys、移除 state-not-managed 轮询并增加 runtime 状态反馈。安装包 SHA-256 `8570AED8E3E34B156F33BA9A1349AC14A20F51216B6DEB846277F59162C738B9`。
 - `v0.4.3` / `f3e47e6`：AppState 首次快照有限重试；该方案现确认未解决 P0 根因。安装包 SHA-256 `15CD38C33C121DD468849BABB1AD484C40AC68B4CDB712297F17F1207E1800E0`。
 - `v0.4.2` / `2a464cc`：主题实时同步、窗口置顶 watchdog/通知声音、管理员输入 helper、修饰符去重。SHA-256 `78C287260E1FB3796A60F9D69F26CAA0B8742A60E3A0A9A3FF91772527FB7D73`。
