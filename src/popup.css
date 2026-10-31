@@ -70,7 +70,9 @@ button:focus-visible { outline: 2px solid rgba(47, 94, 232, 0.28); outline-offse
 .popup-detail-dialog { width: min(410px, calc(100vw - 36px)); height: min(292px, calc(100vh - 78px)); display: flex; flex-direction: column; }
 .popup-extract-dialog { width: min(430px, calc(100vw - 36px)); height: min(258px, calc(100vh - 86px)); display: flex; flex-direction: column; }
 .popup-dialog-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid #e7edf6; background: #f6f8fb; }
-.popup-extract-dialog .popup-dialog-header { grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 10px 8px 9px 14px; }
+.popup-extract-dialog .popup-dialog-header { display: flex; align-items: center; gap: 8px; padding: 10px 8px 9px 14px; }
+.popup-extract-dialog .popup-dialog-header > div:nth-child(2) { flex: 1 1 auto; min-width: 0; }
+.popup-extract-dialog .popup-dialog-header h2 { white-space: nowrap; }
 .popup-extract-dialog .popup-dialog-icon { display: grid; width: 28px; height: 28px; border-radius: 8px; }
 .popup-dialog-header h2 { margin: 0; color: #172033; font-size: 14px; line-height: 1.2; }
 .popup-dialog-header p { max-width: 210px; margin: 3px 0 0; color: #65748b; font-size: 10px; line-height: 1.35; }

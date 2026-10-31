@@ -586,6 +586,11 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .clipboard-manual input:focus, .clipboard-manual textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent); }
 .clipboard-manual .primary-action { align-self: start; }
 .clipboard-modal { width: min(430px, 100%); }
+.clipboard-settings-dialog { display: flex; height: 400px; max-height: calc(100vh - 24px); flex-direction: column; }
+.clipboard-extract-dialog .update-dialog-header h2 { white-space: nowrap; }
+.clipboard-settings-dialog .update-dialog-header,
+.clipboard-settings-dialog .update-dialog-actions { flex: 0 0 auto; }
+.clipboard-settings-dialog .clipboard-modal-body { flex: 1 1 auto; min-height: 0; max-height: none; }
 .clipboard-modal-body { display: grid; gap: 9px; max-height: min(420px, 70vh); overflow: auto; padding: 12px 14px; }
 .clipboard-modal-field { display: grid; gap: 5px; color: var(--muted-text); font-size: 9px; }
 .clipboard-modal-field input, .clipboard-modal-field textarea { width: 100%; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--panel-bg); font: inherit; font-size: 10px; outline: none; }

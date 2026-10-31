@@ -3891,7 +3891,7 @@ function ClipboardToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (ta
   const [extractEntry, setExtractEntry] = useState<ClipboardEntry | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [openActionId, setOpenActionId] = useState<string | null>(null);
-  const [selectedTokens, setSelectedTokens] = useState<string[]>([]);
+  const [selectedTokens, setSelectedTokens] = useState<number[]>([]);
   const [closingDialog, setClosingDialog] = useState<"settings" | "trash" | "manual" | "detail" | "extract" | null>(null);
   const entryNodeMapRef = useRef(new Map<string, HTMLElement>());
   const previousEntryRectsRef = useRef(new Map<string, DOMRect>());
@@ -4246,7 +4246,17 @@ function ClipboardToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (ta
     if (selectedTokens.length === 0) {
       return;
     }
-    const result = await invoke<{ message: string }>("clipboard_copy_derived_text", { text: selectedTokens.join("") });
+    const ordered = selectedTokens.slice().sort((left, right) => left - right);
+    const first = extractTokens[ordered[0]];
+    const last = extractTokens[ordered[ordered.length - 1]];
+    if (!first || !last) {
+      return;
+    }
+    const source = extractEntry?.text ?? "";
+    const start = ordered[0] === 0 ? 0 : first.start;
+    const end = ordered[ordered.length - 1] === extractTokens.length - 1 ? source.length : last.end;
+    const text = source.slice(start, end);
+    const result = await invoke<{ message: string }>("clipboard_copy_derived_text", { text });
     closeClipboardDialog("extract");
     toast(result.message || "已复制提取内容");
   }
@@ -4448,7 +4458,7 @@ function ClipboardToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (ta
           tokens={extractTokens}
           onClose={() => closeClipboardDialog("extract")}
           onConfirm={() => void copyExtractedTokens()}
-          onToggle={(token) => setSelectedTokens((current) => current.includes(token) ? current.filter((item) => item !== token) : [...current, token])}
+          onToggle={(index) => setSelectedTokens((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index])}
         />
       ) : null}
 
@@ -4476,7 +4486,7 @@ function ClipboardSettingsDialog({
 }) {
   return createPortal(
     <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
-      <section className={`update-dialog clipboard-modal ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="剪贴板设置">
+      <section className={`update-dialog clipboard-modal clipboard-settings-dialog ${closing ? "closing" : ""}`} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="剪贴板设置">
         <header className="update-dialog-header">
           <div className="update-dialog-icon"><Settings size={16} /></div>
           <div>
@@ -4494,7 +4504,7 @@ function ClipboardSettingsDialog({
           />
           <ToggleRow
             checked={snapshot.settings.notifications}
-            description="真实 Ctrl+C 复制与快捷粘贴时，在屏幕左下角显示提示"
+            description="真实复制、剪切与粘贴时在任务栏上方显示提示"
             label="系统通知"
             onChange={(value) => void onUpdateSettings({ notifications: value })}
           />
@@ -4959,9 +4969,9 @@ function ClipboardExtractDialog({
   entry: ClipboardEntry;
   onClose: () => void;
   onConfirm: () => void;
-  onToggle: (token: string) => void;
-  selectedTokens: string[];
-  tokens: string[];
+  onToggle: (index: number) => void;
+  selectedTokens: number[];
+  tokens: ClipboardToken[];
 }) {
   return createPortal(
     <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={onClose}>
@@ -4979,8 +4989,8 @@ function ClipboardExtractDialog({
         </header>
         <div className="clipboard-token-grid">
           {tokens.map((token, index) => (
-            <button className={selectedTokens.includes(token) ? "selected" : ""} key={`${token}-${index}`} onClick={() => onToggle(token)} type="button">
-              {token}
+            <button className={selectedTokens.includes(index) ? "selected" : ""} key={`${token.text}-${index}`} onClick={() => onToggle(index)} type="button">
+              {token.text}
             </button>
           ))}
           {tokens.length === 0 ? <p className="clipboard-empty">没有可提取片段</p> : null}
@@ -5582,9 +5592,40 @@ function sourceLabel(source: string) {
   return "复制";
 }
 
-function extractClipboardTokens(text: string) {
-  const matches = text.match(/[a-zA-Z]+:\/\/[^\s"'<>]+|[a-zA-Z]:\\[^\r\n]+|\\\\[^\s]+|[\w.-]+@[\w.-]+\.[A-Za-z]{2,}|[\w.-]+\.[A-Za-z]{2,}(?:\/[^\s]*)?|--?[A-Za-z][\w-]*|v?\d+(?:\.\d+){1,}|[\u4e00-\u9fa5]{2,}|[A-Za-z0-9_./\\:-]{4,}/g) ?? [];
-  return Array.from(new Set(matches)).slice(0, 80);
+type ClipboardToken = { text: string; start: number; end: number };
+type WordSegment = { segment: string; isWordLike?: boolean };
+type WordSegmenterLike = { segment(input: string): Iterable<WordSegment> };
+type WordSegmenterCtor = new (locale: string, options: { granularity: "word" }) => WordSegmenterLike;
+
+function extractClipboardTokens(text: string): ClipboardToken[] {
+  const segmenterCtor = (Intl as unknown as { Segmenter?: WordSegmenterCtor }).Segmenter;
+  const segmenter = segmenterCtor ? new segmenterCtor("zh-CN", { granularity: "word" }) : null;
+  const tokens: ClipboardToken[] = [];
+  const pattern =
+    /https?:\/\/[^\s"'<>]+|[a-zA-Z]:\\[^\s]+|\\\\[^\s]+|[\w.-]+@[\w.-]+\.[A-Za-z]{2,}|[\w.-]+\.[A-Za-z]{2,}(?:\/[^\s]*)?|--?[A-Za-z][\w-]*|v?\d+(?:\.\d+)+|[\u3400-\u9fff]+|[A-Za-z0-9_./\\:-]+/g;
+  for (const match of text.matchAll(pattern)) {
+    const value = match[0];
+    const base = match.index ?? 0;
+    if (segmenter && /^[\u3400-\u9fff]+$/.test(value)) {
+      let offset = 0;
+      for (const item of segmenter.segment(value)) {
+        if (item.isWordLike !== false && /[\p{L}\p{N}]/u.test(item.segment)) {
+          tokens.push({
+            text: item.segment,
+            start: base + offset,
+            end: base + offset + item.segment.length,
+          });
+        }
+        offset += item.segment.length;
+      }
+    } else if (/[\p{L}\p{N}]/u.test(value)) {
+      tokens.push({ text: value, start: base, end: base + value.length });
+    }
+    if (tokens.length >= 1200) {
+      break;
+    }
+  }
+  return tokens.slice(0, 1200);
 }
 
 function normalizeHotkeyDraft(value: string) {

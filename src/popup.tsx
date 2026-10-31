@@ -62,7 +62,7 @@ function PopupApp() {
   const [detailEntry, setDetailEntry] = useState<ClipboardEntry | null>(null);
   const [extractEntry, setExtractEntry] = useState<ClipboardEntry | null>(null);
   const [closingDialog, setClosingDialog] = useState<"detail" | "extract" | null>(null);
-  const [selectedTokens, setSelectedTokens] = useState<string[]>([]);
+  const [selectedTokens, setSelectedTokens] = useState<number[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLElement>(null);
   const entryRefs = useRef(new Map<string, HTMLElement>());
@@ -309,8 +309,18 @@ function PopupApp() {
       return;
     }
     try {
+      const ordered = selectedTokens.slice().sort((left, right) => left - right);
+      const first = extractTokens[ordered[0]];
+      const last = extractTokens[ordered[ordered.length - 1]];
+      if (!first || !last) {
+        return;
+      }
+      const source = extractEntry?.text ?? "";
+      const start = ordered[0] === 0 ? 0 : first.start;
+      const end = ordered[ordered.length - 1] === extractTokens.length - 1 ? source.length : last.end;
+      const text = source.slice(start, end);
       const result = await withTimeout(
-        invoke<{ message: string }>("clipboard_copy_derived_text", { text: selectedTokens.join("") }),
+        invoke<{ message: string }>("clipboard_copy_derived_text", { text }),
         1200,
         "clipboard token copy",
       );
@@ -510,12 +520,12 @@ function PopupApp() {
           onClose={() => closePopupDialog("extract")}
           onConfirm={() => void copyExtractedTokens()}
           onPasteToken={(token) => void pasteTokenAndClose(token)}
-          onSetSelected={(token, selected) => setSelectedTokens((current) => {
-            const exists = current.includes(token);
+          onSetSelected={(index, selected) => setSelectedTokens((current) => {
+            const exists = current.includes(index);
             if (selected) {
-              return exists ? current : [...current, token];
+              return exists ? current : [...current, index];
             }
-            return exists ? current.filter((item) => item !== token) : current;
+            return exists ? current.filter((item) => item !== index) : current;
           })}
         />
       ) : null}
@@ -713,17 +723,17 @@ function PopupExtractDialog({
   onClose: () => void;
   onConfirm: () => void;
   onPasteToken: (token: string) => void;
-  onSetSelected: (token: string, selected: boolean) => void;
-  selectedTokens: string[];
-  tokens: string[];
+  onSetSelected: (index: number, selected: boolean) => void;
+  selectedTokens: number[];
+  tokens: ClipboardToken[];
 }) {
   const dragRef = useRef<{
     anchorIndex: number;
     currentIndex: number;
     startX: number;
     startY: number;
-    snapshot: Set<string>;
-    applied: Set<string>;
+    snapshot: Set<number>;
+    applied: Set<number>;
     nextSelected: boolean;
     moved: boolean;
   } | null>(null);
@@ -736,14 +746,17 @@ function PopupExtractDialog({
     drag.currentIndex = nextIndex;
     const start = Math.min(drag.anchorIndex, nextIndex);
     const end = Math.max(drag.anchorIndex, nextIndex);
-    const nextRange = new Set(tokens.slice(start, end + 1));
-    for (const token of drag.applied) {
-      if (!nextRange.has(token)) {
-        onSetSelected(token, drag.snapshot.has(token));
+    const nextRange = new Set<number>();
+    for (let index = start; index <= end; index += 1) {
+      nextRange.add(index);
+    }
+    for (const index of drag.applied) {
+      if (!nextRange.has(index)) {
+        onSetSelected(index, drag.snapshot.has(index));
       }
     }
-    for (const token of nextRange) {
-      onSetSelected(token, drag.nextSelected);
+    for (const index of nextRange) {
+      onSetSelected(index, drag.nextSelected);
     }
     drag.applied = nextRange;
   }
@@ -759,7 +772,7 @@ function PopupExtractDialog({
       startY: event.clientY,
       snapshot: new Set(selectedTokens),
       applied: new Set(),
-      nextSelected: !selectedTokens.includes(tokens[index]),
+      nextSelected: !selectedTokens.includes(index),
       moved: false,
     };
   }
@@ -788,14 +801,14 @@ function PopupExtractDialog({
     }
   }
 
-  function handleTokenPointerUp(token: string) {
+  function handleTokenPointerUp(index: number) {
     const drag = dragRef.current;
     if (!drag) {
       return;
     }
     dragRef.current = null;
     if (!drag.moved) {
-      onPasteToken(token);
+      onPasteToken(tokens[index].text);
     }
   }
 
@@ -819,16 +832,16 @@ function PopupExtractDialog({
         <div className="popup-token-grid" onPointerLeave={handleTokenPointerCancel}>
           {tokens.map((token, index) => (
             <button
-              className={selectedTokens.includes(token) ? "selected" : ""}
-              key={`${token}-${index}`}
+              className={selectedTokens.includes(index) ? "selected" : ""}
+              key={`${token.text}-${index}`}
               onPointerCancel={handleTokenPointerCancel}
               onPointerDown={(event) => handleTokenPointerDown(event, index)}
               onPointerEnter={() => handleTokenPointerEnter(index)}
               onPointerMove={handleTokenPointerMove}
-              onPointerUp={() => handleTokenPointerUp(token)}
+              onPointerUp={() => handleTokenPointerUp(index)}
               type="button"
             >
-              {token}
+              {token.text}
             </button>
           ))}
           {tokens.length === 0 ? <p className="popup-empty">没有可提取片段</p> : null}
@@ -886,47 +899,44 @@ function formatRelativeTime(value?: number | null) {
   return formatClipboardDate(value).slice(0, 10);
 }
 
-type WordSegmenter = {
-  segment(input: string): Iterable<{ segment: string; isWordLike?: boolean }>;
+type ClipboardToken = { text: string; start: number; end: number };
+type WordSegment = { segment: string; isWordLike?: boolean };
+
+type WordSegmenterLike = {
+  segment(input: string): Iterable<WordSegment>;
 };
 
-type WordSegmenterConstructor = new (locale: string, options: { granularity: "word" }) => WordSegmenter;
+type WordSegmenterConstructor = new (locale: string, options: { granularity: "word" }) => WordSegmenterLike;
 
-function extractClipboardTokens(text: string) {
-  const tokens: string[] = [];
-  const seen = new Set<string>();
-  const addToken = (token: string) => {
-    const normalized = token.trim();
-    if (!normalized || seen.has(normalized)) {
-      return;
-    }
-    seen.add(normalized);
-    tokens.push(normalized);
-  };
-
-  const structuredMatches = text.match(/[a-zA-Z]+:\/\/[^\s"'<>]+|[a-zA-Z]:\\[^\r\n]+|\\\\[^\s]+|[\w.-]+@[\w.-]+\.[A-Za-z]{2,}|[\w.-]+\.[A-Za-z]{2,}(?:\/[^\s]*)?|--?[A-Za-z][\w-]*|v?\d+(?:\.\d+){1,}|[A-Za-z0-9_./\\:-]{4,}/g) ?? [];
-  structuredMatches.forEach(addToken);
-
+function extractClipboardTokens(text: string): ClipboardToken[] {
   const segmenterCtor = (Intl as unknown as { Segmenter?: WordSegmenterConstructor }).Segmenter;
   const segmenter = segmenterCtor ? new segmenterCtor("zh-CN", { granularity: "word" }) : null;
-  const chineseRuns = text.match(/[\u3400-\u9fff]+/g) ?? [];
-  for (const run of chineseRuns) {
-    if (segmenter) {
-      for (const item of segmenter.segment(run)) {
-        if (item.isWordLike !== false && item.segment.length >= 2) {
-          addToken(item.segment);
+  const tokens: ClipboardToken[] = [];
+  const pattern =
+    /https?:\/\/[^\s"'<>]+|[a-zA-Z]:\\[^\s]+|\\\\[^\s]+|[\w.-]+@[\w.-]+\.[A-Za-z]{2,}|[\w.-]+\.[A-Za-z]{2,}(?:\/[^\s]*)?|--?[A-Za-z][\w-]*|v?\d+(?:\.\d+)+|[\u3400-\u9fff]+|[A-Za-z0-9_./\\:-]+/g;
+  for (const match of text.matchAll(pattern)) {
+    const value = match[0];
+    const base = match.index ?? 0;
+    if (segmenter && /^[\u3400-\u9fff]+$/.test(value)) {
+      let offset = 0;
+      for (const item of segmenter.segment(value)) {
+        if (item.isWordLike !== false && /[\p{L}\p{N}]/u.test(item.segment)) {
+          tokens.push({
+            text: item.segment,
+            start: base + offset,
+            end: base + offset + item.segment.length,
+          });
         }
+        offset += item.segment.length;
       }
-    } else if (run.length <= 8) {
-      addToken(run);
-    } else {
-      for (let index = 0; index < run.length - 1; index += 2) {
-        addToken(run.slice(index, index + 2));
-      }
+    } else if (/[\p{L}\p{N}]/u.test(value)) {
+      tokens.push({ text: value, start: base, end: base + value.length });
+    }
+    if (tokens.length >= 1200) {
+      break;
     }
   }
-
-  return tokens.slice(0, 80);
+  return tokens.slice(0, 1200);
 }
 
 ReactDOM.createRoot(document.getElementById("popup-root") as HTMLElement).render(

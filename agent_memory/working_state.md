@@ -7,7 +7,7 @@
 
 - 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD 为本次 `feat: improve clipboard workflows and notifications` 提交（本地，未推送），领先 `origin/master` 2 个提交。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`?? .codex/`。
-- 本轮改动已全部提交（剪贴板 6 项 + 记忆更新）；提交未包含 `window_service.rs` 与 `.codex/`。
+- 本轮改动已提交（剪贴板 6 项 + 记忆更新）；提交后新增未暂存改动：`src/App.css`（设置弹窗 400px、分词标题单行）、`src/App.tsx` / `src/popup.tsx`（顺序化分词、下标选择、标题布局）、`src/popup.css`（分词标题 flex 单行）。
 
 # Active Files
 
@@ -23,9 +23,11 @@
 - 2026-10-31 `npx tsc --noEmit` 通过（通知功能加入后再次通过）。
 - 2026-10-31 `npm run build` 通过（最新 7.64s，已生成 notification 入口）。
 - 2026-10-31 `cargo check` 通过（无警告）；`cargo build` 通过（细节修正后 35.76s）。
-- 2026-10-31 `npx tsc --noEmit` 通过；`npm run build` 通过（6.09s）。
+- 2026-10-31 `npx tsc --noEmit` 通过；`npm run build` 通过（分词定位版 5.79s）。
+- 2026-10-31 分词抽样（修正后）：路径整体保留、后续句子正常切词、三个“方案”独立；全选提取含首尾标点可还原原句。
 - 2026-10-31 串行全量单测 12/12 通过（`TEMP`/`TMP` 需指向 `src-tauri/target/test-tmp`，见 `bugs.md`）。
-- 开发版已重启：Vite `http://localhost:1420`（后台任务 `pwsh-fdd9ad1fdcc449e2`）+ `%TEMP%\lt-dev-run\` 的 debug EXE（pid 18424）。
+- 开发版已重启：Vite `http://localhost:1420`（后台任务 `pwsh-fdd9ad1fdcc449e2`）+ `%TEMP%\lt-dev-run\` 的 debug EXE（pid 22628，已关闭远程调试端口）。
+- 2026-10-31 CDP 实测：窗口 CSS 视口 676×443（135% 缩放）；设置弹窗最终固定 400px，落在 403px 可用区中央（预计 21.5px 上下留白），主体可滚动。
 - 未做：浮窗外观、×N 宽度自适应、按住 0.5s 节流与图标动效未真机验证；注入键被忽略，自动化无法模拟真实复制。
 
 # Blockers
