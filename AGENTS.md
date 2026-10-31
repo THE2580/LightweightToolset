@@ -48,7 +48,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 工具停用必须真正停止快捷键、worker、监听、计时器、关联窗口和 helper，不能只隐藏 UI。
 - 不做插件市场、远程插件、脚本扩展或运行时安装工具；只做编译期注册。
 - 不恢复 AI 聊天、API 设置、DeepSeek 或资源捕获入口。
-- 主程序保持 Medium 权限；按键统计仅在启用时按需启动最小 High 输入 helper，停用/退出/IPC 断开必须退出。
+- 主程序以管理员权限运行（`requireAdministrator` 清单 `src-tauri/windows-app-manifest.xml`）；按键捕获依赖进程内低级键盘钩子，覆盖同级及更低完整性窗口，UAC 安全桌面与 System 完整性进程不可见。每次启动会弹 UAC，开机自启需接受该体验。
 - 不绕过 DSH 沙箱或审批；权限不足时说明并等待用户处理。
 - 保留首次 release 构建产物；`src-tauri/target` 膨胀时只清理可再生的 `target/debug`，禁止 `cargo clean`（会连带删除 release）。
 
@@ -65,7 +65,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 
 - 前端/Build：`npm run build` 无 TS 错误与 Vite 构建错误。
 - Rust：`cargo check` 通过；改动模块的单测通过，全量用 `--test-threads=1`（`input_monitor` 等测试共享全局按键状态，并行会偶发失败）。
-- 运行时/UI 变更：需在 Windows 真机验证；按键统计涉及管理员 helper 时，核对进程完整路径，避免同 App ID 的已安装版干扰。
+- 运行时/UI 变更：需在 Windows 真机验证；应用为管理员权限，测试高完整性窗口按键时注意同 App ID 的已安装版干扰。
 - 冷启动类改动：以 release 构建多次冷启动统计为准（正常退出或留足资源释放间隔），不以开发热重启为样本。
 
 ## 项目记忆
