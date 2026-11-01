@@ -29,6 +29,7 @@
 
 # 已完成里程碑
 
+- 2026-11-01：`v0.5.1` 已发布（tag/Release，HEAD `1d4e65d`）：装机回归修复（版号显示、软件内快捷键通知、节流、剪切即时、浮窗置顶）。安装包 `LightweightToolset_0.5.1_x64-setup.exe`，SHA-256 `0D37D40604CC46D5EC09CABFB97C0E1F1A7A3F57EB2E3FA2C34B230279AEAC53`。
 - 2026-10-31：`v0.5.0` 已发布（tag/Release，HEAD `8c68e2b`）：剪贴板七项 + 整体提权 + 移除管理员输入 helper。安装包 `LightweightToolset_0.5.0_x64-setup.exe`，SHA-256 `4E1CE15BD8836E2332032732AAE7F2EF2DA5936E184C84A86F98DDD3EA36CD6F`。
 
 - 2026-10-31：正式采用整体提权（`requireAdministrator`，`src-tauri/windows-app-manifest.xml`），并移除按键统计的管理员输入 helper（TCP IPC、自我复制 EXE、`--elevated-input-helper` 分支、`ELEVATED_INPUT_ACTIVE` 门控及相关测试）。主程序 High 后进程内钩子已覆盖同级及更低完整性窗口；UAC 安全桌面/System 进程仍不可见。构建与 11/11 单测通过，待真机复测按键统计。

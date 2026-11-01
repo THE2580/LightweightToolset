@@ -47,6 +47,8 @@
 
 # 发布索引
 
+- `v0.5.1` / `1d4e65d`：装机回归修复——「关于」页版号改读 `package.json`；软件内 `Ctrl+C / Ctrl+X / Ctrl+V` 改页面上报（WebView2 聚焦时全局钩子漏派发），0.5s 节流 + 跨来源去重；应用内复制/剪切立即提示；通知浮窗每次显示重压置顶层。资产 `LightweightToolset_0.5.1_x64-setup.exe`，SHA-256 `0D37D40604CC46D5EC09CABFB97C0E1F1A7A3F57EB2E3FA2C34B230279AEAC53`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.5.1`。
+
 - `v0.5.0` / `8c68e2b`：剪贴板七项（回收站全部清空、Ctrl+A、快捷弹窗分段/全局搜索/过渡/焦点驻留、分词重构、系统通知）、整体提权（`requireAdministrator`）、移除管理员输入 helper。资产 `LightweightToolset_0.5.0_x64-setup.exe`，SHA-256 `4E1CE15BD8836E2332032732AAE7F2EF2DA5936E184C84A86F98DDD3EA36CD6F`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.5.0`。
 
 - `v0.4.4` / `7f9d66d`：AppState 提前注册、首次快照后后台初始化 watchdog/helper/tools/hotkeys、移除 state-not-managed 轮询并增加 runtime 状态反馈。安装包 SHA-256 `8570AED8E3E34B156F33BA9A1349AC14A20F51216B6DEB846277F59162C738B9`。
