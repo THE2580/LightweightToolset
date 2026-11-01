@@ -4,6 +4,7 @@ import { Copy, ExternalLink, FileText, Info, Pin, Scissors, Trash2, X } from "lu
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactDOM from "react-dom/client";
+import { installShortcutNotifyBridge } from "./shortcutNotify";
 import "./popup.css";
 
 const POPUP_PAGE_SIZE = 10;
@@ -197,6 +198,8 @@ function PopupApp() {
     window.addEventListener("keydown", handleDocumentKeyDown, true);
     return () => window.removeEventListener("keydown", handleDocumentKeyDown, true);
   });
+
+  useEffect(() => installShortcutNotifyBridge(), []);
 
   useEffect(() => {
     const timer = window.setInterval(() => void loadEntries(false), 900);

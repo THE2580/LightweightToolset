@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Copy, Moon, Pause, Play, RotateCcw, Square, Sun, X } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
+import { installShortcutNotifyBridge } from "./shortcutNotify";
 import "./free.css";
 
 type TimerKind = "stopwatch" | "countdown";
@@ -36,6 +37,8 @@ function FreeWindowApp() {
     window.addEventListener("contextmenu", preventContextMenu);
     return () => window.removeEventListener("contextmenu", preventContextMenu);
   }, []);
+
+  useEffect(() => installShortcutNotifyBridge(), []);
 
   if (kind === "clock") {
     return <ClockFreeWindow />;

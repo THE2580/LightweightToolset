@@ -725,7 +725,11 @@ fn clipboard_update_entry(
 fn clipboard_copy(state: State<'_, AppState>, id: String) -> Result<ClipboardPasteResult, String> {
     ensure_clipboard_enabled(&state)?;
     push_debug_log(&state, "clipboard", format!("clipboard.copy.requested id={id}"));
-    clipboard::copy_entry(id)
+    let result = clipboard::copy_entry(id)?;
+    if result.copied {
+        clipboard_notify::notify_copied_now();
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -738,7 +742,7 @@ fn clipboard_paste(
     push_debug_log(&state, "clipboard", format!("clipboard.paste.requested id={id}"));
     let result = clipboard::paste_entry(id)?;
     if result.copied {
-        clipboard_notify::notify_pasted();
+        clipboard_notify::notify_pasted_from_command();
         if window_service::is_clipboard_popup_pinned() {
             window_service::refocus_clipboard_popup_after_paste(&app);
         } else {
@@ -759,7 +763,11 @@ fn clipboard_copy_text(
         "clipboard",
         format!("clipboard.copy_text.requested text_len={}", text.len()),
     );
-    clipboard::copy_text(text)
+    let result = clipboard::copy_text(text)?;
+    if result.copied {
+        clipboard_notify::notify_copied_now();
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -773,7 +781,11 @@ fn clipboard_copy_derived_text(
         "clipboard",
         format!("clipboard.copy_derived_text.requested text_len={}", text.len()),
     );
-    clipboard::copy_derived_text(text)
+    let result = clipboard::copy_derived_text(text)?;
+    if result.copied {
+        clipboard_notify::notify_copied_now();
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -812,6 +824,12 @@ fn clipboard_restore(state: State<'_, AppState>, ids: Vec<String>) -> Result<(),
 #[tauri::command]
 fn clipboard_notify_ready() {
     clipboard_notify::mark_ready();
+}
+
+/// 应用内窗口上报的快捷键（WebView2 聚焦时全局钩子可能收不到按键）。
+#[tauri::command]
+fn clipboard_notify_shortcut(kind: String) {
+    clipboard_notify::notify_ui_shortcut(&kind);
 }
 
 #[tauri::command]
@@ -1231,6 +1249,7 @@ pub fn run() {
             clipboard_purge,
             clipboard_purge_trash,
             clipboard_notify_ready,
+            clipboard_notify_shortcut,
             clipboard_clear_history,
             clipboard_open_panel,
             clipboard_close_panel,

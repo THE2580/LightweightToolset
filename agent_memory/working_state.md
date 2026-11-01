@@ -1,42 +1,34 @@
 # Scope
 
-- 当前范围：剪贴板工具优化迭代（用户逐项给出）。已实现第 1–6 项，其中第 1–5 项已验收通过；第 6 项（系统通知）待用户真机验证。
+- 当前范围：`v0.5.0` 装机后回归修复，已完成并经用户真机验收：
+  1. 「关于」页版号改为读 `package.json`（此前写死 `0.4.4`，装机后误报 `v0.5.0` 更新）。
+  2. 软件自身窗口内的 `Ctrl+C / Ctrl+X / Ctrl+V` 现在都会弹浮窗，累加按 0.5s 节流、松手即停，剪切不再延迟/丢弹。
+- 待确认项：通知浮窗**置顶层级**（每次显示 `SetWindowPos(HWND_TOPMOST)`）尚未得到用户复测反馈。
 - 其他工具、P0 相关代码不在本轮范围内。
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；`v0.5.0` 已发布（tag 指向 `8c68e2b`），已推送 `origin/master` 与 tag。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；`v0.5.0` 已发布（tag 指向 `8c68e2b`）。
+- 本轮改动**未提交**：`src/App.tsx`、`src/popup.tsx`、`src/free.tsx`、`src/shortcutNotify.ts`（新增）、`src-tauri/src/lib.rs`、`src-tauri/src/clipboard_notify.rs`、`agent_memory/*`。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`?? .codex/`。
-- 提权（`9ee7668`）、helper 移除（`e1cbcf2`）、版本（`8c68e2b`）均已推送；GitHub Release 资产 `LightweightToolset_0.5.0_x64-setup.exe`。
 
 # Active Files
 
-- `src-tauri/src/clipboard.rs`：`purge_trash()`；`ClipboardSettings.notifications`、`notifications_enabled()`；启停 `Ctrl+C` 钩子与清空通知队列。
-- `src-tauri/src/clipboard_notify.rs`：单浮窗 OSD（无队列）、×N 计数、2s 计时、800ms 复制/剪切意图窗口、`WM_CLIPBOARDUPDATE` 确认、低级键盘钩子（忽略注入键、按住 0.5s 节流）、宽度随位数增长、ready 握手。
-- `src/notification.tsx` / `notification.html` / `src/notification.css`：WinTips 风格提示页，图标 + 文案 + ×N 徽章，卡片淡入淡出 300ms、图标/徽章弹跳。
-- `src-tauri/src/lib.rs`：注册模块与 `clipboard_notify_ready`、粘贴后 `notify_pasted()`、设置更新后 `refresh()`、`setup` 中 `clipboard_notify::init`。
-- `src/App.tsx`：回收站“全部清空”+二次确认、`Ctrl+A`、剪贴板设置“系统通知”开关、`ClipboardSettings.notifications`。
-- `src/popup.tsx` / `src/popup.css`：仅图标分段、全局搜索、搜索态铺满、220ms 过渡、焦点驻留。
+- `src/shortcutNotify.ts`：三个应用窗口共用的快捷键上报；`Ctrl+C/X` 先判断有无选中内容（输入框选区或 `getSelection()`），空选不弹。
+- `src-tauri/src/clipboard_notify.rs`：`notify_ui_shortcut()` 立即弹提示；`claim_report()` 负责 0.5s 同源节流 + 400ms 跨源去重；`raise_to_top()` 每次显示 `SetWindowPos(HWND_TOPMOST)`；全局钩子只服务其他程序。
+- `src-tauri/src/lib.rs`：新增命令 `clipboard_notify_shortcut`；`clipboard_copy*` 成功后 `notify_copied_now()`；`clipboard_paste` 走 `notify_pasted_from_command()`。
 
 # Verification
 
-- 2026-10-31 `npx tsc --noEmit` 通过（通知功能加入后再次通过）。
-- 2026-10-31 `npm run build` 通过（最新 7.64s，已生成 notification 入口）。
-- 2026-10-31 `cargo check` 通过（无警告）；`cargo build` 通过（细节修正后 35.76s）。
-- 2026-10-31 `npx tsc --noEmit` 通过；`npm run build` 通过（分词定位版 5.79s）。
-- 2026-10-31 分词抽样（修正后）：路径整体保留、后续句子正常切词、三个“方案”独立；全选提取含首尾标点可还原原句。
-- 2026-10-31 串行全量单测 11/11 通过（移除 helper 后；`TEMP`/`TMP` 需指向 `src-tauri/target/test-tmp`，见 `bugs.md`）。
-- 开发版已重启：Vite `http://localhost:1420`（后台任务 `pwsh-fdd9ad1fdcc449e2`）+ `%TEMP%\lt-dev-run\` 的 debug EXE（pid 22796（提权正式版，helper 已移除）。
-- 2026-10-31 CDP 实测：窗口 CSS 视口 676×443（135% 缩放）；设置弹窗最终固定 400px，落在 403px 可用区中央（预计 21.5px 上下留白），主体可滚动。
-- 未做：浮窗外观、×N 宽度自适应、按住 0.5s 节流与图标动效未真机验证；注入键被忽略，自动化无法模拟真实复制。
+- 2026-11-01 `npm run build` 通过；`cargo check` 通过；串行全量单测 11/11 通过；debug 重编译通过。
+- 2026-11-01 用户真机验收通过：软件内三种快捷键都弹、长按松手即停、剪切即时且不漏弹、空选不弹（用户明确接受空选不弹）。
+- 未验证：浮窗压过其他置顶窗口的层级表现。
 
 # Blockers
 
-- 无。系统 `%TEMP%` 写入限制与工作区 EXE 沙箱限制有绕行方案，见 `bugs.md`。
+- 无。注意：不要对仓库 Rust 文件直接跑 `rustfmt`（会按 100 列重排整文件）。
 
 # Next Action
 
-- 当前重点：验证提权版在管理员窗口（任务管理器/管理员终端）复制、剪切、粘贴是否弹通知；同时观察每次启动 UAC 与整体高权限运行的体感。
-- 若要退回普通权限：还原 `src-tauri/build.rs` 为 `tauri_build::build()`、删除 `src-tauri/windows-app-manifest.xml`，重新 build 并重启。
-- 若通知窗口未出现，先看应用内调试日志与 `%TEMP%\lt-dev-run\stderr.log`；必要时在 `clipboard_notify.rs` 的 `ensure_window/show_notification` 增加日志。
+- 等用户确认置顶层级；若通过，询问是否授权发 `v0.5.1`（需同步 `package.json` / `Cargo.toml` / `tauri.conf.json` 三处版本号，并提交推送 + tag + Release）。
 - 提交需用户明确授权；提交时排除 `window_service.rs` 与 `.codex/`。

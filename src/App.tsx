@@ -5,6 +5,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { AnimatePresence, motion, Reorder, useDragControls } from "framer-motion";
+import packageJson from "../package.json";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, RefObject, WheelEvent as ReactWheelEvent } from "react";
 import {
   Bell,
@@ -50,6 +51,7 @@ import {
 } from "lucide-react";
 import { type FocusEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { installShortcutNotifyBridge } from "./shortcutNotify";
 import "./App.css";
 
 type ThemeMode = "system" | "light" | "dark";
@@ -387,7 +389,7 @@ type NavigationTarget = {
 const DEFAULT_TITLE = "轻量化工具集";
 const APP_NAME = "LightweightToolset";
 const APP_SUBTITLE = "Windows 桌面工具集";
-const APP_VERSION = "0.4.4";
+const APP_VERSION = packageJson.version;
 const GITHUB_REPO = "THE2580/LightweightToolset";
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 const GITHUB_API_LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
@@ -920,6 +922,8 @@ function App() {
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [activeTool, history, historyIndex, pushAppToast, sidebarTargets, view]);
+
+  useEffect(() => installShortcutNotifyBridge(), []);
 
   useEffect(() => {
     let dispose: (() => void) | undefined;

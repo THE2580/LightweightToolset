@@ -23,6 +23,8 @@ const NOTIFY_GAP: f64 = 16.0;
 const DISPLAY_MS: u64 = 2000;
 const SLIDE_MS: u64 = 300;
 const CLIPBOARD_CONFIRM_MS: u128 = 800;
+const DUPLICATE_MS: u128 = 400;
+const REPEAT_MS: u128 = 500;
 const ZONE_RATIO: f64 = 0.15;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,6 +44,13 @@ impl TipKind {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Hook,
+    Ui,
+    Command,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TipPayload {
@@ -58,6 +67,7 @@ enum Command {
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static TX: OnceLock<mpsc::Sender<Command>> = OnceLock::new();
 static PENDING: Mutex<Option<(TipKind, Instant)>> = Mutex::new(None);
+static LAST_REPORT: Mutex<Option<(TipKind, Origin, Instant)>> = Mutex::new(None);
 static READY: AtomicBool = AtomicBool::new(false);
 static WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 static LISTENER: Mutex<Option<CopyListener>> = Mutex::new(None);
@@ -68,20 +78,90 @@ pub fn init(app: &AppHandle) {
 }
 
 pub fn notify_copied() {
-    set_pending(TipKind::Copied);
+    report(TipKind::Copied, Origin::Hook);
 }
 
 pub fn notify_cut() {
-    set_pending(TipKind::Cut);
+    report(TipKind::Cut, Origin::Hook);
+}
+
+/// 应用内复制：没有键盘事件参与，跳过剪贴板确认窗口直接提示。
+pub fn notify_copied_now() {
+    if !claim_report(TipKind::Copied, Origin::Command) {
+        return;
+    }
+    set_pending(TipKind::Copied);
+    on_clipboard_changed();
 }
 
 pub fn notify_pasted() {
-    send(Command::Show(TipKind::Pasted));
+    report(TipKind::Pasted, Origin::Hook);
+}
+
+/// 快捷弹窗里点击条目直接粘贴：命令触发，不经过键盘。
+pub fn notify_pasted_from_command() {
+    report(TipKind::Pasted, Origin::Command);
+}
+
+/// 应用内窗口上报的 Ctrl+C / Ctrl+X / Ctrl+V：页面已确认有选中内容（或就是粘贴），
+/// 直接提示，不等剪贴板确认——WebView2 写剪贴板可能超过确认窗口，迟到的确认会丢提示。
+pub fn notify_ui_shortcut(kind: &str) {
+    let kind = match kind {
+        "copied" => TipKind::Copied,
+        "cut" => TipKind::Cut,
+        "pasted" => TipKind::Pasted,
+        _ => return,
+    };
+    if !claim_report(kind, Origin::Ui) {
+        return;
+    }
+    drop_pending(kind);
+    send(Command::Show(kind));
+}
+
+/// 同一次物理按键可能同时被全局钩子与页面上报，只保留先到的那条；
+/// 同一来源的重复上报（按住快捷键自动重复）按 0.5s 节流，与钩子路径一致。
+fn claim_report(kind: TipKind, origin: Origin) -> bool {
+    let Ok(mut last) = LAST_REPORT.lock() else {
+        return true;
+    };
+    if let Some((last_kind, last_origin, at)) = *last {
+        let elapsed = at.elapsed().as_millis();
+        if last_kind == kind {
+            if last_origin == origin && elapsed < REPEAT_MS {
+                return false;
+            }
+            if last_origin != origin && elapsed < DUPLICATE_MS {
+                return false;
+            }
+        }
+    }
+    *last = Some((kind, origin, Instant::now()));
+    true
+}
+
+fn report(kind: TipKind, origin: Origin) {
+    if !claim_report(kind, origin) {
+        return;
+    }
+    match kind {
+        TipKind::Pasted => send(Command::Show(kind)),
+        _ => set_pending(kind),
+    }
 }
 
 fn set_pending(kind: TipKind) {
     if let Ok(mut pending) = PENDING.lock() {
         *pending = Some((kind, Instant::now()));
+    }
+}
+
+/// 页面侧已经直接提示过了，清掉钩子留下的同种意图，避免迟到的确认再弹一次。
+fn drop_pending(kind: TipKind) {
+    if let Ok(mut pending) = PENDING.lock() {
+        if matches!(*pending, Some((pending_kind, _)) if pending_kind == kind) {
+            *pending = None;
+        }
     }
 }
 
@@ -100,10 +180,52 @@ pub fn on_clipboard_changed() {
         return;
     };
     *pending = None;
-    if started_at.elapsed().as_millis() <= CLIPBOARD_CONFIRM_MS {
+    if recently_shown_from_ui(kind) {
+        return;
+    }
+    let elapsed = started_at.elapsed().as_millis();
+    if elapsed <= CLIPBOARD_CONFIRM_MS {
         send(Command::Show(kind));
     }
 }
+
+/// 页面上报在前、钩子确认在后时，避免同一次按键弹两次。
+fn recently_shown_from_ui(kind: TipKind) -> bool {
+    let Ok(last) = LAST_REPORT.lock() else {
+        return false;
+    };
+    match *last {
+        Some((last_kind, origin, at)) => {
+            last_kind == kind && origin != Origin::Hook && at.elapsed().as_millis() < DUPLICATE_MS
+        }
+        None => false,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn raise_to_top(window: &WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    unsafe {
+        // 每次显示都重新压到置顶层，避免被同样置顶的窗口（含本软件）盖住。
+        SetWindowPos(
+            hwnd.0,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn raise_to_top(_window: &WebviewWindow) {}
 
 fn notifications_enabled(app: &AppHandle) -> bool {
     let Some(state) = app.try_state::<AppState>() else {
@@ -205,6 +327,7 @@ fn start_worker() {
                             let _ = window.show();
                             visible = true;
                         }
+                        raise_to_top(&window);
                         hiding = false;
                         let _ = window.emit(
                             "clipboard-notify-show",
