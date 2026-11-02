@@ -1,32 +1,28 @@
 # Goal
 
-- 剪贴板工具优化迭代：按用户逐项给出的清单改进现有功能、增加新功能；当前第 1 项为回收站“全部清空”。
+- LightweightToolset 持续迭代：`v0.6.0` 已交付「快捷键提示」新工具；等待用户下一项需求。
 
 # Current Focus
 
-- 状态：剪贴板迭代 7 项全部验收通过，已提交并推送 `origin/master`（HEAD `76f438f`）。
-- 第 1 项已实现：回收站标题栏右侧“全部清空”按钮 + 后端 `clipboard_purge_trash`；空回收站禁用；点击先弹二次确认（不可恢复提示），确认后清空并 Toast 回报条数、刷新列表与统计；取消不改数据。
-- 第 2 项已实现：`Ctrl+A` 全选当前页，历史/固定/回收站三处生效；不跨页、不抢占输入框；已全选时再按取消。
-- 第 3 项已实现：快捷弹窗标题栏单行紧凑布局 + 仅图标“历史/固定”分段（默认历史）；列表与搜索只作用于当前分段；面板宽高仍由设置控制。
-- 第 4 项已实现：搜索改为全局；非搜索保持分段布局，搜索有内容时隐藏分段、搜索框铺满，结果合并固定/历史、固定置顶并显示分组标签；固定操作立即重排；清空搜索恢复原布局与分段。布局切换已补 220ms 过渡（分段收起/淡出、搜索框连续变宽），非硬切。
-- 第 5 项已实现：快捷弹窗焦点驻留——点击面板内任意非输入区域后焦点回到搜索框（异步拉回，不阻断点击）；详情/提取弹窗打开或窗口失焦时不抢焦点。
-- 2026-10-31：`v0.5.0` 已发布（tag `v0.5.0` 指向 `8c68e2b`，GitHub Release 已上传 `LightweightToolset_0.5.0_x64-setup.exe`，SHA-256 `4E1CE15BD8836E2332032732AAE7F2EF2DA5936E184C84A86F98DDD3EA36CD6F`）。
-- 第 7 项已定稿：分词按原文顺序、记录词位、全选可还原原句；已知不完美（序号带句点、×N 只剩 N、单字虚词）用户接受，不再改动。
-- 第 6 项已按 WinTips 落地并验收：单浮窗、任务栏上方居中、×N 计数不排队；复制/剪切经 800ms 意图 + 剪贴板更新确认，粘贴即时；2s 停留；宽度随位数扩展；按住 0.5s 节流；图标/徽章动效；保留“系统通知”开关与工具生命周期联动。
-- 改动已提交；自动化验证均通过，真机 UI 已由用户验收。
+- 状态：`v0.6.0` 已发布（tag `v0.6.0` → `5f12c12`；Release 资产 `LightweightToolset_0.6.0_x64-setup.exe`，SHA-256 `93D2315A30BDEDF01C7AAF0817EA102245DAC4734456776A4CB3E64C9F447499`）。
+- 新工具 `shortcut_tip`（第 6 个工具，默认启用）：预设 24 条（常用编辑 12 + Windows 系统 12）+ 本软件快捷键 3 条（跟随设置、回调触发）+ 自定义录制（录制框焦点绑定）。
+- 采键三条通道：页面上报（Chromium 前台普通键）、进程内钩子（焦点在别处）、独立子进程（`--shortcut-tip-helper <port>` + 回环 TCP，覆盖系统/他软件热键）。三者节流与去重统一在 `claim_report`。
+- 剪贴板：`clipboard_notify.rs` 已删除，条目点击提示改调 `shortcut_tip::notify_text`；模拟粘贴后短暂抑制快捷键匹配。
 
 # Remaining
 
-- 等待用户验证第 6 项系统通知（真实复制、粘贴、排队、开关、停用）。
-- 后续剪贴板条目待用户给出；本地提交与推送均需用户明确授权。
+- 无进行中的任务；等用户下一条需求。
+- 可选优化（用户未要求，勿主动做）：按前台软件的预设分组与自动切换、外观可调（颜色/透明度/字号/拖拽定位）、持续输出模式——来自 Keycastr 的借鉴清单。
+- 已知限制：`Ctrl+Alt+Del`、`Win+L` 这类内核/安全层处理的组合无法捕获或拦截。
 
 # Verification
 
-- `npx tsc --noEmit` 通过；`npm run build` 通过；`cargo check`/`cargo build` 通过（通知模块无警告）；串行 12/12 单测通过（`TEMP` 需指向工作区，见 `bugs.md`）。
-- 第 6 项成功标准：真实 Ctrl+C/X 在剪贴板更新后提示、Ctrl+V 即时提示、程序化复制不提示；同动作显示 ×N；2.4s 后淡出；开关关闭或工具停用后完全不弹；浮窗点击穿透、不抢焦点。
+- 2026-11-02：`npm run build`、`cargo check`、串行单测 11/11、`npm run tauri build`（release 2m34s + NSIS）全部通过。
+- 真机验收：本软件前台时 `Win+D`/`Win+I`/`Win+Shift+S`/PixPin `Ctrl+1` 均能提示且可录制；普通快捷键无重复提示；浮窗 2 秒后正常淡出且显示期间不被其他置顶窗口盖住。
+- 发版前必须重跑：`npm run build`、`cargo check`、`cargo test --lib -- --test-threads=1`、`npm run tauri build`。
 
 # Resume Here
 
-- 先 `git status --short` 确认改动清单与既有现场；再读 `src-tauri/src/clipboard_notify.rs`（队列/窗口/钩子）与 `src/notification.tsx`。
-- 若通知未出现：查应用内调试日志与 `%TEMP%\lt-dev-run\stderr.log`，优先确认 `tool-clipboard-notify` 窗口是否创建、`clipboard_notify_ready` 是否到达。
-- 跑验证时设置 `TEMP`/`TMP` 到工作区临时目录，再执行 `cargo test --lib -- --test-threads=1`；改 Rust 后需重新 build + 复制到 `%TEMP%` 重启开发版。
+- 先 `git status --short` 确认现场（预期只剩 `M src-tauri/src/window_service.rs` 的 rustfmt 噪声与 `?? .codex/`）。
+- 快捷键提示相关代码入口：`src-tauri/src/shortcut_tip.rs`（存储/匹配/浮窗/子进程桥接）、`src-tauri/src/main.rs`（`--shortcut-tip-helper` 分支）、`src/App.tsx` 的 `ShortcutTipToolPage` / `ShortcutTipEditorDialog`、`src/notification.tsx`。
+- 动手前务必先读 `AGENTS.md` 的「平台约束与踩坑经验」，其中锁顺序、浮窗尺寸、录制焦点绑定等几条都是踩过坑写下的。
