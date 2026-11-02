@@ -1,8 +1,8 @@
 # 项目背景
 
 - LightweightToolset 是旧版 LightweightWindowsToolset 的独立 Tauri 2 / Rust / React / TypeScript 路线；旧 Electron 项目只作稳定参考与迁移对照，新功能不回写旧项目。
-- 已实现工具：剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶。后续候选：快捷翻译、桌宠。
-- 当前稳定发布为 `v0.4.4`，提交 `7f9d66d`，仓库 `https://github.com/THE2580/LightweightToolset`。
+- 已实现工具：剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。后续候选：快捷翻译、桌宠。
+- 当前稳定发布为 `v0.6.0`，发布提交 `5f12c12`，仓库 `https://github.com/THE2580/LightweightToolset`。
 
 # 协作环境
 
@@ -24,7 +24,7 @@
 
 # 权限与生命周期边界
 
-- 主程序以管理员权限运行（`requireAdministrator`，清单见 `src-tauri/windows-app-manifest.xml`），每次启动弹 UAC。按键统计与剪贴板通知依赖进程内低级键盘钩子，可覆盖同级及更低完整性窗口；UAC 安全桌面与 System 完整性进程不可见。
+- 主程序以管理员权限运行（`requireAdministrator`，清单见 `src-tauri/windows-app-manifest.xml`），每次启动弹 UAC。按键统计与快捷键提示依赖低级键盘钩子，可覆盖同级及更低完整性窗口；快捷键提示另有一个继承提权的采键子进程（非 Chromium），用于 Chromium 前台时仍能收到系统/他软件热键。UAC 安全桌面与 System 完整性进程不可见。
 - 原“管理员输入 helper”的职责（主程序 Medium 时捕获 High 窗口）已随整体提权消失；若未来退回 Medium，需要恢复等效方案。
 - 已验证 High 输入样本：Minecraft Java、原神、绝区零、米哈游启动器、PCL2；未测试游戏不泛化保证。
 - 窗口置顶第一版只支持同级或更低完整性窗口；管理员窗口可能因 UIPI 返回 Win32 5，不引入置顶管理员 helper。

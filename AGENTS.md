@@ -13,8 +13,8 @@ LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻
 
 ## 目录结构
 
-- `src/`：React 前端。`App.tsx` 为主窗口（体量大，优先局部修改）；`popup.tsx` / `free.tsx` 为快捷弹窗与自由窗口；样式集中在 `App.css`、`popup.css`、`free.css`。
-- `src-tauri/src/`：Rust 后端。`lib.rs` 为应用装配与命令入口；`tools.rs` 工具注册与生命周期；`clipboard.rs`、`app_usage.rs`、`key_usage.rs`、`input_monitor.rs`、`timer.rs`、`window_pinner.rs`、`window_service.rs`、`settings.rs` 按功能拆分。
+- `src/`：React 前端。`App.tsx` 为主窗口（体量大，优先局部修改）；`popup.tsx` / `free.tsx` 为快捷弹窗与自由窗口；`notification.tsx` 为快捷键提示浮窗页；`shortcutNotify.ts` 是页面按键上报桥；样式集中在 `App.css`、`popup.css`、`free.css`、`notification.css`。
+- `src-tauri/src/`：Rust 后端。`lib.rs` 为应用装配与命令入口；`main.rs` 兼作采键子进程入口（`--shortcut-tip-helper`）；`tools.rs` 工具注册与生命周期；`clipboard.rs`、`shortcut_tip.rs`、`app_usage.rs`、`key_usage.rs`、`input_monitor.rs`、`timer.rs`、`window_pinner.rs`、`window_service.rs`、`settings.rs` 按功能拆分。
 - `src-tauri/capabilities/default.json`：Tauri 权限清单；`src-tauri/tauri.conf.json`：窗口/打包配置。
 - `agent_memory/`：项目记忆（权威状态源，随仓库提交）；`archive/` 存旧摘要。
 
@@ -55,17 +55,15 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 ## 平台约束与踩坑经验（必须遵守）
 
 - **版本号单一来源**：前端版本号从 `../package.json` 直接 `import`（`src/App.tsx` 的 `APP_VERSION`）。禁止用 Vite `define` 注入全局常量——打包时会替换、dev 服务器不替换，会直接白屏。`package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` 三处版本号发版时同步修改。
-- **WebView2 窗口聚焦会吞低级键盘钩子**：Chromium/WebView2 窗口在前台时，Windows 会间断地不给 `WH_KEYBOARD_LL` 派发按键（实测 `C` 键到了、`Ctrl` 键一次没到）。软件自身窗口的普通按键由页面 `keydown` 上报（`src/shortcutNotify.ts` → `shortcut_tip_report`）兜住；系统热键与其他软件注册的热键依赖下方「非 Chromium 采键进程」。各条通道共用节流与去重，不能只依赖其中一条。
-- **浮窗提示节奏**：同一来源重复上报按 `0.5s` 节流（按住快捷键自动重复时逐 0.5s 累加），跨来源（钩子 / 页面上报 / 命令）按 `400ms` 去重；应用内触发一律**立即**提示，不进剪贴板确认窗口。长按松手后累加必须立即停止，不允许积压成队列。
-- **浮窗置顶**：只在创建时设 `always_on_top` 压不过同样置顶的窗口（含本软件自己）。每次显示都要调 `SetWindowPos(HWND_TOPMOST)` 重新压顶。
-- **禁止对仓库 Rust 文件直接跑 `rustfmt`**：仓库没有 `rustfmt.toml`，默认 100 列会把整文件重排，产生上百行无关噪声；误格式化后立即 `git checkout --` 还原，只手工保持既有风格。
-- **采键必须有一个非 Chromium 进程**：Chromium/WebView2 窗口在前台时低级钩子收不到按键，且系统/其他软件注册的热键（`Win+D`、`Win+I`、`Win+Shift+S`、他软件全局热键）连 Raw Input 都收不到。解决办法是「快捷键提示」工具启动的独立采键子进程：复用同一个 exe，带 `--shortcut-tip-helper <port>` 启动，**不初始化 Tauri/WebView**，装低级钩子后经 `127.0.0.1` 回环 TCP 把组合键回传主程序。子进程继承提权、不加 UAC；连接断开或回传失败必须自行退出，工具停用时主程序负责结束它。子进程分叉要放在进入 Tauri 之前，否则会触发单实例插件。
-- **已排除方案：Raw Input 兜底**。实测 Raw Input（`RIDEV_INPUTSINK`）**收得到普通键，收不到被系统或其他软件注册走的 Win 组合键**，A/B 对照（禁用/启用）现象完全一致。不要再为「系统热键收不到」去接 Raw Input，直接走非 Chromium 子进程。
-- **锁顺序**：`AppState.registry` 与工具自有存储锁不能嵌套持有；快照类接口必须「先拷贝数据、释放存储锁，再查注册表」。快捷键回调运行在主线程，**禁止**在其中做加锁 + 窗口操作，一律丢到独立线程，否则会与前端 2 秒轮询的快照形成环形等待、整窗卡死。
-- **浮窗尺寸与层级**：不要按字符估算宽度再动态改窗口（每次重新显示都会用估算值覆盖实测值，表现为闪一下又变窄）；改用固定宽窗口 + 卡片 `width: max-content` 居中。显示期间每 400ms 重新 `SetWindowPos(HWND_TOPMOST)`，防止中途被其他置顶窗口盖住。
+- **采键通道与 Chromium 限制**：Chromium/WebView2 窗口在前台时，Windows 会间断地不给 `WH_KEYBOARD_LL` 派发按键；被系统或其他软件注册走的热键（`Win+D`、`Win+I`、`Win+Shift+S`、他软件全局热键）连 Raw Input 都收不到。现有的三条通道缺一不可：① 软件自身窗口的普通按键走页面 `keydown`（`src/shortcutNotify.ts` → `shortcut_tip_report`）；② 焦点在别处时走进程内钩子；③ 系统/他软件热键走独立采键子进程——复用同一个 exe，带 `--shortcut-tip-helper <port>` 启动，不初始化 Tauri/WebView（分叉要在进入 Tauri 之前），装钩子后经 `127.0.0.1` 回环 TCP 回传组合键；子进程继承提权、不加 UAC，连接断开或回传失败必须自行退出，工具停用时主程序负责结束它。三条通道共用节流与去重。
+- **已排除方案：Raw Input 兜底**。实测 Raw Input（`RIDEV_INPUTSINK`）收得到普通键，但收不到被系统/他软件注册走的 Win 组合键；A/B 对照（禁用/启用）现象完全一致。不要再为「系统热键收不到」接 Raw Input。
+- **浮窗提示节奏**：同一来源重复上报按 `0.5s` 节流（按住快捷键自动重复时逐 0.5s 累加），跨来源按 `400ms` 去重；应用内触发一律**立即**提示，不等剪贴板确认；松手后累加必须立即停止，不允许积压成队列。
+- **浮窗尺寸与层级**：不要按字符估算宽度再动态改窗口（后续每次显示都会用估算值覆盖实测值，表现为闪一下又变窄）；用固定宽窗口 + 卡片 `width: max-content` 居中。只设一次 `always_on_top` 压不过同样置顶的窗口，显示时与显示期间（每 400ms）都要 `SetWindowPos(HWND_TOPMOST)` 重新压顶。
+- **锁顺序与死锁**：`AppState.registry` 与工具自有存储锁不能嵌套持有；快照类接口必须「先拷贝数据、释放存储锁，再查注册表」。快捷键回调运行在主线程，**禁止**在其中做加锁 + 窗口操作，一律丢到独立线程，否则会与前端 2 秒轮询的快照形成环形等待、整窗卡死。
 - **录制状态只跟录制框焦点绑定**：录制框聚焦才接管按键（钩子吞键 + 全局热键暂停），失焦立刻恢复。若绑定在「弹窗打开」上，在该弹窗的文案框打字会被当成录制内容回填。
-- **条目 id 必须唯一**：不要用毫秒时间戳单独做 id（同一毫秒批量生成会撞车，前端用作 React `key` 会导致列表重复渲染、编辑/删除打错条目）；统一用「时间戳-自增序号」，并在加载时修复历史重复 id。
-- **弹窗退场状态要能复位**：带淡出动画的弹窗在提交失败（校验不过、后端拒绝）时必须把 `closing` 复位，否则遮罩停在透明但覆盖全屏的状态，界面表现为「卡死」。
+- **条目 id 必须唯一**：不要用毫秒时间戳单独做 id（同一毫秒批量生成会撞车，React `key` 重复会导致列表重复渲染、编辑/删除打错条目）；统一用「时间戳-自增序号」，并在加载时修复历史重复 id。
+- **弹窗退场状态要能复位**：带淡出动画的弹窗在提交失败（校验不过、后端拒绝）时必须把 `closing` 复位，否则遮罩停在透明却覆盖全屏的状态，界面表现为「卡死」。
+- **禁止对仓库 Rust 文件直接跑 `rustfmt`**：仓库没有 `rustfmt.toml`，默认 100 列会把整文件重排，产生上百行无关噪声；误格式化后立即 `git checkout --` 还原。
 - **本机网络**：`git` 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 均失败，需先让用户开启代理，不要擅自清空代理配置直连。
 
 ## 分支、提交与发布
