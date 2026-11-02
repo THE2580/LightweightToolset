@@ -23,7 +23,7 @@
 - 2026-10-31 通知限制（已随后续提权更新）：当前主程序整体以 High 完整性运行，同级及更低完整性窗口的 `Ctrl+C / Ctrl+X / Ctrl+V` 都能触发提示；只有 UAC 安全桌面与 System 完整性进程不可见。浮窗仍只出现在主显示器。
 - 2026-10-31 通知确认机制：复制/剪切必须处于 800ms 意图窗口内且 `WM_CLIPBOARDUPDATE` 到达才提示；程序化写入不提示。**2026-11-01 修订**：应用内复制按钮（`clipboard_copy` / `clipboard_copy_text` / `clipboard_copy_derived_text`）经 `notify_copied_now()` 直接提示“已复制”；应用内 `Ctrl+C/X/V` 由页面上报后直接提示，只有其他程序仍走 800ms 确认。
 - 2026-11-01 正式版「关于」页版号写死为常量 `0.4.4`，`v0.5.0` 发版后仍显示旧版号并误报更新（用户截图确认）。已改为 `src/App.tsx` 直接 `import packageJson from "../package.json"` 取 `version`；**不要**用 Vite `define` 注入全局常量——打包时会替换、dev 服务器不替换，会导致开发版白屏。
-- 2026-11-01 重要：**WebView2（Chromium）窗口聚焦时，Windows 会间断地不给低级键盘钩子派发按键**（实测：`C` 键到了，`Ctrl` 键一次都没到，导致意图判定不成立）。全站已有公开记录（<https://dev.to/wudaming00/windows-silently-stops-delivering-whkeyboardll-hook-events-when-a-chromium-window-has-focus-and-bi8>）。因此软件自身窗口的快捷键改由页面 `keydown` 上报（`src/shortcutNotify.ts` → `clipboard_notify_shortcut` 命令），全局钩子只负责其他程序。
+- 2026-11-01 重要：**WebView2（Chromium）窗口聚焦时，Windows 会间断地不给低级键盘钩子派发按键**（实测：`C` 键到了，`Ctrl` 键一次都没到，导致意图判定不成立）。全站已有公开记录（<https://dev.to/wudaming00/windows-silently-stops-delivering-whkeyboardll-hook-events-when-a-chromium-window-has-focus-and-bi8>）。因此软件自身窗口的普通按键改由页面 `keydown` 上报（`src/shortcutNotify.ts` → `shortcut_tip_report` 命令）；系统/他软件热键在 v0.6.0 起由独立采键子进程兜住（详见下方 2026-11-02 条目）。
 - 2026-11-01 通知积压现象：长按快捷键时页面侧每个自动重复都上报一次，后端逐条处理（每条都要重设窗口位置），形成队列，表现为**松手后累加仍在继续**。修法：页面上报与钩子共用 0.5s 重复节流 + 400ms 跨来源去重；应用内复制/剪切/粘贴改为上报后立即提示，不再等 800ms 剪贴板确认（WebView2 剪切写剪贴板慢，会超时丢提示）。
 - 2026-11-01 通知浮窗置顶：只在创建时设过 `always_on_top`，压不过同样置顶的窗口（含本软件自己）。已改为每次显示都调用 `SetWindowPos(HWND_TOPMOST)`。
 - 2026-11-01 `rustfmt <file>` 在本仓库会按默认 100 列重排整文件（仓库代码按更宽行宽书写，且无 `rustfmt.toml`），随手格式化会把无关文件改出上百行噪声；只允许手工保持风格，误格式化后立即 `git checkout --` 还原。

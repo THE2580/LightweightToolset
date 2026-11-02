@@ -6,7 +6,7 @@
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；`v0.6.0` 已发布；当前 HEAD `3184d0b`（`docs: consolidate Windows key capture lessons and refresh checkpoints`），已推送 `origin/master`，tag `v0.6.0` 指向 `5f12c12`。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；`v0.6.0` 已发布；工作区与 `origin/master` 同步（HEAD 以 `git log -1` 为准），tag `v0.6.0` 指向发布提交 `5f12c12`。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送会失败。
 
