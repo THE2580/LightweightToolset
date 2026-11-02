@@ -73,6 +73,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 提交前必须：`git status --short` 核对仅包含预期文件；`npm run build`；`cargo check`；涉及 Rust 逻辑时跑串行单测。
 - 版本规则：新增工具调整第一/二位版本号；缺陷修复或既有工具扩展调整第三位。
 - 发布 = 带注释 tag + GitHub Release + 安装包 SHA-256 记录，须用户明确授权；当前最新为 `v0.6.0`。
+- **发版完工后必须做一次沉淀（固定动作，不等用户提醒）**：确认发布完成后，① 通读本次改动，把可复用的经验、新约束、已排除方案补进本文件「平台约束与踩坑经验」；② 刷新 `agent_memory` 五件套（`context` 发布索引、`progress` 里程碑、`bugs` 风险与经验、`working_state` 现场、`checkpoint` 恢复快照），过时内容压缩进 `archive/`；③ 核对全库是否残留「未发版 / 旧版本号 / 已删除模块」等过时描述。
 - 推送前确认本地工作树无未预期的其他改动。
 
 ## 验证方式
