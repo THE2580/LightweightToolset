@@ -1,30 +1,28 @@
 # Scope
 
-- 当前范围：新工具「快捷键提示」（`shortcut_tip`）开发，功能与界面已基本验收，**尚未发版**（当前版本号仍是 `0.5.1`，发版需提到 `0.6.0`）。
-- 已完成并通过用户验收：预设/自定义分区、预设只读键值可改文案、排序（名称/创建时间/提示次数 + 升降序）、提示次数统计与 2s 轮询、浮窗样式与图标、固定宽窗口 + `max-content` 居中、剪贴板条目点击联动、本软件快捷键进预设（回调触发）、Win 系统快捷键进预设、录制只跟录制框焦点绑定。
-- 已定论的限制：本软件窗口为前台时，被系统或其他软件注册走的快捷键（`Win+D`/`Win+I`/`Win+Shift+S`/PixPin `Ctrl+1`）不提示；详见 `bugs.md`。用户已接受，暂不做 helper。
+- 当前范围：`v0.6.0` 已发布并完成真机验收，「快捷键提示」工具（第 6 个工具）交付完毕。
+- 已验收：预设/自定义分区、预设只读键值可改文案、排序（名称/创建时间/提示次数 + 升降序）、提示次数统计与 2s 轮询、浮窗样式与图标、内容自适应宽度、显示期间每 400ms 重新压顶、剪贴板条目点击联动、本软件快捷键进预设（回调触发）、Win 系统快捷键进预设、录制只跟录制框焦点绑定、独立采键子进程。
+- 已解决的历史限制：本软件窗口为前台时，系统/其他软件注册的热键（`Win+D`/`Win+I`/`Win+Shift+S`/PixPin `Ctrl+1`）此前不提示，现由采键子进程解决，详情见 `bugs.md`。
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；`v0.5.1` 已发布（tag 指向 `1d4e65d`）。
-- 本轮改动**全部未提交**：新增 `src-tauri/src/shortcut_tip.rs`、`src/shortcutNotify.ts`，删除 `src-tauri/src/clipboard_notify.rs`，前端 `App.tsx` / `popup.tsx` / `free.tsx` / `notification.tsx` / `notification.css` / `App.css`，后端 `lib.rs` / `tools.rs` / `clipboard.rs`，以及 `agent_memory/*`。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；`v0.6.0` 已发布（Release 提交 `5f12c12`，tag `v0.6.0` 已推送）。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送会失败。
 
 # Active Files
 
-- `src-tauri/src/shortcut_tip.rs`：工具实现核心——存储（`shortcut_tip.json`）、预设（24 条常用/系统 + 3 条本软件快捷键）、钩子匹配、页面/命令上报、浮窗 worker、置顶重压、次数统计（5s 节流落盘）。
-- `src-tauri/src/lib.rs`：`shortcut_tip_*` 命令、快捷键回调里用独立线程触发 `notify_app_hotkey`（主线程不碰锁，避免死锁）、剪贴板命令改调 `notify_text`。
-- `src-tauri/src/tools.rs`：注册第 6 个工具 `shortcut_tip`（默认启用），启停走 `shortcut_tip::start/stop`。
-- `src/shortcutNotify.ts`：页面 `keydown` 上报 + `chordFromEvent`。
-- `src/notification.tsx`：浮窗渲染（标题 + 快捷键胶囊 + ×N，预设图标映射）。
-- `src/App.tsx`：`ShortcutTipToolPage` / `ShortcutTipEditorDialog`（录制与文案、焦点绑定录制）。
+- `src-tauri/src/shortcut_tip.rs`：工具核心——存储、预设（24 条常用/系统 + 3 条本软件快捷键）、钩子匹配、页面/命令上报、采键子进程桥接、浮窗 worker（含 400ms 持续压顶）、次数统计。
+- `src-tauri/src/main.rs`：`--shortcut-tip-helper <port>` 子进程分支（不初始化 Tauri）。
+- `src-tauri/src/lib.rs`：`shortcut_tip_*` 命令、快捷键回调用独立线程触发提示（避免死锁）、剪贴板命令改调 `notify_text`。
+- `src-tauri/src/tools.rs`：注册第 6 个工具 `shortcut_tip`（默认启用）。
+- `src/shortcutNotify.ts` / `src/notification.tsx` / `src/App.tsx`：页面上报、浮窗渲染、工具页与录制弹窗。
 
 # Verification
 
-- 2026-11-02 `npm run build`、`cargo check`、debug 构建均通过；清理 Raw 兜底后重新验证编译干净。
-- 用户真机验收：系统预设显示与触发（焦点在外部程序）、录制 `Win+I`、界面各轮改动、本软件快捷键回调触发（修复死锁后）。
-- 未复测：`npm run tauri build` 打包与串行单测（发版前需补跑）。
+- 2026-11-02 `npm run build`、`cargo check`、串行单测 11/11、`npm run tauri build`（release 2m34s + NSIS）全部通过。
+- 用户真机验收：本软件前台时 `Win+D`/`Win+I`/`Win+Shift+S`/PixPin `Ctrl+1` 均能提示且可录制；普通快捷键无重复提示；浮窗显示期间不被其他置顶窗口盖住；2 秒正常淡出。
+- 安装包 SHA-256 `93D2315A30BDEDF01C7AAF0817EA102245DAC4734456776A4CB3E64C9F447499`（2,684,815 字节）。
 
 # Blockers
 
@@ -32,5 +30,5 @@
 
 # Next Action
 
-- 等用户确认是否发 `0.6.0`：补跑 `npm run tauri build` + 串行单测，三处版本号同步，提交推送 + tag + Release。
+- 等用户下一条需求；如需再发版，按「三处版本号同步 + 提交推送 + 注释 tag + Release」流程执行。
 - 提交需用户明确授权；提交时排除 `window_service.rs` 与 `.codex/`。

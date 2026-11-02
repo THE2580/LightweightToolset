@@ -36,6 +36,8 @@
 
 # 已完成里程碑
 
+- 2026-11-02：`v0.6.0` 已发布（tag/Release，HEAD `5f12c12`）：新增「快捷键提示」工具（预设 24 条 + 本软件快捷键 + 自定义录制）、独立采键子进程、浮窗内容自适应与持续压顶；剪贴板真实按键通知与确认机制移除，条目点击提示改为调用新工具。安装包 `LightweightToolset_0.6.0_x64-setup.exe`，SHA-256 `93D2315A30BDEDF01C7AAF0817EA102245DAC4734456776A4CB3E64C9F447499`。
+
 - 2026-11-01：`v0.5.1` 已发布（tag/Release，HEAD `1d4e65d`）：装机回归修复（版号显示、软件内快捷键通知、节流、剪切即时、浮窗置顶）。安装包 `LightweightToolset_0.5.1_x64-setup.exe`，SHA-256 `0D37D40604CC46D5EC09CABFB97C0E1F1A7A3F57EB2E3FA2C34B230279AEAC53`。
 - 2026-10-31：`v0.5.0` 已发布（tag/Release，HEAD `8c68e2b`）：剪贴板七项 + 整体提权 + 移除管理员输入 helper。安装包 `LightweightToolset_0.5.0_x64-setup.exe`，SHA-256 `4E1CE15BD8836E2332032732AAE7F2EF2DA5936E184C84A86F98DDD3EA36CD6F`。
 
