@@ -2,7 +2,7 @@
 
 ## 项目目标
 
-LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻量化桌面工具集：固定主窗口、单实例、单托盘，工具编译期注册、可独立启用/停用，所有数据本地存储。现有工具：剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶。当前稳定版 `v0.5.1`。旧 Electron 版 LightweightWindowsToolset 只作迁移参考，新功能不回写。
+LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻量化桌面工具集：固定主窗口、单实例、单托盘，工具编译期注册、可独立启用/停用，所有数据本地存储。现有工具：剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。当前稳定版 `v0.6.0`。旧 Electron 版 LightweightWindowsToolset 只作迁移参考，新功能不回写。
 
 ## 技术栈
 
@@ -30,7 +30,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 ```
 
-全仓 `cargo fmt --check` 与严格 clippy 目前有既有告警/格式问题，不作为准入条件；改动的 Rust 文件用 `rustfmt <file>` 局部处理，不要顺带全仓格式化。
+全仓 `cargo fmt --check` 与严格 clippy 目前有既有告警/格式问题，不作为准入条件；也不要对仓库 Rust 文件直接跑 `rustfmt`（原因见下方平台约束），按既有行宽手工对齐即可。
 
 ## 代码风格
 
@@ -52,13 +52,23 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 不绕过 DSH 沙箱或审批；权限不足时说明并等待用户处理。
 - 保留首次 release 构建产物；`src-tauri/target` 膨胀时只清理可再生的 `target/debug`，禁止 `cargo clean`（会连带删除 release）。
 
+## 平台约束与踩坑经验（必须遵守）
+
+- **版本号单一来源**：前端版本号从 `../package.json` 直接 `import`（`src/App.tsx` 的 `APP_VERSION`）。禁止用 Vite `define` 注入全局常量——打包时会替换、dev 服务器不替换，会直接白屏。`package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` 三处版本号发版时同步修改。
+- **WebView2 窗口聚焦会吞低级键盘钩子**：Chromium/WebView2 窗口在前台时，Windows 会间断地不给 `WH_KEYBOARD_LL` 派发按键（实测 `C` 键到了、`Ctrl` 键一次没到）。软件自身窗口的普通按键由页面 `keydown` 上报（`src/shortcutNotify.ts` → `shortcut_tip_report`）兜住；系统热键与其他软件注册的热键依赖下方「非 Chromium 采键进程」。各条通道共用节流与去重，不能只依赖其中一条。
+- **浮窗提示节奏**：同一来源重复上报按 `0.5s` 节流（按住快捷键自动重复时逐 0.5s 累加），跨来源（钩子 / 页面上报 / 命令）按 `400ms` 去重；应用内触发一律**立即**提示，不进剪贴板确认窗口。长按松手后累加必须立即停止，不允许积压成队列。
+- **浮窗置顶**：只在创建时设 `always_on_top` 压不过同样置顶的窗口（含本软件自己）。每次显示都要调 `SetWindowPos(HWND_TOPMOST)` 重新压顶。
+- **禁止对仓库 Rust 文件直接跑 `rustfmt`**：仓库没有 `rustfmt.toml`，默认 100 列会把整文件重排，产生上百行无关噪声；误格式化后立即 `git checkout --` 还原，只手工保持既有风格。
+- **采键必须有一个非 Chromium 进程**：Chromium/WebView2 窗口在前台时低级钩子收不到按键，且系统/其他软件注册的热键（`Win+D`、`Win+I`、`Win+Shift+S`、他软件全局热键）连 Raw Input 都收不到。解决办法是「快捷键提示」工具启动的独立采键子进程：复用同一个 exe，带 `--shortcut-tip-helper <port>` 启动，**不初始化 Tauri/WebView**，装低级钩子后经 `127.0.0.1` 回环 TCP 把组合键回传主程序。子进程继承提权、不加 UAC；连接断开或回传失败必须自行退出，工具停用时主程序负责结束它。
+- **本机网络**：`git` 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 均失败，需先让用户开启代理，不要擅自清空代理配置直连。
+
 ## 分支、提交与发布
 
 - 主分支 `master`，远程 `origin`（https://github.com/THE2580/LightweightToolset.git）。当前为单人开发，提交直接落在 `master`；是否引入功能分支/PR 待确认。
 - 提交信息沿用 Conventional Commits：`feat:`、`fix:`、`chore:`、`docs:`、`refactor:`，发布提交在末尾追加版本号（如 `fix: release startup initialization v0.4.4`）。
 - 提交前必须：`git status --short` 核对仅包含预期文件；`npm run build`；`cargo check`；涉及 Rust 逻辑时跑串行单测。
 - 版本规则：新增工具调整第一/二位版本号；缺陷修复或既有工具扩展调整第三位。
-- 发布 = 带注释 tag + GitHub Release + 安装包 SHA-256 记录，须用户明确授权；当前最新为 `v0.5.1`。
+- 发布 = 带注释 tag + GitHub Release + 安装包 SHA-256 记录，须用户明确授权；当前最新为 `v0.6.0`。
 - 推送前确认本地工作树无未预期的其他改动。
 
 ## 验证方式

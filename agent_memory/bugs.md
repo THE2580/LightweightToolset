@@ -18,6 +18,8 @@
 - 2026-10-31 提权后的已知尾巴：此前生成的管理员输入 helper 副本（`%APPDATA%\com.the.lightweight-toolset\elevated_input_helper_*.exe`）不会自动删除，可在确认新版本稳定后手动清理；`window_pinner_watchdog_*.exe` 仍由看门狗机制管理，不受影响。
 - 分词已定稿但仍有已知不完美（2026-10-31 与用户确认接受）：① 序号 `1.` `2.` 因通用字符类包含 `.`，会带句点成词；② `×N` 中 `×` 被当作非字母符号过滤，只剩 `N`；③ `Intl.Segmenter` 保留“的/和/就”等单字虚词。若后续要优化，优先去掉序号末尾标点、把 `×N` 合并为整词，再考虑虚词过滤。
 - 2026-10-31 布局陷阱：本机显示缩放 135%，主窗口 912×598 的 CSS 视口只有 676×443；给固定高度弹窗写死大尺寸会溢出窗口。弹窗高度需用 `100vh` 兜底，不能只按逻辑像素估算。
+- 2026-11-02 **已解决（helper 采键进程）**：上述限制通过独立采键子进程绕开——同 exe 带 `--shortcut-tip-helper <port>` 启动、不初始化 WebView、装钩子后经回环 TCP 回传组合键；实测本软件前台时 `Win+D` / `Win+I` / `Win+Shift+S` / PixPin `Ctrl+1` 都能触发提示，录制也正常。下文保留作为问题背景与证据。
+- 2026-11-02 **（历史背景）Chromium 前台 + 被抢按键**：Chromium/WebView2 窗口占据前台时，低级键盘钩子不派发；而 `Win+D`、`Win+I`、`Win+Shift+S` 等系统热键，以及其他软件注册的全局热键（如 PixPin 的 `Ctrl+1`），会被系统/他进程先消费，页面 `keydown` 也收不到。实测证据：A/B 对照（禁用/启用 Raw Input 通道）结果完全一致；Raw 通道能收到普通键（`Ctrl+C`/`Ctrl+V`/`Ctrl+Shift+T`），但**一条 Win 组合键都收不到**。故「本软件窗口为前台时，被注册走的快捷键不提示」是确定的限制；根治需要把采键放进非 Chromium 的独立进程（helper），代价是多常驻进程与 UAC/IPC 复杂度，用户决定先接受、暂不做。参照：Keycastr（Tkinter 原生窗口、非提权）不受该限制，但看不到管理员窗口。
 - 2026-10-31 通知限制（已随后续提权更新）：当前主程序整体以 High 完整性运行，同级及更低完整性窗口的 `Ctrl+C / Ctrl+X / Ctrl+V` 都能触发提示；只有 UAC 安全桌面与 System 完整性进程不可见。浮窗仍只出现在主显示器。
 - 2026-10-31 通知确认机制：复制/剪切必须处于 800ms 意图窗口内且 `WM_CLIPBOARDUPDATE` 到达才提示；程序化写入不提示。**2026-11-01 修订**：应用内复制按钮（`clipboard_copy` / `clipboard_copy_text` / `clipboard_copy_derived_text`）经 `notify_copied_now()` 直接提示“已复制”；应用内 `Ctrl+C/X/V` 由页面上报后直接提示，只有其他程序仍走 800ms 确认。
 - 2026-11-01 正式版「关于」页版号写死为常量 `0.4.4`，`v0.5.0` 发版后仍显示旧版号并误报更新（用户截图确认）。已改为 `src/App.tsx` 直接 `import packageJson from "../package.json"` 取 `version`；**不要**用 Vite `define` 注入全局常量——打包时会替换、dev 服务器不替换，会导致开发版白屏。

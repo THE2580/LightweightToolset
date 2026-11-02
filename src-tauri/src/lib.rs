@@ -1,9 +1,9 @@
 mod app_usage;
 mod clipboard;
-mod clipboard_notify;
 mod input_monitor;
 mod key_usage;
 mod settings;
+mod shortcut_tip;
 mod timer;
 mod tools;
 mod windows_notification;
@@ -38,6 +38,7 @@ use clipboard::{
 };
 use key_usage::KeyUsageSnapshot;
 use settings::{AppSettings, CloseBehavior, ThemeMode};
+use shortcut_tip::{ShortcutTipInput, ShortcutTipSnapshot};
 use timer::{TimerCreateInput, TimerReorderInput, TimerSnapshot, TimerUpdateInput};
 use window_pinner::WindowPinnerSnapshot;
 use tools::{app_hotkey_snapshots, ToolRegistry, ToolSnapshot};
@@ -687,7 +688,6 @@ fn clipboard_update_settings(
     ensure_clipboard_enabled(&state)?;
     push_debug_log(&state, "clipboard", "clipboard.settings.update_requested");
     let snapshot = clipboard::update_settings(patch)?;
-    clipboard_notify::refresh();
     Ok(snapshot)
 }
 
@@ -727,7 +727,7 @@ fn clipboard_copy(state: State<'_, AppState>, id: String) -> Result<ClipboardPas
     push_debug_log(&state, "clipboard", format!("clipboard.copy.requested id={id}"));
     let result = clipboard::copy_entry(id)?;
     if result.copied {
-        clipboard_notify::notify_copied_now();
+        shortcut_tip::notify_text("已复制", shortcut_tip::Origin::Command);
     }
     Ok(result)
 }
@@ -742,7 +742,9 @@ fn clipboard_paste(
     push_debug_log(&state, "clipboard", format!("clipboard.paste.requested id={id}"));
     let result = clipboard::paste_entry(id)?;
     if result.copied {
-        clipboard_notify::notify_pasted_from_command();
+        shortcut_tip::notify_text("已粘贴", shortcut_tip::Origin::Command);
+        // 随后会模拟一次 Ctrl+V，短暂屏蔽快捷键匹配，避免多弹一条。
+        shortcut_tip::suppress_shortcuts(900);
         if window_service::is_clipboard_popup_pinned() {
             window_service::refocus_clipboard_popup_after_paste(&app);
         } else {
@@ -765,7 +767,7 @@ fn clipboard_copy_text(
     );
     let result = clipboard::copy_text(text)?;
     if result.copied {
-        clipboard_notify::notify_copied_now();
+        shortcut_tip::notify_text("已复制", shortcut_tip::Origin::Command);
     }
     Ok(result)
 }
@@ -783,7 +785,7 @@ fn clipboard_copy_derived_text(
     );
     let result = clipboard::copy_derived_text(text)?;
     if result.copied {
-        clipboard_notify::notify_copied_now();
+        shortcut_tip::notify_text("已复制", shortcut_tip::Origin::Command);
     }
     Ok(result)
 }
@@ -802,6 +804,8 @@ fn clipboard_paste_text(
     );
     let result = clipboard::paste_text(text)?;
     if result.copied {
+        shortcut_tip::notify_text("已粘贴", shortcut_tip::Origin::Command);
+        shortcut_tip::suppress_shortcuts(900);
         window_service::refocus_clipboard_popup_after_paste(&app);
     }
     Ok(result)
@@ -822,15 +826,58 @@ fn clipboard_restore(state: State<'_, AppState>, ids: Vec<String>) -> Result<(),
 }
 
 #[tauri::command]
-fn clipboard_notify_ready() {
-    clipboard_notify::mark_ready();
+fn shortcut_tip_ready() {
+    shortcut_tip::mark_ready();
 }
 
 /// 应用内窗口上报的快捷键（WebView2 聚焦时全局钩子可能收不到按键）。
 #[tauri::command]
-fn clipboard_notify_shortcut(kind: String) {
-    clipboard_notify::notify_ui_shortcut(&kind);
+fn shortcut_tip_begin_capture() {
+    shortcut_tip::begin_capture();
 }
+
+#[tauri::command]
+fn shortcut_tip_end_capture() {
+    shortcut_tip::end_capture();
+}
+
+#[tauri::command]
+fn shortcut_tip_report(keys: String) {
+    shortcut_tip::notify_shortcut(&keys, shortcut_tip::Origin::Ui);
+}
+
+#[tauri::command]
+fn shortcut_tip_snapshot() -> Result<ShortcutTipSnapshot, String> {
+    shortcut_tip::snapshot()
+}
+
+#[tauri::command]
+fn shortcut_tip_upsert(
+    state: State<'_, AppState>,
+    entry: ShortcutTipInput,
+) -> Result<ShortcutTipSnapshot, String> {
+    ensure_tool_enabled(&state, "shortcut_tip")?;
+    shortcut_tip::upsert(entry)
+}
+
+#[tauri::command]
+fn shortcut_tip_delete(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ShortcutTipSnapshot, String> {
+    ensure_tool_enabled(&state, "shortcut_tip")?;
+    shortcut_tip::delete(id)
+}
+
+#[tauri::command]
+fn shortcut_tip_restore_presets(
+    state: State<'_, AppState>,
+) -> Result<ShortcutTipSnapshot, String> {
+    ensure_tool_enabled(&state, "shortcut_tip")?;
+    shortcut_tip::restore_presets()
+}
+
+
 
 #[tauri::command]
 fn clipboard_purge(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
@@ -1001,6 +1048,7 @@ fn update_app_settings(
         app_usage::relocate(&next_storage_dir)?;
         key_usage::relocate(&next_storage_dir)?;
         timer::relocate(&next_storage_dir)?;
+        shortcut_tip::relocate(&next_storage_dir)?;
         window_pinner::relocate(&next_storage_dir)?;
     }
     save_app_settings(&state, registry.settings())?;
@@ -1064,6 +1112,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 快捷键提示的独立采键子进程入口（不初始化 Tauri / WebView）。
+pub fn run_shortcut_helper(port: u16) -> ! {
+    shortcut_tip::run_shortcut_helper(port)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1079,6 +1132,7 @@ pub fn run() {
                     if event.state() == ShortcutState::Pressed {
                         let mut handled = false;
                         let mut window_pinner_hotkey = false;
+                        let mut triggered_hotkey_id: Option<String> = None;
                         if let Some(state) = app.try_state::<AppState>() {
                             push_debug_log(
                                 &state,
@@ -1088,6 +1142,9 @@ pub fn run() {
                             if let Ok(registry) = state.registry.lock() {
                                 let shortcut_text = shortcut.to_string();
                                 let app_hotkey = registry.app_hotkey_for_shortcut(&shortcut_text);
+                                triggered_hotkey_id = app_hotkey
+                                    .clone()
+                                    .or_else(|| registry.tool_for_shortcut(&shortcut_text));
                                 if app_hotkey.as_deref() == Some("main_window") {
                                     handled = false;
                                 } else if registry.tool_for_shortcut(&shortcut_text).as_deref() == Some("window_pinner") {
@@ -1109,6 +1166,10 @@ pub fn run() {
                                     Err(error) => { let _ = app.emit("window-pinner-error", error); }
                                 }
                             }
+                        }
+                        if let Some(hotkey_id) = triggered_hotkey_id.clone() {
+                            // 快捷键回调在主线程上，提示放到独立线程，避免阻塞 UI 或与其他锁互相等待。
+                            std::thread::spawn(move || shortcut_tip::notify_app_hotkey(&hotkey_id));
                         }
                         if window_pinner_hotkey {
                             return;
@@ -1166,6 +1227,7 @@ pub fn run() {
             app_usage::init(&storage_dir)?;
             key_usage::init(&storage_dir)?;
             timer::init(&storage_dir)?;
+            shortcut_tip::init(&storage_dir, app.handle())?;
             let settings_path = settings_path_for(&storage_dir);
             let settings = AppSettings::load(&settings_path)?;
             window_pinner::init(&storage_dir, settings.window_pinner_max_pins)?;
@@ -1196,7 +1258,6 @@ pub fn run() {
                 runtime_ready: AtomicBool::new(false),
                 runtime_error: Mutex::new(None),
             });
-            clipboard_notify::init(app.handle());
             build_tray(app.handle())?;
             Ok(())
         })
@@ -1248,8 +1309,14 @@ pub fn run() {
             clipboard_restore,
             clipboard_purge,
             clipboard_purge_trash,
-            clipboard_notify_ready,
-            clipboard_notify_shortcut,
+            shortcut_tip_ready,
+            shortcut_tip_begin_capture,
+            shortcut_tip_end_capture,
+            shortcut_tip_report,
+            shortcut_tip_snapshot,
+            shortcut_tip_upsert,
+            shortcut_tip_delete,
+            shortcut_tip_restore_presets,
             clipboard_clear_history,
             clipboard_open_panel,
             clipboard_close_panel,

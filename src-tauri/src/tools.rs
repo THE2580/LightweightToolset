@@ -5,8 +5,8 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::{
-    app_usage, clipboard, key_usage, push_debug_log, settings::AppSettings, timer, window_pinner, window_service,
-    AppState,
+    app_usage, clipboard, key_usage, push_debug_log, settings::AppSettings, shortcut_tip, timer, window_pinner,
+    window_service, AppState,
 };
 
 struct ToolDefinition {
@@ -32,7 +32,7 @@ const APP_HOTKEYS: [AppHotkeyDefinition; 1] = [AppHotkeyDefinition {
     default_hotkey: "CTRL+ALT+M",
 }];
 
-const TOOLS: [ToolDefinition; 5] = [
+const TOOLS: [ToolDefinition; 6] = [
     ToolDefinition {
         id: "clipboard",
         name: "剪贴板",
@@ -71,6 +71,14 @@ const TOOLS: [ToolDefinition; 5] = [
         description: "使用快捷键置顶当前外部窗口并集中管理",
         default_hotkey: Some("CTRL+ALT+T"),
         default_enabled: false,
+        implemented: true,
+    },
+    ToolDefinition {
+        id: "shortcut_tip",
+        name: "快捷键提示",
+        description: "按下自己配置的快捷键时，在任务栏上方浮窗提示本次按键",
+        default_hotkey: None,
+        default_enabled: true,
         implemented: true,
     },
 ];
@@ -480,6 +488,9 @@ impl ToolRegistry {
         if tool.id == "timer" {
             timer::start()?;
         }
+        if tool.id == "shortcut_tip" {
+            shortcut_tip::start()?;
+        }
         let (stop, receiver) = mpsc::channel();
         let name = tool.id.to_owned();
         let thread = thread::Builder::new()
@@ -520,6 +531,9 @@ impl ToolRegistry {
         if tool.id == "window_pinner" {
             window_pinner::unpin_all();
         }
+        if tool.id == "shortcut_tip" {
+            shortcut_tip::stop();
+        }
         if let Some(worker) = self.workers.remove(tool.id) {
             let _ = worker.stop.send(());
             let _ = worker.thread.join();
@@ -539,6 +553,7 @@ fn log_tool_lifecycle(app: &AppHandle, tool_id: &str, message: impl Into<String>
         "key_usage" => "key_usage",
         "timer" => "timer",
         "window_pinner" => "window_pinner",
+        "shortcut_tip" => "shortcut_tip",
         _ => "settings",
     };
     push_debug_log(&state, level, message);

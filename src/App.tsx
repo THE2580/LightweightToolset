@@ -8,6 +8,8 @@ import { AnimatePresence, motion, Reorder, useDragControls } from "framer-motion
 import packageJson from "../package.json";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, RefObject, WheelEvent as ReactWheelEvent } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
   Bell,
   BellOff,
   ChevronLeft,
@@ -51,7 +53,7 @@ import {
 } from "lucide-react";
 import { type FocusEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { installShortcutNotifyBridge } from "./shortcutNotify";
+import { installShortcutNotifyBridge, chordFromEvent } from "./shortcutNotify";
 import "./App.css";
 
 type ThemeMode = "system" | "light" | "dark";
@@ -94,7 +96,25 @@ type ClipboardSettings = {
   maxTextBytes: number;
   panelWidth: number;
   panelHeight: number;
-  notifications: boolean;
+};
+
+type ShortcutTipEntry = {
+  id: string;
+  keys: string;
+  label: string;
+  enabled: boolean;
+  preset: boolean;
+  createdAt: number;
+  triggeredCount: number;
+  appHotkey?: string | null;
+  available: boolean;
+};
+
+type ShortcutTipSortRule = "name" | "created" | "count";
+
+type ShortcutTipSnapshot = {
+  settings: { notifications: boolean };
+  tips: ShortcutTipEntry[];
 };
 
 type ClipboardSnapshot = {
@@ -1323,6 +1343,384 @@ function DebugLogPanel() {
   );
 }
 
+function ShortcutTipToolPage({ tool }: { tool: Tool }) {
+  const [snapshot, setSnapshot] = useState<ShortcutTipSnapshot | null>(null);
+  const [draft, setDraft] = useState<{ id?: string; keys: string; label: string; preset: boolean } | null>(null);
+  const [tab, setTab] = useState<"preset" | "custom">("preset");
+  const [sortRule, setSortRule] = useState<ShortcutTipSortRule>(() => {
+    const stored = window.localStorage.getItem("shortcut-tip-sort");
+    return stored === "name" || stored === "created" || stored === "count" ? stored : "created";
+  });
+  const [sortDesc, setSortDesc] = useState(() => window.localStorage.getItem("shortcut-tip-sort-desc") === "1");
+  const { pushToast } = useToastQueue();
+
+  const refresh = useCallback(async () => {
+    setSnapshot(await invoke<ShortcutTipSnapshot>("shortcut_tip_snapshot"));
+  }, []);
+
+  useEffect(() => {
+    if (!tool.enabled) {
+      setSnapshot(null);
+      return;
+    }
+    void refresh().catch(() => {});
+    // 提示次数由后端累加，页面打开期间定时刷新，让 tooltip 里的次数保持最新。
+    const timer = window.setInterval(() => void refresh().catch(() => {}), 2000);
+    return () => window.clearInterval(timer);
+  }, [refresh, tool.enabled]);
+
+  // 录制期间由后端钩子接管按键（含 Win 键等系统热键），这里接收回传的组合。
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void listen<string>("shortcut-tip-captured", ({ payload }) => {
+      setDraft((current) => (current && !current.preset ? { ...current, keys: payload } : current));
+    }).then((unlisten) => {
+      dispose = unlisten;
+    });
+    return () => dispose?.();
+  }, []);
+
+  async function apply(pending: Promise<ShortcutTipSnapshot>, message: string) {
+    try {
+      setSnapshot(await pending);
+      pushToast(message);
+      return true;
+    } catch (error) {
+      pushToast(String(error));
+      return false;
+    }
+  }
+
+  async function saveDraft() {
+    if (!draft) {
+      return false;
+    }
+    if (!draft.keys) {
+      pushToast("请先按下要提示的快捷键");
+      return false;
+    }
+    if (!draft.label.trim()) {
+      pushToast("请填写提示文案");
+      return false;
+    }
+    const ok = await apply(
+      invoke<ShortcutTipSnapshot>("shortcut_tip_upsert", {
+        entry: { id: draft.id ?? null, keys: draft.keys, label: draft.label.trim(), enabled: true },
+      }),
+      "快捷键提示已保存",
+    );
+    if (ok) {
+      setTab(draft.preset ? "preset" : "custom");
+      setDraft(null);
+    }
+    return ok;
+  }
+
+  async function toggleEntry(entry: ShortcutTipEntry) {
+    await apply(
+      invoke<ShortcutTipSnapshot>("shortcut_tip_upsert", {
+        entry: { id: entry.id, keys: entry.keys, label: entry.label, enabled: !entry.enabled },
+      }),
+      entry.enabled ? "已关闭该提示" : "已开启该提示",
+    );
+  }
+
+  async function removeEntry(entry: ShortcutTipEntry) {
+    await apply(invoke<ShortcutTipSnapshot>("shortcut_tip_delete", { id: entry.id }), "已删除该提示");
+  }
+
+  async function restorePresets() {
+    await apply(invoke<ShortcutTipSnapshot>("shortcut_tip_restore_presets"), "已恢复常用预设");
+  }
+
+  const tips = snapshot?.tips ?? [];
+  const presetTips = tips.filter((tip) => tip.preset);
+  const customTips = tips.filter((tip) => !tip.preset);
+  const visibleTips = tab === "preset" ? presetTips : customTips;
+  const sortOptions: Array<SegmentedOption<ShortcutTipSortRule>> = [
+    { label: "名称", value: "name" },
+    ...(tab === "custom" ? [{ label: "创建时间", value: "created" as const }] : []),
+    { label: "提示次数", value: "count" },
+  ];
+  const effectiveRule: ShortcutTipSortRule = sortOptions.some((option) => option.value === sortRule) ? sortRule : "name";
+  const sortedTips = [...visibleTips].sort((left, right) => {
+    const compared =
+      effectiveRule === "name"
+        ? left.label.localeCompare(right.label, "zh-Hans-CN")
+        : effectiveRule === "created"
+          ? left.createdAt - right.createdAt
+          : left.triggeredCount - right.triggeredCount;
+    return sortDesc ? -compared : compared;
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem("shortcut-tip-sort", sortRule);
+    window.localStorage.setItem("shortcut-tip-sort-desc", sortDesc ? "1" : "0");
+  }, [sortRule, sortDesc]);
+
+  return (
+    <section className="tool-page shortcut-tip-page">
+      <header className="window-pinner-header">
+        <div className="window-pinner-heading">
+          <span className="window-pinner-title-icon"><Keyboard size={18} /></span>
+          <div>
+            <h1>快捷键提示</h1>
+            <p>按下自己配置的快捷键时，在任务栏上方浮窗提示本次按键。</p>
+          </div>
+        </div>
+        <div className="window-pinner-count"><strong>{tips.filter((tip) => tip.enabled).length}</strong><span>/ {tips.length}</span></div>
+      </header>
+
+      {!tool.enabled ? (
+        <div className="shortcut-tip-disabled">工具已停用，启用后才能收到快捷键提示。</div>
+      ) : (
+        <>
+          <div className="shortcut-tip-toolbar">
+            <SegmentedControl
+              ariaLabel="提示分组"
+              onChange={(value) => setTab(value)}
+              options={[
+                { label: "预设", value: "preset" },
+                { label: "自定义", value: "custom" },
+              ]}
+              value={tab}
+            />
+            <button className="primary-action" onClick={() => setDraft({ keys: "", label: "", preset: false })} type="button">
+              <Plus size={14} />新增提示
+            </button>
+            <button className="secondary-action" onClick={() => void restorePresets()} type="button">
+              <RotateCcw size={13} />恢复常用预设
+            </button>
+          </div>
+
+          <div className="shortcut-tip-list">
+            <div className="shortcut-tip-list-header">
+              <span>{tab === "preset" ? "常用预设" : "自定义提示"}</span>
+              <div className="shortcut-tip-sort">
+                <select
+                  aria-label="排序规则"
+                  onChange={(event) => setSortRule(event.currentTarget.value as ShortcutTipSortRule)}
+                  value={effectiveRule}
+                >
+                  {sortOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <button
+                  aria-label={sortDesc ? "改为升序" : "改为降序"}
+                  className={sortDesc ? "desc" : ""}
+                  onClick={() => setSortDesc((value) => !value)}
+                  title={sortDesc ? "降序" : "升序"}
+                  type="button"
+                >
+                  {sortDesc ? <ArrowDown size={13} /> : <ArrowUp size={13} />}
+                </button>
+                <span className="shortcut-tip-count">{visibleTips.length} 项</span>
+              </div>
+            </div>
+            <div className="shortcut-tip-list-body">
+              {sortedTips.length ? sortedTips.map((tip) => (
+                <article
+                  key={tip.id}
+                  className={`shortcut-tip-row ${tip.enabled && tip.available ? "" : "shortcut-tip-row-off"}`}
+                  title={tip.available ? `已提示 ${tip.triggeredCount} 次` : "对应工具已停用，暂不触发"}
+                >
+                  <kbd className="shortcut-tip-keys">{tip.keys || "未设置"}</kbd>
+                  <span className="shortcut-tip-label">
+                    {tip.label}
+                    {tip.available ? null : <em className="shortcut-tip-row-tag">工具已停用</em>}
+                  </span>
+                  <div className="shortcut-tip-row-actions">
+                    <button
+                      aria-label="编辑"
+                      title="编辑文案"
+                      onClick={() => setDraft({ id: tip.id, keys: tip.keys, label: tip.label, preset: tip.preset })}
+                      type="button"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    {tip.preset ? null : (
+                      <button aria-label="删除" title="删除" onClick={() => void removeEntry(tip)} type="button"><X size={14} /></button>
+                    )}
+                  </div>
+                  <button
+                    aria-label={tip.enabled ? "关闭该提示" : "开启该提示"}
+                    className={`switch ${tip.enabled ? "on" : ""}`}
+                    disabled={!tip.available}
+                    onClick={() => void toggleEntry(tip)}
+                    type="button"
+                  >
+                    <span />
+                  </button>
+                </article>
+              )) : (
+                <div className="shortcut-tip-empty">
+                  <Keyboard size={30} />
+                  <strong>{tab === "preset" ? "暂无预设提示" : "暂未添加自定义提示"}</strong>
+                  <span>{tab === "preset" ? "可以点「恢复常用预设」重新生成" : "点「新增提示」添加一条"}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+      {draft ? (
+        <ShortcutTipEditorDialog
+          draft={draft}
+          onCancel={() => setDraft(null)}
+          onChange={setDraft}
+          onSave={saveDraft}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function ShortcutTipEditorDialog({
+  draft,
+  onCancel,
+  onChange,
+  onSave,
+}: {
+  draft: { id?: string; keys: string; label: string; preset: boolean };
+  onCancel: () => void;
+  onChange: (draft: { id?: string; keys: string; label: string; preset: boolean } | null) => void;
+  onSave: () => Promise<boolean>;
+}) {
+  const [capturing, setCapturing] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const captureRef = useRef<HTMLDivElement | null>(null);
+  const capturingRef = useRef(false);
+  const locked = draft.preset;
+
+  // 录制只跟录制框的焦点绑定：聚焦才接管按键，失焦立刻恢复，
+  // 否则在下方文案框打字也会被当成录制内容回填。
+  const startCapture = useCallback(() => {
+    if (capturingRef.current) {
+      return;
+    }
+    capturingRef.current = true;
+    setCapturing(true);
+    void invoke("shortcut_tip_begin_capture").catch(() => {});
+    void invoke("suspend_tool_hotkeys").catch(() => {});
+  }, []);
+
+  const stopCapture = useCallback(() => {
+    if (!capturingRef.current) {
+      return;
+    }
+    capturingRef.current = false;
+    setCapturing(false);
+    void invoke("shortcut_tip_end_capture").catch(() => {});
+    void invoke("resume_tool_hotkeys").catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (locked) {
+      return;
+    }
+    const node = captureRef.current;
+    node?.focus();
+    if (node && document.activeElement === node) {
+      // 程序聚焦不一定触发 onFocus 的视觉更新，这里显式同步一次录制状态。
+      startCapture();
+    }
+    return () => stopCapture();
+  }, [locked, startCapture, stopCapture]);
+
+  function finish(action: () => void) {
+    if (closing) {
+      return;
+    }
+    setClosing(true);
+    window.setTimeout(action, 170);
+  }
+
+  function handleSave() {
+    if (closing) {
+      return;
+    }
+    setClosing(true);
+    window.setTimeout(() => {
+      void onSave().then((saved) => {
+        // 保存失败（校验或后端拒绝）时把弹窗恢复，避免退场遮罩卡住界面。
+        if (!saved) {
+          setClosing(false);
+        }
+      });
+    }, 170);
+  }
+
+  useEffect(() => {
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish(onCancel);
+      }
+    }
+    window.addEventListener("keydown", handleEscape, true);
+    return () => window.removeEventListener("keydown", handleEscape, true);
+  });
+
+  return createPortal(
+    <div className={`dialog-backdrop ${closing ? "closing" : ""}`} onMouseDown={() => finish(onCancel)}>
+      <section
+        aria-label={draft.id ? "编辑快捷键提示" : "新增快捷键提示"}
+        aria-modal="true"
+        className={`update-dialog shortcut-tip-dialog ${closing ? "closing" : ""}`}
+        onMouseDown={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <header className="update-dialog-header">
+          <div className="update-dialog-icon"><Keyboard size={16} /></div>
+          <div>
+            <h2>{draft.id ? "编辑提示" : "新增提示"}</h2>
+            <p>{locked ? "预设提示的快捷键固定，只能修改文案。" : "按下要提示的快捷键，再填写浮窗文案。"}</p>
+          </div>
+          <button aria-label="关闭" className="dialog-close-button" onClick={() => finish(onCancel)} type="button"><X size={13} /></button>
+        </header>
+        <div className="shortcut-tip-dialog-body">
+          {locked ? (
+            <div className="shortcut-tip-locked-keys">{draft.keys}</div>
+          ) : (
+            <div
+              aria-label="快捷键录入"
+              className={`shortcut-tip-capture ${capturing ? "active" : ""}`}
+              onBlur={stopCapture}
+              onFocus={startCapture}
+              onKeyDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const chord = chordFromEvent(event.nativeEvent);
+                if (chord) {
+                  onChange({ ...draft, keys: chord });
+                }
+              }}
+              ref={captureRef}
+              role="textbox"
+              tabIndex={0}
+            >
+              {draft.keys || (capturing ? "按下快捷键…" : "点击后按下快捷键")}
+            </div>
+          )}
+          <input
+            className="shortcut-tip-label-input"
+            maxLength={24}
+            onChange={(event) => onChange({ ...draft, label: event.currentTarget.value })}
+            placeholder="浮窗文案，例如：复制"
+            value={draft.label}
+          />
+        </div>
+        <footer className="update-dialog-actions">
+          <button className="secondary-action" onClick={() => finish(onCancel)} type="button">取消</button>
+          <button className="primary-action" onClick={handleSave} type="button">保存</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 function formatLogTime(timestampMs: number) {
   return new Date(timestampMs).toLocaleTimeString("zh-CN", { hour12: false });
 }
@@ -1330,6 +1728,9 @@ function formatLogTime(timestampMs: number) {
 function ToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: SettingsTab) => void; tool: Tool }) {
   if (tool.id === "clipboard") {
     return <ClipboardToolPage onOpenSettingsTab={onOpenSettingsTab} tool={tool} />;
+  }
+  if (tool.id === "shortcut_tip") {
+    return <ShortcutTipToolPage tool={tool} />;
   }
   if (tool.id === "app_usage") {
     return <AppUsageToolPage tool={tool} />;
@@ -4505,12 +4906,6 @@ function ClipboardSettingsDialog({
             description="关闭后不再记录外部复制，已有历史仍可使用"
             label="全局监听"
             onChange={(value) => void onUpdateSettings({ listening: value })}
-          />
-          <ToggleRow
-            checked={snapshot.settings.notifications}
-            description="真实复制、剪切与粘贴时在任务栏上方显示提示"
-            label="系统通知"
-            onChange={(value) => void onUpdateSettings({ notifications: value })}
           />
           <div className="clipboard-setting-grid">
             <label>

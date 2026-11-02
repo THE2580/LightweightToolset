@@ -1,38 +1,57 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Check, ClipboardCheck, Scissors } from "lucide-react";
+import {
+  AppWindow,
+  ClipboardPaste,
+  Copy,
+  FilePlus2,
+  Keyboard,
+  Redo2,
+  RotateCcw,
+  Save,
+  Scissors,
+  Search,
+  SquareDashed,
+  SquareX,
+  Undo2,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import "./notification.css";
 
-type TipKind = "copied" | "cut" | "pasted";
 type TipSide = "top" | "bottom" | "left" | "right";
 type ThemeMode = "light" | "dark" | "system";
 
 type TipPayload = {
-  kind: TipKind;
+  title: string;
+  keys?: string | null;
+  preset?: boolean;
   count: number;
   side: TipSide;
 };
 
-const LABELS: Record<TipKind, string> = {
-  copied: "已复制",
-  cut: "已剪切",
-  pasted: "已粘贴",
+const PRESET_ICONS: Record<string, typeof Copy> = {
+  "Ctrl+C": Copy,
+  "Ctrl+V": ClipboardPaste,
+  "Ctrl+X": Scissors,
+  "Ctrl+A": SquareDashed,
+  "Ctrl+Z": Undo2,
+  "Ctrl+Y": Redo2,
+  "Ctrl+S": Save,
+  "Ctrl+F": Search,
+  "Ctrl+N": FilePlus2,
+  "Ctrl+W": SquareX,
+  "Ctrl+Shift+T": RotateCcw,
+  "Alt+Tab": AppWindow,
 };
 
-function TipIcon({ kind }: { kind: TipKind }) {
-  if (kind === "cut") {
-    return <Scissors size={19} />;
-  }
-  if (kind === "pasted") {
-    return <ClipboardCheck size={19} />;
-  }
-  return <Check size={19} strokeWidth={3} />;
+function TipIcon({ keys, preset }: { keys?: string | null; preset?: boolean }) {
+  const Icon = (preset && keys && PRESET_ICONS[keys]) || Keyboard;
+  return <Icon size={17} />;
 }
 
 function NotificationApp() {
-  const [tip, setTip] = useState<TipPayload>({ kind: "copied", count: 1, side: "bottom" });
+  const [tip, setTip] = useState<TipPayload>({ title: "", keys: null, count: 1, side: "bottom" });
   const [visible, setVisible] = useState(false);
   const [flash, setFlash] = useState(0);
   const visibleRef = useRef(false);
@@ -63,7 +82,7 @@ function NotificationApp() {
     let disposeHide: (() => void) | undefined;
     let disposed = false;
     void (async () => {
-      disposeShow = await listen<TipPayload>("clipboard-notify-show", ({ payload }) => {
+      disposeShow = await listen<TipPayload>("shortcut-tip-show", ({ payload }) => {
         setTip(payload);
         setFlash((current) => current + 1);
         if (!visibleRef.current) {
@@ -76,12 +95,12 @@ function NotificationApp() {
           });
         }
       });
-      disposeHide = await listen("clipboard-notify-hide", () => {
+      disposeHide = await listen("shortcut-tip-hide", () => {
         visibleRef.current = false;
         setVisible(false);
       });
       if (!disposed) {
-        void invoke("clipboard_notify_ready");
+        void invoke("shortcut_tip_ready");
       }
     })();
 
@@ -96,11 +115,12 @@ function NotificationApp() {
 
   return (
     <div className={`notify-card side-${tip.side} ${visible ? "visible" : ""}`}>
-      <span className={`notify-icon ${tip.kind}`} key={`icon-${tip.kind}-${flash}`}>
-        <TipIcon kind={tip.kind} />
+      <span className="notify-icon" key={`icon-${flash}`}>
+        <TipIcon keys={tip.keys} preset={tip.preset} />
       </span>
-      <span className="notify-text">{LABELS[tip.kind]}</span>
-      <span className="notify-badge" key={`${tip.kind}-${tip.count}-${flash}`}>
+      <span className="notify-text">{tip.title}</span>
+      {tip.keys ? <kbd className="notify-keys">{tip.keys}</kbd> : null}
+      <span className="notify-badge" key={`${tip.title}-${tip.count}-${flash}`}>
         ×{tip.count}
       </span>
     </div>

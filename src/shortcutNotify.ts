@@ -1,46 +1,71 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type ShortcutKind = "copied" | "cut" | "pasted";
+const MODIFIER_KEYS = new Set(["Control", "Alt", "Shift", "Meta", "OS", "AltGraph"]);
+const KEY_NAMES: Record<string, string> = {
+  ArrowUp: "Up",
+  ArrowDown: "Down",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
+  Escape: "Esc",
+  " ": "Space",
+  Spacebar: "Space",
+  Enter: "Enter",
+  Tab: "Tab",
+  Backspace: "Backspace",
+  Delete: "Delete",
+  Insert: "Insert",
+  Home: "Home",
+  End: "End",
+  PageUp: "PageUp",
+  PageDown: "PageDown",
+};
 
-/** 当前窗口里是否有可复制/剪切的选中内容（输入框选区与普通选区都算）。 */
-function hasSelection() {
-  const active = document.activeElement;
-  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
-    const { selectionStart, selectionEnd } = active;
-    if (typeof selectionStart === "number" && typeof selectionEnd === "number") {
-      return selectionStart !== selectionEnd;
-    }
+/** 把一次按键事件拼成与后端一致的 `Ctrl+Shift+F` 形式；无法识别的键返回 null。 */
+export function chordFromEvent(event: KeyboardEvent): string | null {
+  if (MODIFIER_KEYS.has(event.key)) {
+    return null;
   }
-  return (window.getSelection()?.toString() ?? "").length > 0;
+  let key = KEY_NAMES[event.key];
+  if (!key && event.key.length === 1) {
+    key = event.key.toUpperCase();
+  }
+  if (!key && /^F([1-9]|1[0-9]|2[0-4])$/.test(event.key)) {
+    key = event.key;
+  }
+  if (!key) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (event.ctrlKey) {
+    parts.push("Ctrl");
+  }
+  if (event.altKey) {
+    parts.push("Alt");
+  }
+  if (event.shiftKey) {
+    parts.push("Shift");
+  }
+  if (event.metaKey) {
+    parts.push("Win");
+  }
+  parts.push(key);
+  return parts.join("+");
 }
 
 /**
  * 应用内快捷键上报。
  *
- * WebView2（Chromium）窗口获得焦点时，全局低级键盘钩子可能收不到按键
- * （见 `clipboard_notify.rs` 中的说明），因此软件自己的窗口用页面 keydown
- * 上报 Ctrl+C / Ctrl+X / Ctrl+V，由后端与钩子上报去重、节流后统一弹提示。
- *
- * 复制/剪切要求确实有选中内容，避免空选也弹“已复制”。
+ * WebView2（Chromium）窗口获得焦点时，Windows 会间断地不给全局低级键盘钩子
+ * 派发按键，因此软件自己的窗口用页面 keydown 上报，由「快捷键提示」工具统一
+ * 匹配并弹浮窗（与全局钩子去重、节流）。
  */
 export function installShortcutNotifyBridge() {
   function handleKeyDown(event: KeyboardEvent) {
-    if (event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey)) {
+    const chord = chordFromEvent(event);
+    if (!chord) {
       return;
     }
-    const key = event.key.toLowerCase();
-    let kind: ShortcutKind | null = null;
-    if (key === "v") {
-      kind = "pasted";
-    } else if (key === "c" && hasSelection()) {
-      kind = "copied";
-    } else if (key === "x" && hasSelection()) {
-      kind = "cut";
-    }
-    if (!kind) {
-      return;
-    }
-    void invoke("clipboard_notify_shortcut", { kind }).catch(() => {});
+    void invoke("shortcut_tip_report", { keys: chord }).catch(() => {});
   }
 
   window.addEventListener("keydown", handleKeyDown, true);
