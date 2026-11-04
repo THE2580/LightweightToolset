@@ -2,7 +2,7 @@
 
 - LightweightToolset 是旧版 LightweightWindowsToolset 的独立 Tauri 2 / Rust / React / TypeScript 路线；旧 Electron 项目只作稳定参考与迁移对照，新功能不回写旧项目。
 - 已实现工具：剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。后续候选：快捷翻译、桌宠。
-- 当前稳定发布为 `v0.6.0`，发布提交 `5f12c12`，仓库 `https://github.com/THE2580/LightweightToolset`。
+- 当前稳定发布为 `v0.6.2`，发布提交 `9b5257e`，仓库 `https://github.com/THE2580/LightweightToolset`。
 
 # 协作环境
 
@@ -47,6 +47,7 @@
 
 # 发布索引
 
+- `v0.6.2` / `9b5257e`：开机自启改计划任务（登录触发 + HighestAvailable + InteractiveToken + PT0S，清理旧 Run 键）；开发版 identifier 完全隔离（数据/WebView2/单实例/AUMID/开始菜单快捷方式/自启项）；开发版自启开关固定关闭并置灰；新增「静默启动」设置（主窗口 `visible:false` + setup 条件 show）。资产 `轻量化工具集_0.6.2_x64-setup.exe`（2,675,727 字节），SHA-256 `F3ADC3CFFF9807A490580C51074021E3EF210E27D864062E1A184173C88AB601`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.6.2`。
 - `v0.6.0` / `5f12c12`：新增工具「快捷键提示」（预设 24 条 + 本软件快捷键 + 自定义录制）、独立采键子进程（`--shortcut-tip-helper` + 回环 TCP）、浮窗内容自适应与显示期间持续压顶；剪贴板移除真实按键通知与剪贴板确认，条目点击提示改调新工具。资产 `LightweightToolset_0.6.0_x64-setup.exe`，SHA-256 `93D2315A30BDEDF01C7AAF0817EA102245DAC4734456776A4CB3E64C9F447499`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.6.0`。
 
 - `v0.5.1` / `1d4e65d`：装机回归修复——「关于」页版号改读 `package.json`；软件内 `Ctrl+C / Ctrl+X / Ctrl+V` 改页面上报（WebView2 聚焦时全局钩子漏派发），0.5s 节流 + 跨来源去重；应用内复制/剪切立即提示；通知浮窗每次显示重压置顶层。资产 `LightweightToolset_0.5.1_x64-setup.exe`，SHA-256 `0D37D40604CC46D5EC09CABFB97C0E1F1A7A3F57EB2E3FA2C34B230279AEAC53`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.5.1`。
