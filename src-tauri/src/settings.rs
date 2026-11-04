@@ -40,6 +40,9 @@ pub struct AppSettings {
     pub theme: ThemeMode,
     #[serde(default)]
     pub auto_start: bool,
+    /// 静默启动：启动后只显示托盘图标，不弹出主窗口。
+    #[serde(default)]
+    pub silent_start: bool,
     #[serde(default)]
     pub main_window_always_on_top: bool,
     #[serde(default = "default_window_pinner_max_pins")]
@@ -65,6 +68,7 @@ impl Default for AppSettings {
             hotkeys: BTreeMap::new(),
             theme: default_theme(),
             auto_start: false,
+            silent_start: false,
             main_window_always_on_top: false,
             window_pinner_max_pins: default_window_pinner_max_pins(),
             auto_check_updates: true,
@@ -92,5 +96,26 @@ impl AppSettings {
         let content = serde_json::to_string_pretty(settings)
             .map_err(|error| format!("序列化设置失败: {error}"))?;
         fs::write(path, content).map_err(|error| format!("保存设置失败: {error}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_settings_without_silent_start_default_to_visible_window() {
+        let legacy = r#"{"theme":"system","autoStart":true,"windowTitle":"旧配置"}"#;
+        let settings: AppSettings = serde_json::from_str(legacy).expect("旧配置应能解析");
+        assert!(!settings.silent_start);
+        assert!(settings.auto_start);
+    }
+
+    #[test]
+    fn silent_start_round_trips_through_json() {
+        let settings: AppSettings = serde_json::from_str(r#"{"silentStart":true}"#).expect("解析");
+        assert!(settings.silent_start);
+        let serialized = serde_json::to_string(&settings).expect("序列化");
+        assert!(serialized.contains("\"silentStart\":true"));
     }
 }

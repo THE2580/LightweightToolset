@@ -156,6 +156,9 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .switch.on { background: var(--primary); }
 .switch.on span { transform: translateX(11px); }
 .switch:disabled { cursor: wait; opacity: 0.7; }
+/* 开发版固定关闭的系统级开关：置灰、不可点，且不呈现开启态 */
+.switch.locked, .switch.locked:disabled { cursor: not-allowed; opacity: 0.4; }
+.settings-row.is-locked h2 { color: var(--muted-text); }
 
 .status-strip { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 7px 9px; border-top: 1px solid var(--soft-border); color: var(--muted-text); font-size: 9px; }
 .status-strip div { display: inline-flex; align-items: center; gap: 5px; color: #263b63; font-weight: 700; }

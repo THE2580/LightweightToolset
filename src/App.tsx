@@ -341,6 +341,7 @@ type AppSettings = {
   tools: Record<string, boolean>;
   theme: ThemeMode;
   autoStart: boolean;
+  silentStart: boolean;
   mainWindowAlwaysOnTop: boolean;
   autoCheckUpdates: boolean;
   showUpdateNotification: boolean;
@@ -359,6 +360,7 @@ type AppSnapshot = {
   settings: AppSettings;
   runtimeReady: boolean;
   runtimeError: string | null;
+  devBuild: boolean;
 };
 
 type CaptureHotkeyDraft = {
@@ -1118,6 +1120,7 @@ function App() {
               <SettingsView
                 appHotkeys={snapshot?.appHotkeys ?? []}
                 coldStartupMs={snapshot?.coldStartMs ?? 0}
+                devBuild={Boolean(snapshot?.devBuild)}
                 initialTab={settingsInitialTab}
                 settings={settings}
                 setAutoStartEnabled={setAutoStartEnabled}
@@ -1760,6 +1763,7 @@ function ToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: Settin
 function SettingsView({
   appHotkeys,
   coldStartupMs,
+  devBuild,
   initialTab,
   settings,
   setAutoStartEnabled,
@@ -1770,6 +1774,7 @@ function SettingsView({
 }: {
   appHotkeys: Tool[];
   coldStartupMs: number;
+  devBuild: boolean;
   initialTab: SettingsTab;
   settings: AppSettings;
   setAutoStartEnabled: (enabled: boolean) => Promise<void>;
@@ -1856,10 +1861,17 @@ function SettingsView({
               </div>
             </div>
             <ToggleRow
-              checked={settings.autoStart}
-              description="登录 Windows 后自动启动；关闭时会同步取消自启"
+              checked={!devBuild && settings.autoStart}
+              description={devBuild ? "开发版固定关闭，不会注册系统开机自启，也不影响已安装版本的设置" : "登录 Windows 后自动启动；关闭时会同步取消自启"}
+              disabled={devBuild}
               label="开机自启"
               onChange={(value) => setAutoStartEnabled(value)}
+            />
+            <ToggleRow
+              checked={settings.silentStart}
+              description="启动后只显示托盘图标，不弹出主窗口；可从托盘、主窗口快捷键或再次启动图标打开"
+              label="静默启动"
+              onChange={(value) => updateSettings({ silentStart: value })}
             />
             <ToggleRow
               checked={settings.mainWindowAlwaysOnTop}
@@ -6306,14 +6318,20 @@ function isRemoteVersionNewer(tag: string, current: string) {
   return false;
 }
 
-function ToggleRow({ checked, description, label, onChange }: { checked: boolean; description: string; label: string; onChange: (value: boolean) => void }) {
+function ToggleRow({ checked, description, disabled = false, label, onChange }: { checked: boolean; description: string; disabled?: boolean; label: string; onChange: (value: boolean) => void }) {
   return (
-    <div className="settings-row">
+    <div className={`settings-row${disabled ? " is-locked" : ""}`}>
       <div>
         <h2>{label}</h2>
         <p>{description}</p>
       </div>
-      <button className={`switch ${checked ? "on" : ""}`} onClick={() => onChange(!checked)} type="button">
+      <button
+        aria-disabled={disabled}
+        className={`switch ${checked ? "on" : ""}${disabled ? " locked" : ""}`}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        type="button"
+      >
         <span />
       </button>
     </div>

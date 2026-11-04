@@ -1,4 +1,5 @@
 mod app_usage;
+mod autostart;
 mod clipboard;
 mod input_monitor;
 mod key_usage;
@@ -27,8 +28,6 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, WindowEvent,
 };
-#[cfg(not(debug_assertions))]
-use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::ShortcutState;
 
 use app_usage::{AppUsageProcessPatch, AppUsageSettingsPatch, AppUsageSnapshot};
@@ -78,6 +77,8 @@ pub struct AppSnapshot {
     settings: AppSettings,
     runtime_ready: bool,
     runtime_error: Option<String>,
+    /// 开发版（debug 构建）标记：自启等系统级能力在开发版中固定关闭。
+    dev_build: bool,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -93,6 +94,7 @@ struct DebugLogEntry {
 struct SettingsPatch {
     theme: Option<ThemeMode>,
     main_window_always_on_top: Option<bool>,
+    silent_start: Option<bool>,
     auto_check_updates: Option<bool>,
     show_update_notification: Option<bool>,
     window_title: Option<String>,
@@ -119,6 +121,7 @@ fn app_snapshot(state: &AppState, registry: &ToolRegistry) -> Result<AppSnapshot
         settings: registry.settings().clone(),
         runtime_ready: state.runtime_ready.load(Ordering::Acquire),
         runtime_error,
+        dev_build: cfg!(debug_assertions),
     })
 }
 
@@ -128,10 +131,18 @@ fn start_runtime_initialization(app: AppHandle, storage_dir: PathBuf) {
             window_pinner::start_watchdog(&storage_dir)?;
 
             let state = app.state::<AppState>();
-            let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
-            if registry.settings().auto_start {
-                let _ = set_auto_start_plugin(&app, true);
+            // 自启注册会启动 schtasks 子进程，放在持有注册表锁之前执行，避免阻塞前端快照轮询。
+            let auto_start = {
+                let registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+                registry.settings().auto_start
+            };
+            if auto_start {
+                if let Err(error) = autostart::apply(true) {
+                    push_debug_log(&state, "error", format!("app.autostart.apply_failed error={error}"));
+                }
             }
+
+            let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
             registry.start_enabled(&app)?;
             if let Err(error) = registry.register_app_hotkeys(&app) {
                 eprintln!("[hotkey] app hotkey registration skipped: {error}");
@@ -295,30 +306,6 @@ fn initial_storage_dir(default_config_dir: &PathBuf) -> Result<PathBuf, String> 
         Ok(default_config_dir.clone())
     } else {
         Ok(PathBuf::from(storage_path))
-    }
-}
-
-fn set_auto_start_plugin(app: &AppHandle, enabled: bool) -> Result<(), String> {
-    #[cfg(debug_assertions)]
-    {
-        let _ = app;
-        let _ = enabled;
-        return Ok(());
-    }
-
-    #[cfg(not(debug_assertions))]
-    {
-    let autostart = app.autolaunch();
-    if enabled {
-        autostart
-            .enable()
-            .map_err(|error| format!("启用开机自启失败: {error}"))?;
-    } else {
-        autostart
-            .disable()
-            .map_err(|error| format!("关闭开机自启失败: {error}"))?;
-    }
-    Ok(())
     }
 }
 
@@ -949,7 +936,19 @@ fn set_auto_start_enabled(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<AppSnapshot, String> {
-    set_auto_start_plugin(&app, enabled)?;
+    // 开发版固定关闭开机自启：不注册系统任务，也不把这个开关写进设置。
+    if !autostart::is_supported() {
+        let _ = app;
+        push_debug_log(
+            &state,
+            "settings",
+            "app.autostart.ignored reason=dev_build".to_owned(),
+        );
+        let registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+        return app_snapshot(&state, &registry);
+    }
+
+    autostart::apply(enabled)?;
     let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
     registry.settings_mut().auto_start = enabled;
     save_app_settings(&state, registry.settings())?;
@@ -1027,6 +1026,14 @@ fn update_app_settings(
     }
     if let Some(close_behavior) = patch.close_behavior {
         settings.close_behavior = close_behavior;
+    }
+    if let Some(silent_start) = patch.silent_start {
+        let was_enabled = settings.silent_start;
+        settings.silent_start = silent_start;
+        if silent_start && !was_enabled {
+            // 首次开启时提示一次，避免下次启动后用户以为没启动成功。
+            std::thread::spawn(windows_notification::notify_silent_start_enabled);
+        }
     }
     if let Some(developer_mode) = patch.developer_mode {
         settings.developer_mode = developer_mode;
@@ -1118,14 +1125,20 @@ pub fn run_shortcut_helper(port: u16) -> ! {
 }
 
 pub fn run() {
+    // 正式版不修改 identifier，debug 分支不存在时 `mut` 无意义。
+    #[allow(unused_mut)]
+    let mut context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    {
+        // 开发版使用独立标识：配置/数据目录、WebView2 数据、单实例互斥量与窗口类、通知 AUMID
+        // 都由 identifier 派生，改成 `...-dev` 后与正式安装版完全隔离，可同时运行。
+        let identifier = context.config().identifier.clone();
+        context.config_mut().identifier = format!("{identifier}.dev");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(
-            tauri_plugin_autostart::Builder::new()
-                .app_name("LightweightToolset")
-                .build(),
-        )
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -1216,7 +1229,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            windows_notification::prepare_app_identity();
+            windows_notification::prepare_app_identity(&app.config().identifier);
             let _supported_window_kinds = window_service::reserved_window_kinds();
             let config_dir = app.path().app_config_dir()?;
             std::fs::create_dir_all(&config_dir)?;
@@ -1235,9 +1248,15 @@ pub fn run() {
             if !registry.is_enabled("window_pinner") {
                 window_pinner::unpin_all();
             }
+            let silent_start = registry.settings().silent_start;
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title(&registry.settings().window_title);
                 let _ = window.set_always_on_top(registry.settings().main_window_always_on_top);
+                // 配置里主窗口默认不可见；非静默启动时才显示，避免启动瞬间闪窗。
+                if !silent_start {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
             app.manage(AppState {
                 registry: Mutex::new(registry),
@@ -1252,12 +1271,18 @@ pub fn run() {
                         .map(|duration| duration.as_millis())
                         .unwrap_or_default(),
                     level: "app",
-                    message: "app.started profile=development".to_owned(),
+                    message: format!(
+                        "app.started profile={}",
+                        if cfg!(debug_assertions) { "development" } else { "release" }
+                    ),
                 }])),
                 runtime_started: AtomicBool::new(false),
                 runtime_ready: AtomicBool::new(false),
                 runtime_error: Mutex::new(None),
             });
+            if silent_start {
+                push_debug_log(&app.state::<AppState>(), "window", "main_window.silent_start");
+            }
             build_tray(app.handle())?;
             Ok(())
         })
@@ -1328,6 +1353,6 @@ pub fn run() {
             open_storage_path,
             update_app_settings
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("启动 LightweightToolset 失败");
 }

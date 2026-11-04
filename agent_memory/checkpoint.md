@@ -1,28 +1,31 @@
 # Goal
 
-- LightweightToolset 持续迭代：`v0.6.0` 已交付「快捷键提示」新工具；等待用户下一项需求。
+- LightweightToolset 修复开机自启不生效，并让开发版与正式安装版完全隔离、不再抢单实例与数据。
+- 基线：`v0.6.0` 已发布（tag → `5f12c12`）；本次改动已升到 `0.6.1` 并打包，**未提交、未推送**。
 
 # Current Focus
 
-- 状态：`v0.6.0` 已发布（tag `v0.6.0` → `5f12c12`；Release 资产 `LightweightToolset_0.6.0_x64-setup.exe`，SHA-256 `93D2315A30BDEDF01C7AAF0817EA102245DAC4734456776A4CB3E64C9F447499`）。
-- 新工具 `shortcut_tip`（第 6 个工具，默认启用）：预设 24 条（常用编辑 12 + Windows 系统 12）+ 本软件快捷键 3 条（跟随设置、回调触发）+ 自定义录制（录制框焦点绑定）。
-- 采键三条通道：页面上报（Chromium 前台普通键）、进程内钩子（焦点在别处）、独立子进程（`--shortcut-tip-helper <port>` + 回环 TCP，覆盖系统/他软件热键）。三者节流与去重统一在 `claim_report`。
-- 剪贴板：`clipboard_notify.rs` 已删除，条目点击提示改调 `shortcut_tip::notify_text`；模拟粘贴后短暂抑制快捷键匹配。
+- 自启由 Run 键改为计划任务：`autostart.rs` 生成 UTF-16 任务 XML，`schtasks /Create /XML` 注册「登录触发 + `HighestAvailable` + `InteractiveToken`」，显式 `ExecutionTimeLimit=PT0S`，并清理旧 Run 值。
+- 开发版隔离：debug 构建 `run()` 中把 identifier 改为 `com.the.lightweight-toolset.dev`；数据目录、WebView2 数据、单实例互斥量/窗口类、通知 AUMID、开始菜单快捷方式（「轻量化工具集 (开发版).lnk」）全部随 identifier 隔离。
+- 开发版自启：`set_auto_start_enabled` 直接拒绝且不写设置，`autostart::apply` 空操作，UI 开关固定关闭并置灰（`.switch.locked`）。
+- 已移除 `tauri-plugin-autostart` 依赖；`AppSnapshot` 新增 `devBuild`。
 
 # Remaining
 
-- 无进行中的任务；等用户下一条需求。
-- 可选优化（用户未要求，勿主动做）：按前台软件的预设分组与自动切换、外观可调（颜色/透明度/字号/拖拽定位）、持续输出模式——来自 Keycastr 的借鉴清单。
-- 已知限制：`Ctrl+Alt+Del`、`Win+L` 这类内核/安全层处理的组合无法捕获或拦截。
+1. 用户安装 `轻量化工具集_0.6.1_x64-setup.exe`（`src-tauri/target/release/bundle/nsis/`，SHA-256 `03B248684EBED21B43C05665E1DC7FCE7789F16C3468310D3F01F5CA21545032`）做真机验收：注销/重启 → 登录后自动启动且不弹 UAC；`schtasks /Query /TN LightweightToolset /XML` 应显示 `HighestAvailable` + `PT0S`。
+2. 真机验收：安装版运行中同时启动开发版，两者可共存、数据目录互不写入；开发版自启开关显示关闭且点击无效。
+3. 用户确认后提交（排除 `window_service.rs`、`.codex/`）、推送、打 tag、发 Release；推送前先按 `AGENTS.md`「发版前必须清理开发版痕迹」清理。
+4. 发版后按固定动作沉淀 AGENTS.md 与 `agent_memory`。
 
 # Verification
 
-- 2026-11-02：`npm run build`、`cargo check`、串行单测 11/11、`npm run tauri build`（release 2m34s + NSIS）全部通过。
-- 真机验收：本软件前台时 `Win+D`/`Win+I`/`Win+Shift+S`/PixPin `Ctrl+1` 均能提示且可录制；普通快捷键无重复提示；浮窗 2 秒后正常淡出且显示期间不被其他置顶窗口盖住。
-- 发版前必须重跑：`npm run build`、`cargo check`、`cargo test --lib -- --test-threads=1`、`npm run tauri build`。
+- 2026-11-04：`cargo check`（debug、release）无告警；`cargo build --release` 通过；`cargo test --lib --test-threads=1` 14/14（`TEMP/TMP` 需指向 `src-tauri/target/test-tmp`）；`npm run build` 通过。
+- schtasks 模板已用真实注册验证：创建成功 → 查询确认最高权限/交互式令牌/无执行时限/中文路径 → 删除成功，无残留任务。
+- 未做：安装新版后的真实登录自启验证（需用户安装）；UI 置灰效果未在真机截图确认。
 
 # Resume Here
 
-- 先 `git status --short` 确认现场（预期只剩 `M src-tauri/src/window_service.rs` 的 rustfmt 噪声与 `?? .codex/`）。
-- 快捷键提示相关代码入口：`src-tauri/src/shortcut_tip.rs`（存储/匹配/浮窗/子进程桥接）、`src-tauri/src/main.rs`（`--shortcut-tip-helper` 分支）、`src/App.tsx` 的 `ShortcutTipToolPage` / `ShortcutTipEditorDialog`、`src/notification.tsx`。
-- 动手前务必先读 `AGENTS.md` 的「平台约束与踩坑经验」，其中锁顺序、浮窗尺寸、录制焦点绑定等几条都是踩过坑写下的。
+- 先 `git status --short` 核对现场：预期为本次 8 个文件改动 + `autostart.rs` 新增，外加既有 `M src-tauri/src/window_service.rs`、`?? .codex/`。
+- 自启入口：`src-tauri/src/autostart.rs`（XML/schtasks/清理 Run 值）；调用点：`lib.rs` 的 `set_auto_start_enabled` 与 `start_runtime_initialization`。
+- 隔离入口：`lib.rs` 的 `run()` 顶部 identifier 改写；`windows_notification::prepare_app_identity(&identifier)`。
+- 下一步从「Remaining 1」开始，需用户明确授权才升版/提交/打包。

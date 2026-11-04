@@ -14,7 +14,7 @@ LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻
 ## 目录结构
 
 - `src/`：React 前端。`App.tsx` 为主窗口（体量大，优先局部修改）；`popup.tsx` / `free.tsx` 为快捷弹窗与自由窗口；`notification.tsx` 为快捷键提示浮窗页；`shortcutNotify.ts` 是页面按键上报桥；样式集中在 `App.css`、`popup.css`、`free.css`、`notification.css`。
-- `src-tauri/src/`：Rust 后端。`lib.rs` 为应用装配与命令入口；`main.rs` 兼作采键子进程入口（`--shortcut-tip-helper`）；`tools.rs` 工具注册与生命周期；`clipboard.rs`、`shortcut_tip.rs`、`app_usage.rs`、`key_usage.rs`、`input_monitor.rs`、`timer.rs`、`window_pinner.rs`、`window_service.rs`、`settings.rs` 按功能拆分。
+- `src-tauri/src/`：Rust 后端。`lib.rs` 为应用装配与命令入口；`main.rs` 兼作采键子进程入口（`--shortcut-tip-helper`）；`autostart.rs` 开机自启（计划任务）；`tools.rs` 工具注册与生命周期；`clipboard.rs`、`shortcut_tip.rs`、`app_usage.rs`、`key_usage.rs`、`input_monitor.rs`、`timer.rs`、`window_pinner.rs`、`window_service.rs`、`settings.rs` 按功能拆分。
 - `src-tauri/capabilities/default.json`：Tauri 权限清单；`src-tauri/tauri.conf.json`：窗口/打包配置。
 - `agent_memory/`：项目记忆（权威状态源，随仓库提交）；`archive/` 存旧摘要。
 
@@ -23,12 +23,14 @@ LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻
 ```powershell
 npm install                          # 首次/依赖变更后
 npm run dev                          # 仅前端 Vite
-npm run tauri dev                    # 开发版（含 Rust）
+npm run tauri dev                    # 注意：提权清单下会在运行阶段失败，见下方说明
 npm run build                        # tsc + vite build（前端类型与产物验证）
 npm run tauri build                  # release + NSIS 安装包
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 ```
+
+`npm run tauri dev` 实际不可用：cargo 用 CreateProcess 拉起 `target\debug\lightweight-toolset.exe`，`requireAdministrator` 清单会返回 `os error 740`（never executed），Vite 也随之退出。启动开发版的正确姿势：先 `npm run dev`，再把 `src-tauri/target/debug/lightweight-toolset.exe` 复制到 `%TEMP%` 下，用 `Start-Process -Verb RunAs`（或双击）启动；改了 Rust 代码要先 `cargo build` 再重新复制。
 
 全仓 `cargo fmt --check` 与严格 clippy 目前有既有告警/格式问题，不作为准入条件；也不要对仓库 Rust 文件直接跑 `rustfmt`（原因见下方平台约束），按既有行宽手工对齐即可。
 
@@ -48,12 +50,16 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 工具停用必须真正停止快捷键、worker、监听、计时器、关联窗口和 helper，不能只隐藏 UI。
 - 不做插件市场、远程插件、脚本扩展或运行时安装工具；只做编译期注册。
 - 不恢复 AI 聊天、API 设置、DeepSeek 或资源捕获入口。
-- 主程序以管理员权限运行（`requireAdministrator` 清单 `src-tauri/windows-app-manifest.xml`）；按键捕获依赖进程内低级键盘钩子，覆盖同级及更低完整性窗口，UAC 安全桌面与 System 完整性进程不可见。每次启动会弹 UAC，开机自启需接受该体验。
+- 主程序以管理员权限运行（`requireAdministrator` 清单 `src-tauri/windows-app-manifest.xml`）；按键捕获依赖进程内低级键盘钩子，覆盖同级及更低完整性窗口，UAC 安全桌面与 System 完整性进程不可见。手动启动会走 UAC（本机策略 `ConsentPromptBehaviorAdmin=0` 时静默提权）；开机自启必须走计划任务（见下方约束），不要改回 Run 键。
+- 开发版与正式安装版必须完全隔离（标识、数据目录、WebView2 缓存、单实例、通知身份、开始菜单快捷方式、自启项）；禁止为了让开发版复用正式版数据而改回同一 identifier，细节见「平台约束与踩坑经验」。
 - 不绕过 DSH 沙箱或审批；权限不足时说明并等待用户处理。
 - 保留首次 release 构建产物；`src-tauri/target` 膨胀时只清理可再生的 `target/debug`，禁止 `cargo clean`（会连带删除 release）。
 
 ## 平台约束与踩坑经验（必须遵守）
 
+- **开机自启必须用计划任务，不能用 Run 键**：`requireAdministrator` 的 exe 无法由 Explorer 从 `HKCU\...\Run` 拉起——Explorer 只做 CreateProcess，提权失败返回 `ERROR_ELEVATION_REQUIRED` 并被静默丢弃（证据：`Microsoft-Windows-Shell-Core/Operational` 事件 9708 PID 0，`Microsoft-Windows-UAC/Operational` 事件 1）。现实现为 `autostart.rs`：生成 UTF-16 任务 XML，`schtasks /Create /XML` 注册「登录触发 + `HighestAvailable` + `InteractiveToken`」任务，登录时由任务计划程序以完整令牌启动、不弹 UAC；必须显式 `<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>`，否则默认 72 小时会杀掉常驻进程；同时清理旧版写入的 Run 值。不要引入 `tauri-plugin-autostart`（它只会写 Run 键，正是本缺陷来源）。
+- **开发版与安装版必须完全隔离**：正式版标识固定 `com.the.lightweight-toolset`（数据目录不能变，避免丢用户数据）；debug 构建在 `run()` 里用 `context.config_mut().identifier` 改为 `...-dev`，由此派生的一切自动隔离：`%APPDATA%`/`%LOCALAPPDATA%` 目录、WebView2 数据、单实例互斥量与窗口类（`<identifier>-sim/-siw/-sic`）、通知 AUMID、开始菜单快捷方式（开发版为「轻量化工具集 (开发版).lnk」）。开发版的自启开关固定关闭且置灰不可点，`set_auto_start_enabled` 在 debug 下直接拒绝且不写设置，`autostart::apply` 在 debug 下是空操作，绝不改动安装版的任务或 Run 项。不要退回「同一 identifier + 手动换端口」之类的做法。
+- **静默启动必须靠 `visible:false` + 条件 `show()`**：`tauri.conf.json` 主窗口固定 `"visible": false`，在 `setup` 里读设置：`silent_start` 为 false 才 `show()` + `set_focus()`，为 true 就保持隐藏、只留托盘。不要在启动后调 `hide()`（会先闪一帧窗口）；隐藏状态下 WebView 照常加载，快捷键/剪贴板/统计/计时器不受影响。任何唤起入口（托盘、主窗口快捷键、单实例二次启动）都必须走 `show_main_window`。首次开启该设置时发一条 Windows 通知说明如何找回窗口。
 - **版本号单一来源**：前端版本号从 `../package.json` 直接 `import`（`src/App.tsx` 的 `APP_VERSION`）。禁止用 Vite `define` 注入全局常量——打包时会替换、dev 服务器不替换，会直接白屏。`package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` 三处版本号发版时同步修改。
 - **采键通道与 Chromium 限制**：Chromium/WebView2 窗口在前台时，Windows 会间断地不给 `WH_KEYBOARD_LL` 派发按键；被系统或其他软件注册走的热键（`Win+D`、`Win+I`、`Win+Shift+S`、他软件全局热键）连 Raw Input 都收不到。现有的三条通道缺一不可：① 软件自身窗口的普通按键走页面 `keydown`（`src/shortcutNotify.ts` → `shortcut_tip_report`）；② 焦点在别处时走进程内钩子；③ 系统/他软件热键走独立采键子进程——复用同一个 exe，带 `--shortcut-tip-helper <port>` 启动，不初始化 Tauri/WebView（分叉要在进入 Tauri 之前），装钩子后经 `127.0.0.1` 回环 TCP 回传组合键；子进程继承提权、不加 UAC，连接断开或回传失败必须自行退出，工具停用时主程序负责结束它。三条通道共用节流与去重。
 - **已排除方案：Raw Input 兜底**。实测 Raw Input（`RIDEV_INPUTSINK`）收得到普通键，但收不到被系统/他软件注册走的 Win 组合键；A/B 对照（禁用/启用）现象完全一致。不要再为「系统热键收不到」接 Raw Input。
@@ -73,6 +79,18 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 提交前必须：`git status --short` 核对仅包含预期文件；`npm run build`；`cargo check`；涉及 Rust 逻辑时跑串行单测。
 - 版本规则：新增工具调整第一/二位版本号；缺陷修复或既有工具扩展调整第三位。
 - 发布 = 带注释 tag + GitHub Release + 安装包 SHA-256 记录，须用户明确授权；当前最新为 `v0.6.0`。
+- **发版前必须清理开发版痕迹（固定检查项，不是可选项）**：每次发布/推送正式版之前，删除开发版产生的全部数据与缓存，确认发布环境里没有开发版残留。
+  1. 先结束仍在运行的开发版（`target/debug` 或 `%TEMP%` 里的那份），不要动安装版进程。
+  2. 若开发版设置过自定义存储目录，先读 `%APPDATA%\com.the.lightweight-toolset.dev\settings.json` 的 `storagePath`，一并清理。
+  3. 删除开发版配置/数据、WebView2 缓存与开发版快捷方式：
+
+```powershell
+Remove-Item -Recurse -Force "$env:APPDATA\com.the.lightweight-toolset.dev" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\com.the.lightweight-toolset.dev" -ErrorAction SilentlyContinue
+Remove-Item -Force "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\轻量化工具集 (开发版).lnk" -ErrorAction SilentlyContinue
+```
+
+  4. 不得清理正式版目录 `%APPDATA%\com.the.lightweight-toolset`、`%LOCALAPPDATA%\com.the.lightweight-toolset` 与用户的自定义存储目录；`LightweightToolset_Verify_DSH` 这类验证用计划任务也应确认已删除。
 - **发版完工后必须做一次沉淀（固定动作，不等用户提醒）**：确认发布完成后，① 通读本次改动，把可复用的经验、新约束、已排除方案补进本文件「平台约束与踩坑经验」；② 刷新 `agent_memory` 五件套（`context` 发布索引、`progress` 里程碑、`bugs` 风险与经验、`working_state` 现场、`checkpoint` 恢复快照），过时内容压缩进 `archive/`；③ 核对全库是否残留「未发版 / 旧版本号 / 已删除模块」等过时描述。
 - 推送前确认本地工作树无未预期的其他改动。
 
@@ -80,7 +98,8 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 
 - 前端/Build：`npm run build` 无 TS 错误与 Vite 构建错误。
 - Rust：`cargo check` 通过；改动模块的单测通过，全量用 `--test-threads=1`（`input_monitor` 等测试共享全局按键状态，并行会偶发失败）。
-- 运行时/UI 变更：需在 Windows 真机验证；应用为管理员权限，测试高完整性窗口按键时注意同 App ID 的已安装版干扰。
+- 运行时/UI 变更：需在 Windows 真机验证；应用为管理员权限，测试高完整性窗口按键时注意同 App ID 的已安装版干扰（本次改动后开发版已隔离标识，两者可同时运行）。
+- 开机自启改动：需在正式版上真实验证一次「注销/重启 → 登录后自动启动」；可用 `schtasks /Query /TN LightweightToolset /XML` 核对 `HighestAvailable`、`InteractiveToken`、`ExecutionTimeLimit=PT0S`。注意运行中的安装版不要随意结束进程。
 - 冷启动类改动：以 release 构建多次冷启动统计为准（正常退出或留足资源释放间隔），不以开发热重启为样本。
 
 ## 项目记忆
