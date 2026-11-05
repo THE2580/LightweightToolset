@@ -20,6 +20,7 @@
 - **测试临时目录**：系统 `%TEMP%` 对测试子进程返回 `PermissionDenied`；跑测试前把 `TEMP`/`TMP` 指向 `src-tauri/target/test-tmp`。
 - **`npm run tauri dev` 不可用（直接原因）**：cargo 用 CreateProcess 启动 `target\debug\lightweight-toolset.exe`，`requireAdministrator` 清单返回 `os error 740`（never executed），Vite 子进程随之退出。正确做法：先 `npm run dev`，把 debug exe 复制到 `%TEMP%` 后 `Start-Process -Verb RunAs` 启动（复制到 `%TEMP%` 同时规避工作区沙箱写限制，之前表现为 `保存存储定位文件失败: 拒绝访问 (os error 5)`）。
 - **布局陷阱**：本机缩放 135%，主窗口 912×598 的 CSS 视口只有 676×443；固定高度弹窗要用 `100vh` 兜底，不能按逻辑像素硬算。
+- **Release 资产中文名被截断**：直接用中文文件名上传（`gh release create` 路径含中文）时，GitHub 资产名会丢掉中文段，变成 `_0.6.x_x64-setup.exe`；0.6.2–0.6.4 均复现。做法：上传前复制为 `LightweightToolset_<版本>_x64-setup.exe` 英文名再上传，上传后用 `gh release view` / `gh api` 核对；已上传的可 `gh api -X PATCH repos/<owner>/<repo>/releases/assets/<id> -f name=...` 修正（内容与 SHA-256 不变）。
 
 # 已确认经验
 

@@ -126,6 +126,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
   1. **README**：版本号、功能列表（新增 / 变更 / 移除）、下载与安装说明；过期的截图、命令或描述一并修正。
   2. **项目简介**：GitHub 仓库 About 描述随版本与功能更新（`gh repo edit --description "..."`）。
   3. 二者与 tag/Release 同批确认；发版完成后核对仓库首页展示的是当版信息。
+- **Release 资产名必须用 ASCII 英文名（固定动作）**：统一为 `LightweightToolset_<版本>_x64-setup.exe`。本地构建产物由 `productName` 生成中文名属正常，**上传前复制成英文名副本**再上传；禁止直接上传中文文件名（实测会被截断成 `_0.6.x_x64-setup.exe`，0.6.2–0.6.4 已踩过并修正）。上传后必须用 `gh release view` 或 `gh api` 核对资产名完整，发现截断立即用 `gh api -X PATCH .../releases/assets/<id> -f name=...` 修正。README 的下载说明也必须引用英文资产名。
 - **发版前必须清理开发版痕迹（固定检查项，不是可选项）**：每次发布/推送正式版之前，删除开发版产生的全部数据与缓存，确认发布环境里没有开发版残留。
   1. 先结束仍在运行的开发版（`target/debug` 或 `%TEMP%\lwt-dev` 里的那份），不要动安装版进程。
   2. 若开发版设置过自定义存储目录，先读 `%APPDATA%\com.the.lightweight-toolset.dev\settings.json` 的 `storagePath`，一并清理。
