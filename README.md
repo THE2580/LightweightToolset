@@ -2,6 +2,15 @@
 
 基于 Tauri 2、Rust、React 和 TypeScript 的 Windows 轻量化桌面工具集。应用采用固定主窗口、单实例与单托盘设计，工具可独立启用或停用，设置与统计数据保存在本地。
 
+当前版本：`v0.6.3`。
+
+## 下载与安装
+
+- 最新安装包见 [Releases](https://github.com/THE2580/LightweightToolset/releases/latest)，文件名形如 `轻量化工具集_0.6.3_x64-setup.exe`。
+- 系统要求：Windows 10 / 11 x64，需要 WebView2 Runtime（系统一般已内置）。
+- 程序以管理员权限运行（启动时会走 UAC）：按键采集依赖低级键盘钩子，需要覆盖同等级及更低完整性的窗口；UAC 安全桌面与 System 完整性进程不可见。
+- 开机自启通过「登录触发 + 最高权限」的计划任务实现，登录时自动启动、不再额外弹 UAC；可在设置中开启「静默启动」，登录后只显示托盘图标。
+
 ## 内置工具
 
 ### 剪贴板
@@ -20,7 +29,7 @@
 
 - 按日、周、月、年统计物理键盘与鼠标按键次数，支持趋势、平均参考线、排行和方向键循环切换范围。
 - 提供主键盘、导航区、数字键盘和鼠标热力预览，并区分主键盘与数字键盘键值。
-- 采用 Raw Input 与低级 Hook 采集物理键鼠输入，过滤注入输入与无效 `0xFF` 事件；按需启动最小管理员 helper，以覆盖已提权游戏和启动器，同时保持主程序普通权限运行。
+- 采用 Raw Input 与低级 Hook 采集物理键鼠输入，过滤注入输入与无效 `0xFF` 事件；主程序以管理员权限运行，可覆盖已提权的游戏与启动器。
 - 只保存按键名称和聚合次数，不保存输入文本、按键顺序、组合内容、窗口或进程信息。
 
 ### 计时器
@@ -34,12 +43,19 @@
 - 使用全局快捷键切换当前外部窗口的置顶状态，并在工具页集中查看和取消已置顶窗口。
 - 快捷键成功置顶或取消时同时显示应用 Toast 与带默认提示音的 Windows 系统通知，主窗口隐藏时也能获得反馈。
 - 支持单项取消、全部取消、最大数量限制；独立监护进程会在正式版异常终止后释放责任清单中的置顶窗口。
-- 受 Windows UIPI 权限边界限制，普通权限运行时无法置顶管理员权限窗口；第一版不要求主程序提权，也不启动管理员 helper。
+- 受 Windows UIPI 权限边界限制，无法操作完整性级别更高的窗口。
+
+### 快捷键提示
+
+- 内置常用编辑键、Windows 系统键与本软件快捷键预设，也可自行录制任意组合键。
+- 按键时在任务栏上方弹出浮窗提示，支持提示文案编辑、排序与提示次数统计。
+- 三条采集通道覆盖不同场景：本软件窗口前台时的页面按键、焦点在别处时的进程内钩子、以及系统或其他软件占用的热键（由独立采键子进程经回环 TCP 回传），并统一节流与去重。
 
 ## 应用能力
 
-- 单实例、单托盘、统一工具注册与生命周期管理。
-- 软件级与工具级全局快捷键、开机启动和关闭行为设置。
+- 单实例、单托盘、编译期工具注册与统一生命周期管理。
+- 软件级与工具级全局快捷键、开机自启（计划任务）、静默启动与关闭行为设置。
+- 托盘悬停与系统通知使用中文应用名；静默启动时会发一条启动提示，说明三种唤起主窗口的方式。
 - 本地数据目录迁移、存储占用展示、调试日志和在线更新检查。
 - 全局弹窗、Toast 和工具页面采用统一交互与视觉规范；深色主题使用中性黑灰表面，并同步覆盖主窗口、快捷弹窗与自由窗口。
 
@@ -51,23 +67,29 @@
 
 ## 开发与验证
 
-环境：Windows、Rust、Node.js、npm、WebView2 Runtime。
+环境：Windows、Rust 1.96+、Node.js 24+、npm、WebView2 Runtime。
 
 ```powershell
 npm install
-npm run tauri dev
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 ```
 
-基础验证：
+调试运行（`npm run tauri dev` 因程序需要管理员权限，会在启动阶段报 `os error 740`）：
 
 ```powershell
-npm run build
-cargo test --manifest-path src-tauri\Cargo.toml
-cargo check --manifest-path src-tauri\Cargo.toml
+npm run dev                      # 先启动 Vite
+cargo build --manifest-path src-tauri/Cargo.toml
+# 把 src-tauri/target/debug/lightweight-toolset.exe 复制到任意可写目录后双击/提权启动
 ```
+
+开发版使用独立应用标识（`com.the.lightweight-toolset.dev`），数据目录、WebView2 缓存、单实例与开始菜单快捷方式均与正式版隔离，可与已安装版本同时运行。
 
 生成 Windows x64 NSIS 安装包：
 
 ```powershell
-npm run tauri -- build
+npm run tauri build
 ```
+
+更多工程约束与开发版/正式版差异见仓库根目录 `AGENTS.md`。

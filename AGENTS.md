@@ -122,6 +122,10 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 提交前必须：`git status --short` 核对仅包含预期文件；`npm run build`；`cargo check`；涉及 Rust 逻辑时跑串行单测。
 - 版本规则：新增工具调整第一/二位版本号；缺陷修复或既有工具扩展调整第三位。
 - 发布 = 带注释 tag + GitHub Release + 安装包 SHA-256 记录，须用户明确授权；当前最新为 `v0.6.3`。
+- **发版时必须同步更新 README 与项目简介（固定动作，不是可选项）**：每次发版都要把对外说明更新到当版，不允许只发代码、文档滞后。
+  1. **README**：版本号、功能列表（新增 / 变更 / 移除）、下载与安装说明；过期的截图、命令或描述一并修正。
+  2. **项目简介**：GitHub 仓库 About 描述随版本与功能更新（`gh repo edit --description "..."`）。
+  3. 二者与 tag/Release 同批确认；发版完成后核对仓库首页展示的是当版信息。
 - **发版前必须清理开发版痕迹（固定检查项，不是可选项）**：每次发布/推送正式版之前，删除开发版产生的全部数据与缓存，确认发布环境里没有开发版残留。
   1. 先结束仍在运行的开发版（`target/debug` 或 `%TEMP%\lwt-dev` 里的那份），不要动安装版进程。
   2. 若开发版设置过自定义存储目录，先读 `%APPDATA%\com.the.lightweight-toolset.dev\settings.json` 的 `storagePath`，一并清理。
