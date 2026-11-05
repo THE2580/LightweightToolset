@@ -165,6 +165,11 @@ impl ToolRegistry {
         &mut self.settings
     }
 
+    /// 供启动通知等文案使用：返回当前设置的软件级快捷键文本（含默认值回退）。
+    pub fn app_hotkey_text(&self, hotkey_id: &str) -> String {
+        self.hotkey_for(hotkey_id)
+    }
+
     pub fn start_enabled(&mut self, app: &AppHandle) -> Result<(), String> {
         for tool in TOOLS.iter() {
             if tool.implemented && self.is_enabled(tool.id) {
@@ -557,6 +562,18 @@ fn log_tool_lifecycle(app: &AppHandle, tool_id: &str, message: impl Into<String>
         _ => "settings",
     };
     push_debug_log(&state, level, message);
+}
+
+/// 开发版首次启动（数据目录全新）时的默认值：便于测试各类工具与静默启动。
+/// 仅由 `cfg!(debug_assertions)` 分支调用，不影响正式版。
+pub fn apply_development_defaults(settings: &mut AppSettings) {
+    settings.auto_start = false;
+    settings.silent_start = true;
+    settings.main_window_always_on_top = true;
+    settings.developer_mode = true;
+    for tool in TOOLS.iter() {
+        settings.tools.insert(tool.id.to_owned(), false);
+    }
 }
 
 pub fn app_hotkey_snapshots(settings: &AppSettings) -> Vec<ToolSnapshot> {

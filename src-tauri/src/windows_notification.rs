@@ -45,6 +45,36 @@ pub fn notify_silent_start_enabled() {
     }
 }
 
+/// 静默启动真正发生时的提示：告诉用户程序已在后台运行，以及三种呼出方式。
+pub fn notify_silent_start(hotkey: Option<&str>) {
+    #[cfg(target_os = "windows")]
+    {
+        let body = silent_start_body(hotkey);
+        let _ = notify_rust::Notification::new()
+            .app_id(app_id())
+            .summary("轻量化工具集已在后台启动")
+            .body(&body)
+            .sound_name("Default")
+            .auto_icon()
+            .show();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = hotkey;
+    }
+}
+
+/// 静默启动通知正文；`hotkey` 为当前实际生效的「呼出主窗口」快捷键，注册失败时传 None。
+pub fn silent_start_body(hotkey: Option<&str>) -> String {
+    match hotkey {
+        Some(hotkey) if !hotkey.is_empty() => format!(
+            "窗口已隐藏到托盘。点托盘图标、再次打开程序，或按 {hotkey} 即可显示主窗口。"
+        ),
+        _ => "窗口已隐藏到托盘。点托盘图标或再次打开程序即可显示主窗口。".to_owned(),
+    }
+}
+
 pub fn notify_timer_finished(name: &str) {
     #[cfg(target_os = "windows")]
     {
@@ -167,3 +197,23 @@ const PKEY_APP_USER_MODEL_ID: windows::Win32::Foundation::PROPERTYKEY =
         fmtid: windows::core::GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
         pid: 5,
     };
+
+#[cfg(test)]
+mod tests {
+    use super::silent_start_body;
+
+    #[test]
+    fn silent_start_body_mentions_actual_hotkey_when_available() {
+        let body = silent_start_body(Some("CTRL+ALT+M"));
+        assert!(body.contains("CTRL+ALT+M"));
+        assert!(body.contains("托盘"));
+        assert!(body.contains("再次打开程序"));
+    }
+
+    #[test]
+    fn silent_start_body_omits_hotkey_hint_when_registration_failed() {
+        let body = silent_start_body(None);
+        assert!(!body.contains("按"));
+        assert!(body.contains("托盘"));
+    }
+}

@@ -144,8 +144,21 @@ fn start_runtime_initialization(app: AppHandle, storage_dir: PathBuf) {
 
             let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
             registry.start_enabled(&app)?;
-            if let Err(error) = registry.register_app_hotkeys(&app) {
-                eprintln!("[hotkey] app hotkey registration skipped: {error}");
+            let hotkeys_registered = match registry.register_app_hotkeys(&app) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("[hotkey] app hotkey registration skipped: {error}");
+                    false
+                }
+            };
+            // 静默启动时补一条启动提示：仅在实际隐藏了主窗口的那次启动发送。
+            if registry.settings().silent_start {
+                let hotkey = if hotkeys_registered {
+                    Some(registry.app_hotkey_text("main_window"))
+                } else {
+                    None
+                };
+                std::thread::spawn(move || windows_notification::notify_silent_start(hotkey.as_deref()));
             }
             Ok(())
         })();
@@ -1020,7 +1033,7 @@ fn update_app_settings(
         if !title.is_empty() {
             settings.window_title = title.to_owned();
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title(title);
+                let _ = window.set_title(&display_window_title(title));
             }
         }
     }
@@ -1036,9 +1049,13 @@ fn update_app_settings(
         }
     }
     if let Some(developer_mode) = patch.developer_mode {
-        settings.developer_mode = developer_mode;
+        // 开发版固定开启开发者模式（界面开关也锁定），避免误关闭后看不到诊断信息。
+        settings.developer_mode = if cfg!(debug_assertions) { true } else { developer_mode };
     }
-    if let Some(storage_path) = patch.storage_path {
+    if patch.storage_path.is_some() && cfg!(debug_assertions) {
+        // 开发版固定使用应用配置目录，避免测试数据写到别处、与安装版的判断混淆。
+        push_debug_log(&state, "settings", "app.storage_path.ignored reason=dev_build");
+    } else if let Some(storage_path) = patch.storage_path {
         let next_storage_dir = resolve_storage_path(&state, Some(storage_path.clone()))?;
         fs::create_dir_all(&next_storage_dir)
             .map_err(|error| format!("创建存储目录失败: {error}"))?;
@@ -1076,6 +1093,29 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+/// 窗口标题的展示值：开发版在用户设置的标题后追加标识，存储值保持原文。
+fn display_window_title(title: &str) -> String {
+    if cfg!(debug_assertions) {
+        format!("{title}（开发版）")
+    } else {
+        title.to_owned()
+    }
+}
+
+/// 托盘悬停等处的应用名：正式版用产品中文名，开发版追加标识。
+fn display_app_name(app: &AppHandle) -> String {
+    let base = app
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| "轻量化工具集".to_owned());
+    if cfg!(debug_assertions) {
+        format!("{base}（开发版）")
+    } else {
+        base
+    }
+}
+
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
@@ -1083,7 +1123,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("main-tray")
         .icon(app.default_window_icon().expect("缺少应用图标").clone())
-        .tooltip("LightweightToolset")
+        .tooltip(display_app_name(app))
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
@@ -1242,7 +1282,14 @@ pub fn run() {
             timer::init(&storage_dir)?;
             shortcut_tip::init(&storage_dir, app.handle())?;
             let settings_path = settings_path_for(&storage_dir);
-            let settings = AppSettings::load(&settings_path)?;
+            let settings_file_existed = settings_path.exists();
+            let mut settings = AppSettings::load(&settings_path)?;
+            if cfg!(debug_assertions) && !settings_file_existed {
+                // 开发版首次启动（数据目录全新）采用测试友好的默认值：全部工具关闭、
+                // 静默启动/主窗口置顶/开发者模式默认开启；正式版默认值不受影响。
+                tools::apply_development_defaults(&mut settings);
+                AppSettings::save(&settings_path, &settings)?;
+            }
             window_pinner::init(&storage_dir, settings.window_pinner_max_pins)?;
             let registry = ToolRegistry::new(settings);
             if !registry.is_enabled("window_pinner") {
@@ -1250,7 +1297,7 @@ pub fn run() {
             }
             let silent_start = registry.settings().silent_start;
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title(&registry.settings().window_title);
+                let _ = window.set_title(&display_window_title(&registry.settings().window_title));
                 let _ = window.set_always_on_top(registry.settings().main_window_always_on_top);
                 // 配置里主窗口默认不可见；非静默启动时才显示，避免启动瞬间闪窗。
                 if !silent_start {

@@ -738,6 +738,8 @@ function App() {
   const updateChecker = useUpdateChecker(settings);
   const { pushToast: pushAppToast, toast: appToast } = useToastQueue(TOAST_DURATION_MS, true);
   const windowTitle = settings?.windowTitle || DEFAULT_TITLE;
+  // 自绘标题栏显示值：开发版在用户设置的标题后追加标识，输入框仍显示原文。
+  const displayedWindowTitle = snapshot?.devBuild ? `${windowTitle}（开发版）` : windowTitle;
   const isHistoryBackAvailable = canNavigateHistory(-1);
   const isHistoryForwardAvailable = canNavigateHistory(1);
   const sidebarTargets = useMemo(() => {
@@ -973,7 +975,7 @@ function App() {
     <div className="app-shell" onContextMenu={(event) => event.preventDefault()}>
       <header className="window-chrome">
         <div className="window-drag-area" onMouseDown={handleTitlebarMouseDown}>
-          <span className="window-title">{windowTitle}</span>
+          <span className="window-title">{displayedWindowTitle}</span>
           {sidebarCollapsed ? (
             <div className="title-history-controls" aria-label="浏览历史">
               <button aria-label="后退" disabled={!isHistoryBackAvailable} onClick={() => navigateHistory(-1)} type="button">
@@ -1907,21 +1909,22 @@ function SettingsView({
               </select>
             </div>
             <ToggleRow
-              checked={settings.developerMode}
-              description="后续用于显示诊断日志与开发辅助入口"
+              checked={devBuild ? true : settings.developerMode}
+              description={devBuild ? "开发版固定开启，用于显示诊断日志与开发辅助入口" : "后续用于显示诊断日志与开发辅助入口"}
+              disabled={devBuild}
               label="开发者模式"
               onChange={(value) => updateSettings({ developerMode: value })}
             />
-            <div className="settings-row stack">
+            <div className={`settings-row stack${devBuild ? " is-locked" : ""}`}>
               <div>
                 <h2>存储路径</h2>
-                <p>{defaultStoragePath ? `默认目录：${defaultStoragePath}` : "默认使用应用配置目录；可打开当前目录或恢复默认"}</p>
+                <p>{devBuild ? "开发版固定使用应用配置目录，避免测试数据写到别处" : defaultStoragePath ? `默认目录：${defaultStoragePath}` : "默认使用应用配置目录；可打开当前目录或恢复默认"}</p>
               </div>
               <div className="settings-inline wide">
                 <input className="settings-input mono" placeholder="默认应用配置目录" readOnly value={storagePathDraft} />
-                <button className="secondary-action icon-text-action" onClick={() => void changeStoragePath()} type="button"><FolderOpen size={13} />更改</button>
+                <button className="secondary-action icon-text-action" disabled={devBuild} onClick={() => void changeStoragePath()} type="button"><FolderOpen size={13} />更改</button>
                 <button className="secondary-action" onClick={openStoragePath} type="button">打开</button>
-                {settings.storagePath ? (
+                {!devBuild && settings.storagePath ? (
                   <button className="icon-action" aria-label="恢复默认存储路径" onClick={restoreDefaultStoragePath} type="button"><RotateCcw size={13} /></button>
                 ) : null}
               </div>
