@@ -54,6 +54,7 @@ import {
 import { type FocusEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { installShortcutNotifyBridge, chordFromEvent } from "./shortcutNotify";
+import { ShortcutTipIcon } from "./shortcutTipIcon";
 import "./App.css";
 
 type ThemeMode = "system" | "light" | "dark";
@@ -423,6 +424,7 @@ const toolIcons = {
   key_usage: Keyboard,
   timer: Clock,
   window_pinner: Pin,
+  shortcut_tip: ShortcutTipIcon,
 };
 const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SUPER", "CMD", "COMMAND"]);
 const TOAST_DURATION_MS = 2400;
@@ -1467,7 +1469,7 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
     <section className="tool-page shortcut-tip-page">
       <header className="window-pinner-header">
         <div className="window-pinner-heading">
-          <span className="window-pinner-title-icon"><Keyboard size={18} /></span>
+          <span className="window-pinner-title-icon"><ShortcutTipIcon size={18} /></span>
           <div>
             <h1>快捷键提示</h1>
             <p>按下自己配置的快捷键时，在任务栏上方浮窗提示本次按键。</p>
@@ -1560,7 +1562,7 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
                 </article>
               )) : (
                 <div className="shortcut-tip-empty">
-                  <Keyboard size={30} />
+                  <ShortcutTipIcon size={30} />
                   <strong>{tab === "preset" ? "暂无预设提示" : "暂未添加自定义提示"}</strong>
                   <span>{tab === "preset" ? "可以点「恢复常用预设」重新生成" : "点「新增提示」添加一条"}</span>
                 </div>
@@ -1677,7 +1679,7 @@ function ShortcutTipEditorDialog({
         role="dialog"
       >
         <header className="update-dialog-header">
-          <div className="update-dialog-icon"><Keyboard size={16} /></div>
+          <div className="update-dialog-icon"><ShortcutTipIcon size={16} /></div>
           <div>
             <h2>{draft.id ? "编辑提示" : "新增提示"}</h2>
             <p>{locked ? "预设提示的快捷键固定，只能修改文案。" : "按下要提示的快捷键，再填写浮窗文案。"}</p>
