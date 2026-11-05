@@ -2,11 +2,11 @@
 
 基于 Tauri 2、Rust、React 和 TypeScript 的 Windows 轻量化桌面工具集。应用采用固定主窗口、单实例与单托盘设计，工具可独立启用或停用，设置与统计数据保存在本地。
 
-当前版本：`v0.6.3`。
+当前版本：`v0.6.4`。
 
 ## 下载与安装
 
-- 最新安装包见 [Releases](https://github.com/THE2580/LightweightToolset/releases/latest)，文件名形如 `轻量化工具集_0.6.3_x64-setup.exe`。
+- 最新安装包见 [Releases](https://github.com/THE2580/LightweightToolset/releases/latest)，文件名形如 `轻量化工具集_0.6.4_x64-setup.exe`。
 - 系统要求：Windows 10 / 11 x64，需要 WebView2 Runtime（系统一般已内置）。
 - 程序以管理员权限运行（启动时会走 UAC）：按键采集依赖低级键盘钩子，需要覆盖同等级及更低完整性的窗口；UAC 安全桌面与 System 完整性进程不可见。
 - 开机自启通过「登录触发 + 最高权限」的计划任务实现，登录时自动启动、不再额外弹 UAC；可在设置中开启「静默启动」，登录后只显示托盘图标。
