@@ -1929,6 +1929,7 @@ name = "lightweight-toolset"
 version = "0.6.4"
 dependencies = [
  "notify-rust",
+ "png 0.17.16",
  "serde",
  "serde_json",
  "tauri",

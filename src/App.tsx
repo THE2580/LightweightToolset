@@ -21,6 +21,7 @@ import {
   Clock,
   ClipboardList,
   Copy,
+  Crop,
   FileText,
   Gauge,
   FolderOpen,
@@ -419,6 +420,7 @@ const GITHUB_API_LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REP
 const GITHUB_RAW_PACKAGE_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/master/package.json`;
 const AUTHOR_EMAILS = ["2021289500@qq.com", "liangneng20060725@gmail.com"];
 const toolIcons = {
+  screenshot: Crop,
   clipboard: ClipboardList,
   app_usage: ChartNoAxesColumn,
   key_usage: Keyboard,

@@ -48,7 +48,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 
 ## 硬性约束（禁止事项）
 
-- 未经用户明确要求：不提交、不推送、不发布、不主动启动开发版。
+- 未经用户明确要求：不提交、不推送、不发布。开发版除外：按「验证方式」的固定动作，每次改动完成即主动启动供用户测试，不需等待用户指示。
 - 不提交 `node_modules/`、`dist/`、`src-tauri/target/`、QA 截图、日志或缓存；`agent_memory/` 必须入库，不要加回 `.gitignore`。
 - 不恢复用户主动删除的内容；不修改与本任务无关的既有工作树现场（如 `.codex/`、`window_service.rs` 的格式化改动）。
 - 工具停用必须真正停止快捷键、worker、监听、计时器、关联窗口和 helper，不能只隐藏 UI。
@@ -145,6 +145,7 @@ Remove-Item -Recurse -Force "$env:TEMP\lwt-dev" -ErrorAction SilentlyContinue
 
 ## 验证方式
 
+- **改动完成后主动启动开发版（固定动作，不需用户再提）**：每次交付可运行的改动后，先确认 `npm run dev`（Vite，端口 1420）在跑，再把 `src-tauri/target/debug/lightweight-toolset.exe` 复制到 `%TEMP%\lwt-dev\`，用 `Start-Process -Verb RunAs` 启动，并在汇报里写清本次测试点与快捷键。纯文档、纯配置或不影响运行时的改动可跳过，但要在汇报里说明原因。
 - 前端/Build：`npm run build` 无 TS 错误与 Vite 构建错误。
 - Rust：`cargo check` 通过；改动模块的单测通过，全量用 `--test-threads=1`（`input_monitor` 等测试共享全局按键状态，并行会偶发失败）。
 - 运行时/UI 变更：需在 Windows 真机验证；应用为管理员权限，测试高完整性窗口按键时注意同 App ID 的已安装版干扰（开发版已隔离标识，两者可同时运行）。

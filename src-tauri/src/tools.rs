@@ -5,8 +5,8 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::{
-    app_usage, clipboard, key_usage, push_debug_log, settings::AppSettings, shortcut_tip, timer, window_pinner,
-    window_service, AppState,
+    app_usage, clipboard, key_usage, push_debug_log, screenshot, settings::AppSettings, shortcut_tip,
+    timer, window_pinner, window_service, AppState,
 };
 
 struct ToolDefinition {
@@ -32,7 +32,15 @@ const APP_HOTKEYS: [AppHotkeyDefinition; 1] = [AppHotkeyDefinition {
     default_hotkey: "CTRL+ALT+M",
 }];
 
-const TOOLS: [ToolDefinition; 6] = [
+const TOOLS: [ToolDefinition; 7] = [
+    ToolDefinition {
+        id: "screenshot",
+        name: "截图",
+        description: "区域截图、标注与贴图，复制到剪贴板或保存为 PNG",
+        default_hotkey: Some("CTRL+ALT+A"),
+        default_enabled: false,
+        implemented: true,
+    },
     ToolDefinition {
         id: "clipboard",
         name: "剪贴板",
@@ -539,6 +547,9 @@ impl ToolRegistry {
         if tool.id == "shortcut_tip" {
             shortcut_tip::stop();
         }
+        if tool.id == "screenshot" {
+            screenshot::stop();
+        }
         if let Some(worker) = self.workers.remove(tool.id) {
             let _ = worker.stop.send(());
             let _ = worker.thread.join();
@@ -559,6 +570,7 @@ fn log_tool_lifecycle(app: &AppHandle, tool_id: &str, message: impl Into<String>
         "timer" => "timer",
         "window_pinner" => "window_pinner",
         "shortcut_tip" => "shortcut_tip",
+        "screenshot" => "screenshot",
         _ => "settings",
     };
     push_debug_log(&state, level, message);

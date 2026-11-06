@@ -3,6 +3,7 @@ mod autostart;
 mod clipboard;
 mod input_monitor;
 mod key_usage;
+mod screenshot;
 mod settings;
 mod shortcut_tip;
 mod timer;
@@ -1165,6 +1166,15 @@ pub fn run_shortcut_helper(port: u16) -> ! {
 }
 
 pub fn run() {
+    // 截图工具按物理像素工作；显式声明 Per-Monitor V2，保证 GetSystemMetrics/BitBlt
+    // 拿到的是真实像素而不是 150% 缩放后的逻辑坐标。Tauri 自身也会设置同一档，
+    // 这里先设置可确保我们的原生覆盖层与之一致（重复设置会返回失败，忽略即可）。
+    #[cfg(windows)]
+    unsafe {
+        let _ = windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
+    }
     // 正式版不修改 identifier，debug 分支不存在时 `mut` 无意义。
     #[allow(unused_mut)]
     let mut context = tauri::generate_context!();
@@ -1185,6 +1195,7 @@ pub fn run() {
                     if event.state() == ShortcutState::Pressed {
                         let mut handled = false;
                         let mut window_pinner_hotkey = false;
+                        let mut screenshot_hotkey = false;
                         let mut triggered_hotkey_id: Option<String> = None;
                         if let Some(state) = app.try_state::<AppState>() {
                             push_debug_log(
@@ -1202,6 +1213,9 @@ pub fn run() {
                                     handled = false;
                                 } else if registry.tool_for_shortcut(&shortcut_text).as_deref() == Some("window_pinner") {
                                     window_pinner_hotkey = true;
+                                    handled = true;
+                                } else if registry.tool_for_shortcut(&shortcut_text).as_deref() == Some("screenshot") {
+                                    screenshot_hotkey = true;
                                     handled = true;
                                 } else if registry.tool_for_shortcut(&shortcut_text).as_deref()
                                     == Some("clipboard")
@@ -1225,6 +1239,11 @@ pub fn run() {
                             std::thread::spawn(move || shortcut_tip::notify_app_hotkey(&hotkey_id));
                         }
                         if window_pinner_hotkey {
+                            return;
+                        }
+                        if screenshot_hotkey {
+                            // 抓屏与覆盖层都在独立线程里跑，热键回调立即返回。
+                            screenshot::capture_from_hotkey(app);
                             return;
                         }
                         if handled {

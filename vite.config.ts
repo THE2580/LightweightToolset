@@ -26,7 +26,9 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      //    另外忽略非前端目录：agent_memory 由编辑工具原子写入（会短暂出现 .tmpdir 目录，
+      //    被 Vite 的 watcher watch 到会 EBUSY 直接打崩 dev server）。
+      ignored: ["**/src-tauri/**", "**/agent_memory/**", "**/docs/**", "**/.codex/**", "**/.*.tmpdir/**"],
     },
   },
   build: {
