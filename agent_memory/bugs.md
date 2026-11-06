@@ -37,6 +37,11 @@
 - 2026-11-04：「开机自启开关开着但开机不启动」根因是提权清单与 Run 键机制冲突——Explorer 处理 Run 条目只做 CreateProcess，`requireAdministrator` 的 exe 返回 `ERROR_ELEVATION_REQUIRED` 后被静默丢弃（Shell-Core 事件 9708 PID 0 + UAC Operational 事件 1 可复现）。Run 键条目本身、StartupApproved 启用态、UAC 静默提权策略均正常。修法：改用「登录触发 + HighestAvailable + InteractiveToken」计划任务，`ExecutionTimeLimit=PT0S`，并清理旧 Run 值。
 - 2026-11-04：开发版隔离不要靠改数据路径或换端口，直接改 `identifier` 即可——Tauri 的配置/数据目录、WebView2 数据、单实例互斥量与窗口类、我们自己的 AUMID 与开始菜单快捷方式都从 identifier 派生。
 
+- 2026-11-06：截图覆盖层拖影根因是「只贴脏矩形 + `InvalidateRect` 整窗」——未被绘制的区域会被 `EndPaint` 标记为已校验，旧像素永久留在屏幕上；另外十字线/白框曾越出面板 1 px，把脏像素留在后备缓冲。修法：按「旧帧 ∪ 新帧」重建脏区、所有绘制收在 `frame_rect` 内。整帧重建虽然绝不残留，但 2560×1600 每帧两次 16 MB BitBlt 在 144 Hz 上明显掉手感，只作备选。
+- 2026-11-06：覆盖层按键会被中文输入法吞掉——按过 Shift 后，`C` 到达的是 `VK_PROCESSKEY(229)`。解法：窗口创建后 `ImmAssociateContext(hwnd, NULL)` 解绑 IME。**做文字标注时需要在文本输入控件里重新接回 IME**，不能沿用全局解绑。
+- 2026-11-06：截屏首帧延迟优化经验——抓屏直接 `BitBlt` 进 DIB 段（免 `GetDIBits` + 整图拷贝）、压暗用一次 `AlphaBlend`（黑源 + 常量 alpha）替代逐像素循环（debug 构建下逐像素极慢）。优化前 526 ms，优化后约 101 ms。
+- 2026-11-06：本会话里测试二进制放在工作区 `target` 下运行时无法写 `%TEMP%`（沙箱拒绝），复制到 `%TEMP%` 再运行即正常；与既有「测试临时目录」条目不冲突，是同一限制的另一种表现。
+
 # 历史记录
 
 - 已关闭的 P0、已移除的 helper、旧通知机制与 Chromium 丢钩子的完整证据链，见 `archive/2026-11-02-bugs-compaction.md`。

@@ -1,12 +1,12 @@
 # Scope
 
-- 当前范围：`v0.6.4` 已发布；截图工具 **S1 代码完成**（注册 + 原生抓屏 + 覆盖层选区 + 复制/保存），待真机手动验证。
-- 无进行中的代码任务（S2 标注未开始）。
+- 当前范围：截图工具 S1+S2-a 已提交 `c0ef236`；S2-b 标注底座待开工。
+- 无进行中的代码任务。
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；代码提交 `fa580e8` 已推送，tag `v0.6.4` 已推送。
-- 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`?? .codex/`。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`c0ef236`**（截图工具 S1+S2-a，未推送）。
+- 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
 # Active Files
@@ -47,6 +47,6 @@
 
 # Next Action
 
-- 等用户放行 M1（截图工具实现）；覆盖层按测量结论走**原生 GDI**（见 `docs/pixpin-clone-analysis.md` §6.1），Rust 模块与窗口先行。
+- 下一步 S2-b：在 `src-tauri/src/screenshot/` 下加 `annotation.rs`（对象模型/命令栈），覆盖层接矩形工具与撤销/重做；完成后按约定启动开发版供验收。
 - 发版时按「三处版本号 + 更新 README/简介 + 清理开发版痕迹 + 提交推送 + 注释 tag + Release + 事后沉淀」流程；新增工具要调第一/二位版本号。
 - 提交时排除 `window_service.rs` 与 `.codex/`。

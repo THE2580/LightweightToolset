@@ -1,31 +1,31 @@
 # Goal
 
-- LightweightToolset 持续迭代：0.6.2 修复自启与隔离、0.6.3 补静默启动通知与开发版默认值、0.6.4 统一快捷键提示图标。
-- 状态：`v0.6.4` 已发布（tag → `fa580e8`，Release 已上传安装包）。
+- 在 LightweightToolset 内新增「截图」工具（PixPin 行为复刻）：抓屏 → 覆盖层选区 → 标注 → 复制/保存 → 贴图。
+- 当前已提交：`c0ef236 feat: add screenshot tool with native capture, magnifier and color picker`（S1 + S2-a）。
 
 # Current Focus
 
-- 图标：`src/shortcutTipIcon.tsx` 自定义「键盘 + 提示气泡」，`toolIcons.shortcut_tip` 与工具页头部、编辑弹窗、空状态统一。
-- 自启：`autostart.rs` 用「登录触发 + HighestAvailable + InteractiveToken + PT0S」计划任务，替代 Run 键并清理旧值。
-- 隔离：debug 构建 identifier 改 `...-dev`；数据、WebView2、单实例、AUMID、快捷方式、自启项全部独立。
-- 静默启动：主窗口 `visible:false` + `setup` 条件 `show()`；启动时发通知（含实际快捷键，失败降级）。
-- 开发版专属：默认值（静默开/置顶开/开发者模式开/工具全关/自启关）、开关锁定、存储路径禁改、标题与托盘带「（开发版）」。
-- 文档：`AGENTS.md` 含「开发版与正式版」章节与发版固定动作（README/简介、清理开发版痕迹、沉淀）。
+- 覆盖层：原生 Win32 窗口（非 WebView），三张 DIB 段（原图/压暗/后备），按「旧帧 ∪ 新帧」脏区重建。
+- 已实现：区域截图、裁剪保存（`图片\LightweightToolset\Screenshots`）、CF_DIB+PNG 剪贴板、放大镜（240px、网格、蓝色十字线、坐标、HEX/RGB、`C` 取色退出、`Shift` 切换）、选区标签（起点坐标 + 尺寸）。
+- 关键常量：`MAG_CELL=16`、`PANEL_WIDTH=MAG_SIZE+2`、字体 17 px；`alpha=115` 压暗。
 
 # Remaining
 
-1. 用户安装 `轻量化工具集_0.6.4_x64-setup.exe`（`src-tauri/target/release/bundle/nsis/`，SHA-256 `34C167F700B288B40D0384718804265C2387F83981632FEB90EB0D4898FAB5CD`）复核对图标效果。
-2. 可选（用户未要求，勿主动做）：Keycastr 借鉴项（按前台软件分组、外观可调、持续输出模式）。
-3. 待确认：是否继续 `master` 直推，或引入功能分支/PR。
+1. **S2-b 标注底座**：标注对象模型 + 撤销/重做 + 只做矩形工具，验证「画 → 选中 → 改参数 → 撤销」。
+2. S2-c 形状（椭圆/箭头/折线/铅笔）、S2-d 马赛克/模糊/荧光笔、S2-e 文字/序号、S2-f 工具栏与图层。
+3. S3 贴图窗口（置顶/缩放/透明度/穿透）与历史。
+4. 多屏已由用户决定移出范围，不再测试或优化。
 
 # Verification
 
-- 发版前：`cargo check` 无告警；`cargo test --lib --test-threads=1` 18/18；`npm run build` 与 `npm run tauri build` 通过；NSIS 产物版本资源 `0.6.4`。
-- 开发版真机：新图标 15px/18px 下可辨认，侧栏与页头一致（用户确认）。
-- 0.6.3 遗留验证：默认值、静默启动三条唤起路径、启动通知文案均已真机确认。
+- `cargo test --lib` 23/23（测试二进制需复制到 `%TEMP%` 运行）。
+- 热键→覆盖层：单屏中位 101 ms（修复前 526 ms）。
+- 折线拖动 56 步后「选区/面板之外的强调蓝像素」= 0。
+- 端到端：拖选 600×350 → PNG 精确 600×350、剪贴板 CF_DIB+PNG。
 
 # Resume Here
 
-- `git log -1` 应为 `fa580e8`（tag `v0.6.4`）；工作树预期只剩 `M src-tauri/src/window_service.rs` 与 `?? .codex/`。
-- 图标入口：`src/shortcutTipIcon.tsx`；使用点 `src/App.tsx` 的 `toolIcons`、工具页头部、`ShortcutTipEditorDialog`、空状态。
-- 发版流程与开发版/正式版差异见 `AGENTS.md` 对应章节。
+- `git log -1` 应为 `c0ef236`；工作树预期只剩 `M src-tauri/src/window_pinner.rs`（换行差异）、`M src-tauri/src/window_service.rs`（既有 rustfmt 噪声）与 `?? .codex/`。
+- 启动开发版：`npm run dev` 起 Vite → 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%\lwt-dev\` → `Start-Process -Verb RunAs`（控制台 `-WindowStyle Hidden`）。
+- 开发版数据已预置为只启用 `screenshot`；`%APPDATA%\com.the.lightweight-toolset.dev\settings.json`。
+- S2-b 起点：`src-tauri/src/screenshot/overlay.rs` 的绘制链路与 `mod.rs` 的 `run()`；新增 `annotation.rs`（对象模型/命令栈）与工具栏绘制。
