@@ -56,6 +56,15 @@ impl Surface {
         }
     }
 
+    pub(crate) fn pixels_mut(&mut self) -> &mut [u8] {
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.bits,
+                self.width as usize * 4 * self.height as usize,
+            )
+        }
+    }
+
     /// 单像素填充，仅用于构造压暗用的 1×1 黑色源。
     pub(crate) fn set_pixel(&mut self, r: u8, g: u8, b: u8) {
         unsafe {

@@ -1,3 +1,4 @@
+mod annotation;
 mod capture;
 mod clipboard_image;
 mod dib;

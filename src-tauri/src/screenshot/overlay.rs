@@ -1,20 +1,28 @@
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
+use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Input::Ime::ImmAssociateContext;
+use windows_sys::Win32::UI::Input::Ime::{
+    ImmAssociateContext, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext,
+    ImmSetCandidateWindow, ImmSetCompositionWindow, CANDIDATEFORM, COMPOSITIONFORM,
+    CFS_CANDIDATEPOS, CFS_POINT,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SetFocus, VK_ESCAPE, VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
+    GetKeyState, SetFocus, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LSHIFT, VK_RETURN, VK_RSHIFT,
+    VK_SHIFT, VK_Y, VK_Z,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use super::annotation::{self, build_draft, simplify, text_extent, Document, Item, Shape};
 use super::capture;
 use super::clipboard_image;
 use super::dib::Surface;
 
 static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
+
 
 const BORDER: i32 = 2;
 const LABEL_HEIGHT: i32 = 24;
@@ -29,6 +37,19 @@ const PANEL_WIDTH: i32 = MAG_SIZE + 2;
 const PANEL_HEIGHT: i32 = 1 + MAG_SIZE + 1 + 8 + 22 + 2 + 22 + 2 + 40 + 6;
 /// 面板相对光标的偏移。
 const PANEL_OFFSET: i32 = 20;
+
+/// 内联文字编辑状态（不建子窗口，直接画在覆盖层上）。
+struct TextEdit {
+    origin: (i32, i32),
+    text: String,
+    composing: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Selecting,
+    Annotating,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Selection {
@@ -61,6 +82,13 @@ struct OverlayState {
     white_pen: HPEN,
     panel_brush: HBRUSH,
     label_brush: HBRUSH,
+    phase: Phase,
+    selection: Option<Selection>,
+    editing: Option<TextEdit>,
+    caret_on: bool,
+    ime_context: isize,
+    doc: Document,
+    draft_points: Vec<(i32, i32)>,
     dragging: bool,
     anchor: Option<(i32, i32)>,
     current: Option<(i32, i32)>,
@@ -131,11 +159,20 @@ impl OverlayState {
     }
 
     fn magnifier_visible(&self) -> bool {
-        self.cursor.is_some()
+        self.phase == Phase::Selecting && self.cursor.is_some()
     }
 
     /// 本帧可能绘制到的全部区域：选区（含边框/标签边距）∪ 放大镜面板。
     fn frame_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        if self.phase == Phase::Annotating {
+            let sel = self.selection?;
+            return Some((
+                (sel.x - BORDER - 1).clamp(0, self.width),
+                (sel.y - LABEL_HEIGHT - BORDER).clamp(0, self.height),
+                (sel.width + 2 * (BORDER + 1) + 1).clamp(0, self.width),
+                (sel.height + LABEL_HEIGHT + 2 * BORDER + 1).clamp(0, self.height),
+            ));
+        }
         let mut rect = self.current_rect().map(|(x, y, w, h)| {
             (
                 (x - BORDER - 1).clamp(0, self.width),
@@ -190,52 +227,45 @@ fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | ((g as u32) << 8) | ((b as u32) << 16)
 }
 
-fn crop_top_down(
-    src: &[u8],
-    stride: usize,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    width: i32,
-    height: i32,
-) -> Vec<u8> {
-    let x = x.clamp(0, width);
-    let y = y.clamp(0, height);
-    let w = w.clamp(0, width - x);
-    let h = h.clamp(0, height - y);
-    let mut out = vec![0u8; w as usize * h as usize * 4];
-    for row in 0..h as usize {
-        let src_row = (y as usize + row) * stride + x as usize * 4;
-        let dst_row = row * w as usize * 4;
-        out[dst_row..dst_row + w as usize * 4]
-            .copy_from_slice(&src[src_row..src_row + w as usize * 4]);
+/// 把选区与标注合成为两张 BGRA（自上而下 / 自下而上）。
+unsafe fn compose(
+    original: &Surface,
+    selection: Selection,
+    items: &[Item],
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let width = selection.width;
+    let height = selection.height;
+    if width <= 0 || height <= 0 {
+        return None;
     }
-    out
-}
+    let mut surface = Surface::new(width, height)?;
+    BitBlt(
+        surface.dc(),
+        0,
+        0,
+        width,
+        height,
+        original.dc(),
+        selection.x,
+        selection.y,
+        SRCCOPY,
+    );
+    if !items.is_empty() {
+        let region = CreateRectRgn(0, 0, width, height);
+        SelectClipRgn(surface.dc(), region);
+        annotation::draw(&mut surface, items, None, 0, 0, None);
+        SelectClipRgn(surface.dc(), std::ptr::null_mut());
+        DeleteObject(region);
+    }
 
-fn crop_bottom_up(
-    src_top_down: &[u8],
-    stride: usize,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    width: i32,
-    height: i32,
-) -> Vec<u8> {
-    let x = x.clamp(0, width);
-    let y = y.clamp(0, height);
-    let w = w.clamp(0, width - x);
-    let h = h.clamp(0, height - y);
-    let mut out = vec![0u8; w as usize * h as usize * 4];
-    for row in 0..h as usize {
-        let src_row = (y as usize + (h as usize - 1 - row)) * stride + x as usize * 4;
-        let dst_row = row * w as usize * 4;
-        out[dst_row..dst_row + w as usize * 4]
-            .copy_from_slice(&src_top_down[src_row..src_row + w as usize * 4]);
+    let stride = width as usize * 4;
+    let top_down = surface.pixels().to_vec();
+    let mut bottom_up = vec![0u8; stride * height as usize];
+    for row in 0..height as usize {
+        let src = (height as usize - 1 - row) * stride;
+        bottom_up[row * stride..(row + 1) * stride].copy_from_slice(&top_down[src..src + stride]);
     }
-    out
+    Some((top_down, bottom_up))
 }
 
 unsafe fn draw_selection_chrome(hdc: HDC, pen: HPEN, x: i32, y: i32, w: i32, h: i32) {
@@ -485,11 +515,161 @@ fn paint(hdc: HDC) {
             return;
         };
         unsafe {
-            // 1. 用压暗图恢复变化区域（擦掉上一帧的边框/标签/十字线）。
+            // 1. 用压暗图恢复变化区域（擦掉上一帧的边框/标签/放大镜/标注）。
             BitBlt(state.back.dc(), dx, dy, dw, dh, state.dimmed.dc(), dx, dy, SRCCOPY);
 
-            // 2. 选区原图（只贴与本帧脏区相交的部分）。
-            if let Some((x, y, sw, sh)) = state.current_rect() {
+            if state.phase == Phase::Annotating {
+                let Some(sel) = state.selection else {
+                    return;
+                };
+                // 选区原图
+                let rx = sel.x.max(dx);
+                let ry = sel.y.max(dy);
+                let rw = (sel.x + sel.width).min(dx + dw) - rx;
+                let rh = (sel.y + sel.height).min(dy + dh) - ry;
+                if rw > 0 && rh > 0 {
+                    BitBlt(state.back.dc(), rx, ry, rw, rh, state.original.dc(), rx, ry, SRCCOPY);
+                }
+                draw_selection_chrome(
+                    state.back.dc(),
+                    state.pen,
+                    sel.x,
+                    sel.y,
+                    sel.width,
+                    sel.height,
+                );
+                draw_label(
+                    state.back.dc(),
+                    state.font,
+                    state.label_brush,
+                    state.origin_x,
+                    state.origin_y,
+                    sel.x,
+                    sel.y,
+                    sel.width,
+                    sel.height,
+                );
+
+                // 标注只画在选区内
+                let rgn = CreateRectRgn(sel.x, sel.y, sel.x + sel.width, sel.y + sel.height);
+                SelectClipRgn(state.back.dc(), rgn);
+                let tool = state.doc.tool();
+                let draft_cursor = if tool == Shape::Circle {
+                    state.draft_points.first().map(|anchor| {
+                        square_cursor(sel, *anchor, state.cursor.unwrap_or(*anchor))
+                    })
+                } else {
+                    state.cursor
+                };
+                let draft = build_draft(
+                    tool,
+                    &state.draft_points,
+                    draft_cursor,
+                    (sel.x, sel.y),
+                    state.doc.color(),
+                    state.doc.width(),
+                );
+                annotation::draw(
+                    &mut state.back,
+                    &state.doc.items,
+                    state.doc.selected,
+                    sel.x,
+                    sel.y,
+                    draft.as_ref(),
+                );
+                if let Some(editing) = state.editing.as_ref() {
+                    let mut full = editing.text.clone();
+                    full.push_str(&editing.composing);
+                    let (width, height) = text_extent(&full);
+                    if !full.is_empty() {
+                        let mut draft = Item::new(
+                            Shape::Text,
+                            vec![(
+                                editing.origin.0 - sel.x,
+                                editing.origin.1 - sel.y,
+                            )],
+                            state.doc.color(),
+                            state.doc.width(),
+                        );
+                        draft.text = full.clone();
+                        annotation::draw(
+                            &mut state.back,
+                            &[],
+                            None,
+                            sel.x,
+                            sel.y,
+                            Some(&draft),
+                        );
+                    }
+
+                    if !editing.composing.is_empty() {
+                        let (committed_width, _) = text_extent(&editing.text);
+                        let underline = CreatePen(PS_SOLID, 1, state.doc.color());
+                        let old_pen = SelectObject(state.back.dc(), underline);
+                        MoveToEx(
+                            state.back.dc(),
+                            editing.origin.0 + committed_width,
+                            editing.origin.1 + height + 1,
+                            std::ptr::null_mut(),
+                        );
+                        LineTo(
+                            state.back.dc(),
+                            editing.origin.0 + width,
+                            editing.origin.1 + height + 1,
+                        );
+                        SelectObject(state.back.dc(), old_pen);
+                        DeleteObject(underline);
+                    }
+
+                    // 输入框：外深内浅双层 1px，明暗背景都能看清；内边距加大。
+                    let pad_x = 10;
+                    let pad_y = 7;
+                    let (left, top) = (editing.origin.0 - pad_x, editing.origin.1 - pad_y);
+                    let (right, bottom) = (
+                        editing.origin.0 + width + pad_x,
+                        editing.origin.1 + height + pad_y,
+                    );
+                    let old_brush = SelectObject(state.back.dc(), GetStockObject(NULL_BRUSH));
+                    for (inset, color) in [(1, rgb(0x60, 0x60, 0x60)), (0, rgb(0xf0, 0xf0, 0xf0))] {
+                        let pen = CreatePen(PS_SOLID, 1, color);
+                        let old_pen = SelectObject(state.back.dc(), pen);
+                        Rectangle(
+                            state.back.dc(),
+                            left - inset,
+                            top - inset,
+                            right + inset,
+                            bottom + inset,
+                        );
+                        SelectObject(state.back.dc(), old_pen);
+                        DeleteObject(pen);
+                    }
+                    SelectObject(state.back.dc(), old_brush);
+
+                    if state.caret_on {
+                        // 光标：贴最后一个字右侧，纵向对齐字形（下移 2px）；
+                        // 深-浅-深三线保证白底、深底都清晰。
+                        let caret_x = editing.origin.0 + width + 2;
+                        let (top, bottom) =
+                            (editing.origin.1 + 2, editing.origin.1 + height - 1);
+                        let strokes = [
+                            (caret_x - 1, 1, rgb(0x30, 0x30, 0x30)),
+                            (caret_x + 2, 1, rgb(0x30, 0x30, 0x30)),
+                            (caret_x, 2, rgb(0xfa, 0xfa, 0xfa)),
+                        ];
+                        for (x, thickness, color) in strokes {
+                            let pen = CreatePen(PS_SOLID, thickness, color);
+                            let old_pen = SelectObject(state.back.dc(), pen);
+                            MoveToEx(state.back.dc(), x, top, std::ptr::null_mut());
+                            LineTo(state.back.dc(), x, bottom);
+                            SelectObject(state.back.dc(), old_pen);
+                            DeleteObject(pen);
+                        }
+                    }
+                }
+                SelectClipRgn(state.back.dc(), std::ptr::null_mut());
+                DeleteObject(rgn);
+            } else if let Some(w) = state.current_rect() {
+                let (x, y, sw, sh) = w;
                 let rx = x.max(dx);
                 let ry = y.max(dy);
                 let rw = (x + sw).min(dx + dw) - rx;
@@ -511,7 +691,7 @@ fn paint(hdc: HDC) {
                 );
             }
 
-            // 3. 放大镜（面板整体落在脏区内才画）。
+            // 2. 放大镜（仅选区阶段；面板整体落在脏区内才画）。
             if state.magnifier_visible() {
                 if let Some(cursor) = state.cursor {
                     let panel = state.panel_rect(cursor);
@@ -525,12 +705,235 @@ fn paint(hdc: HDC) {
                 }
             }
 
-            // 4. 只呈现变化区域；屏幕其余部分本来就是对的。
+            // 3. 只呈现变化区域；屏幕其余部分本来就是对的。
             BitBlt(hdc, dx, dy, dw, dh, state.back.dc(), dx, dy, SRCCOPY);
         }
         state.painted_once = true;
         state.last_frame = frame;
     });
+}
+
+/// 正圆：把鼠标终点约束成"以锚点为角、边长取较大拖距"的正方形对角，并夹在选区内。
+fn square_cursor(sel: Selection, anchor: (i32, i32), cursor: (i32, i32)) -> (i32, i32) {
+    let ax = anchor.0.clamp(sel.x, sel.x + sel.width);
+    let ay = anchor.1.clamp(sel.y, sel.y + sel.height);
+    let dx = cursor.0 - ax;
+    let dy = cursor.1 - ay;
+    let sx = if dx >= 0 { 1 } else { -1 };
+    let sy = if dy >= 0 { 1 } else { -1 };
+    let limit_x = if sx > 0 {
+        sel.x + sel.width - ax
+    } else {
+        ax - sel.x
+    };
+    let limit_y = if sy > 0 {
+        sel.y + sel.height - ay
+    } else {
+        ay - sel.y
+    };
+    let side = dx
+        .abs()
+        .max(dy.abs())
+        .min(limit_x.max(0))
+        .min(limit_y.max(0));
+    (ax + sx * side, ay + sy * side)
+}
+
+/// 开始内联文字编辑：接管 IME，键盘输入直接进缓冲区。
+unsafe fn start_text_edit(hwnd: HWND, state: &mut OverlayState, cx: i32, cy: i32) {
+    state.editing = Some(TextEdit {
+        origin: (cx, cy),
+        text: String::new(),
+        composing: String::new(),
+    });
+    state.caret_on = true;
+    CreateCaret(hwnd, std::ptr::null_mut(), 1, 1);
+    SetTimer(hwnd, 1, 530, None);
+    update_ime_position(hwnd, state);
+    if state.ime_context != 0 {
+        ImmAssociateContext(hwnd, state.ime_context as *mut std::ffi::c_void);
+    }
+}
+
+/// 结束编辑；有文字则返回待加入文档的文字项。
+unsafe fn finish_text_edit(hwnd: HWND, state: &mut OverlayState) -> Option<Item> {
+    let editing = state.editing.take()?;
+    KillTimer(hwnd, 1);
+    DestroyCaret();
+    state.caret_on = false;
+    ImmAssociateContext(hwnd, std::ptr::null_mut());
+    let text = editing.text.trim().to_owned();
+    if text.is_empty() {
+        return None;
+    }
+    let selection = state.selection?;
+    let mut item = Item::new(
+        Shape::Text,
+        vec![(
+            editing.origin.0 - selection.x,
+            editing.origin.1 - selection.y,
+        )],
+        state.doc.color(),
+        state.doc.width(),
+    );
+    item.text = text;
+    Some(item)
+}
+
+unsafe fn cancel_text_edit(hwnd: HWND, state: &mut OverlayState) {
+    if state.editing.take().is_some() {
+        KillTimer(hwnd, 1);
+        DestroyCaret();
+        state.caret_on = false;
+        ImmAssociateContext(hwnd, std::ptr::null_mut());
+    }
+}
+
+/// 读取 IME 组合串的辅助：`flag` 为 GCS_COMPSTR 或 GCS_RESULTSTR。
+unsafe fn ime_string(hwnd: HWND, flag: u32) -> Option<String> {
+    let himc = ImmGetContext(hwnd);
+    if himc.is_null() {
+        return None;
+    }
+    let length = ImmGetCompositionStringW(himc, flag, std::ptr::null_mut(), 0);
+    if length <= 0 {
+        ImmReleaseContext(hwnd, himc);
+        return None;
+    }
+    let mut buffer = vec![0u16; (length as usize + 1) / 2];
+    let copied = ImmGetCompositionStringW(
+        himc,
+        flag,
+        buffer.as_mut_ptr() as *mut std::ffi::c_void,
+        length as u32,
+    );
+    ImmReleaseContext(hwnd, himc);
+    if copied <= 0 {
+        return None;
+    }
+    let units = (copied as usize) / 2;
+    Some(String::from_utf16_lossy(&buffer[..units]))
+}
+
+/// 当前光标（客户区）位置，用于 IME 组合窗/候选窗定位。
+unsafe fn ime_caret(state: &OverlayState) -> Option<POINT> {
+    let editing = state.editing.as_ref()?;
+    let mut full = editing.text.clone();
+    full.push_str(&editing.composing);
+    let (width, _) = text_extent(&full);
+    Some(POINT {
+        x: editing.origin.0 + width + 1,
+        y: editing.origin.1 + annotation::TEXT_HEIGHT,
+    })
+}
+
+/// 把输入法候选窗/组合窗贴到光标下方，并同步隐藏系统光标位置。
+unsafe fn update_ime_position(hwnd: HWND, state: &OverlayState) {
+    let Some(point) = ime_caret(state) else {
+        return;
+    };
+    SetCaretPos(point.x, point.y);
+    let himc = ImmGetContext(hwnd);
+    if himc.is_null() {
+        return;
+    }
+    let mut composition: COMPOSITIONFORM = std::mem::zeroed();
+    composition.dwStyle = CFS_POINT;
+    composition.ptCurrentPos = point;
+    ImmSetCompositionWindow(himc, &composition);
+
+    let mut candidate: CANDIDATEFORM = std::mem::zeroed();
+    candidate.dwIndex = 0;
+    candidate.dwStyle = CFS_CANDIDATEPOS;
+    candidate.ptCurrentPos = point;
+    ImmSetCandidateWindow(himc, &candidate);
+    ImmReleaseContext(hwnd, himc);
+}
+
+/// 组合态（拼音未上屏）时按键应交给输入法，而不是我们自己处理。
+fn composing_active(state: &OverlayState) -> bool {
+    state
+        .editing
+        .as_ref()
+        .map(|editing| !editing.composing.is_empty())
+        .unwrap_or(false)
+}
+
+/// 结束当前草稿：拖拽型用 `end` 作为终点，铅笔/折线用已收集的点。
+fn finalize_draft(state: &mut OverlayState, end: Option<(i32, i32)>) {
+    let Some(sel) = state.selection else {
+        return;
+    };
+    if state.draft_points.is_empty() {
+        return;
+    }
+    let tool = state.doc.tool();
+    let clamp = |value: i32, lo: i32, hi: i32| value.clamp(lo, hi);
+    let to_image = |p: (i32, i32)| {
+        (
+            clamp(p.0, sel.x, sel.x + sel.width) - sel.x,
+            clamp(p.1, sel.y, sel.y + sel.height) - sel.y,
+        )
+    };
+
+    match tool {
+        Shape::Polyline => {
+            let mut points: Vec<(i32, i32)> = Vec::new();
+            for p in state.draft_points.drain(..) {
+                let image = to_image(p);
+                if points.last().copied() != Some(image) {
+                    points.push(image);
+                }
+            }
+            if points.len() >= 2 {
+                state.doc.push(Item::new(
+                    Shape::Polyline,
+                    points,
+                    state.doc.color(),
+                    state.doc.width(),
+                ));
+            }
+        }
+        Shape::Pencil | Shape::Highlighter => {
+            let raw: Vec<(i32, i32)> = state.draft_points.drain(..).map(to_image).collect();
+            if raw.len() >= 2 {
+                let points = simplify(&raw, 1.5);
+                state.doc.push(Item::new(
+                    tool,
+                    points,
+                    state.doc.color(),
+                    state.doc.width(),
+                ));
+            }
+        }
+        _ => {
+            let anchor = state.draft_points[0];
+            let raw_end = end.unwrap_or(anchor);
+            let stop_screen = if tool == Shape::Circle {
+                square_cursor(sel, anchor, raw_end)
+            } else {
+                raw_end
+            };
+            let start = to_image(anchor);
+            let stop = to_image(stop_screen);
+            state.draft_points.clear();
+            let width = (start.0 - stop.0).abs();
+            let height = (start.1 - stop.1).abs();
+            let ok = if matches!(tool, Shape::Line | Shape::Arrow) {
+                width + height >= 4
+            } else {
+                width >= 2 && height >= 2
+            };
+            if ok {
+                state.doc.push(Item::new(
+                    tool,
+                    vec![start, stop],
+                    state.doc.color(),
+                    state.doc.width(),
+                ));
+            }
+        }
+    }
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -553,8 +956,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             STATE.with(|cell| {
                 if let Some(state) = cell.borrow_mut().as_mut() {
                     state.cursor = Some((cx, cy));
-                    if state.dragging {
+                    if state.phase == Phase::Selecting && state.dragging {
                         state.current = Some((cx, cy));
+                    }
+                    if state.phase == Phase::Annotating
+                        && matches!(state.doc.tool(), Shape::Pencil | Shape::Highlighter)
+                    {
+                        if let Some(last) = state.draft_points.last().copied() {
+                            if (cx - last.0).abs() + (cy - last.1).abs() >= 2 {
+                                state.draft_points.push((cx, cy));
+                            }
+                        }
                     }
                 }
             });
@@ -564,47 +976,127 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_LBUTTONDOWN => {
             STATE.with(|cell| {
                 if let Some(state) = cell.borrow_mut().as_mut() {
-                    state.dragging = true;
-                    state.anchor = Some((cx, cy));
-                    state.current = Some((cx, cy));
-                    state.cursor = Some((cx, cy));
-                }
-            });
-            // 立刻收起放大镜，不等下一次鼠标移动。
-            InvalidateRect(hwnd, std::ptr::null(), 0);
-            0
-        }
-        WM_LBUTTONUP => {
-            let mut finished = None;
-            STATE.with(|cell| {
-                if let Some(state) = cell.borrow_mut().as_mut() {
-                    if state.dragging {
-                        state.current = Some((cx, cy));
-                        if let Some((x, y, w, h)) = state.current_rect() {
-                            if w >= 2 && h >= 2 {
-                                finished = Some(Selection {
-                                    x,
-                                    y,
-                                    width: w,
-                                    height: h,
-                                });
-                            }
+                    match state.phase {
+                        Phase::Selecting => {
+                            state.dragging = true;
+                            state.anchor = Some((cx, cy));
+                            state.current = Some((cx, cy));
+                            state.cursor = Some((cx, cy));
                         }
-                        if finished.is_none() {
-                            state.dragging = false;
-                            state.anchor = None;
-                            state.current = None;
-                        } else {
-                            state.result = finished;
+                        Phase::Annotating => {
+                            if state.editing.is_some() {
+                                if let Some(item) = finish_text_edit(hwnd, state) {
+                                    state.doc.push(item);
+                                }
+                            }
+                            if let Some(sel) = state.selection {
+                                let lx = cx - sel.x;
+                                let ly = cy - sel.y;
+                                if lx >= 0 && ly >= 0 && lx <= sel.width && ly <= sel.height {
+                                    let tool = state.doc.tool();
+                                    if tool == Shape::Text {
+                                        start_text_edit(hwnd, state, cx, cy);
+                                        return;
+                                    }
+                                    if tool == Shape::Serial {
+                                        let number = state.doc.next_serial();
+                                        let mut item = Item::new(
+                                            Shape::Serial,
+                                            vec![(lx, ly)],
+                                            state.doc.color(),
+                                            state.doc.width(),
+                                        );
+                                        item.text = number.to_string();
+                                        state.doc.push(item);
+                                        return;
+                                    }
+                                    if let Some(index) = state.doc.hit_test(lx, ly) {
+                                        state.doc.select(Some(index));
+                                        state.draft_points.clear();
+                                    } else {
+                                        state.doc.select(None);
+                                        let tool = state.doc.tool();
+                                        if tool.is_path_shape() {
+                                            // 折线：点回起点（±8px）即闭合。
+                                            let close = tool == Shape::Polyline
+                                                && state.draft_points.len() >= 2
+                                                && state.draft_points.first().is_some_and(|first| {
+                                                    (cx - first.0).abs() <= 8
+                                                        && (cy - first.1).abs() <= 8
+                                                });
+                                            if close {
+                                                finalize_draft(state, None);
+                                            } else {
+                                                state.draft_points.push((cx, cy));
+                                            }
+                                        } else {
+                                            state.draft_points.clear();
+                                            state.draft_points.push((cx, cy));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             });
-            if finished.is_some() {
-                DestroyWindow(hwnd);
-            } else {
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+            0
+        }
+        WM_LBUTTONUP => {
+            let mut repaint = false;
+            STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    match state.phase {
+                        Phase::Selecting => {
+                            if state.dragging {
+                                state.current = Some((cx, cy));
+                                if let Some((x, y, w, h)) = state.current_rect() {
+                                    if w >= 2 && h >= 2 {
+                                        state.selection = Some(Selection {
+                                            x,
+                                            y,
+                                            width: w,
+                                            height: h,
+                                        });
+                                        state.phase = Phase::Annotating;
+                                        repaint = true;
+                                    }
+                                }
+                                state.dragging = false;
+                                state.anchor = None;
+                                state.current = None;
+                            }
+                        }
+                        Phase::Annotating => {
+                            if state.editing.is_some() {
+                                return;
+                            }
+                            // 折线点击加点，不在这里收尾（回车/双击收尾）。
+                            if state.doc.tool() != Shape::Polyline {
+                                finalize_draft(state, Some((cx, cy)));
+                                repaint = true;
+                            }
+                        }
+                    }
+                }
+            });
+            if repaint {
                 InvalidateRect(hwnd, std::ptr::null(), 0);
             }
+            0
+        }
+        WM_LBUTTONDBLCLK => {
+            STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    if state.phase == Phase::Annotating
+                        && state.doc.tool() == Shape::Polyline
+                    {
+                        finalize_draft(state, None);
+                    }
+                }
+            });
+            InvalidateRect(hwnd, std::ptr::null(), 0);
             0
         }
         WM_RBUTTONUP | WM_MBUTTONUP => {
@@ -613,21 +1105,294 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_KEYDOWN => {
             let key = wp as u16;
+            let editing = STATE.with(|cell| {
+                cell.borrow()
+                    .as_ref()
+                    .map(|state| state.editing.is_some())
+                    .unwrap_or(false)
+            });
+            if editing {
+                let composing = STATE.with(|cell| {
+                    cell.borrow().as_ref().map(composing_active).unwrap_or(false)
+                });
+                if composing {
+                    // 拼音未上屏：回车选词、退格删拼音都交给输入法。
+                    return 0;
+                }
+                match key {
+                    VK_ESCAPE => {
+                        STATE.with(|cell| {
+                            if let Some(state) = cell.borrow_mut().as_mut() {
+                                cancel_text_edit(hwnd, state);
+                            }
+                        });
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
+                    }
+                    VK_RETURN => {
+                        STATE.with(|cell| {
+                            if let Some(state) = cell.borrow_mut().as_mut() {
+                                if let Some(item) = finish_text_edit(hwnd, state) {
+                                    state.doc.push(item);
+                                }
+                            }
+                        });
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
+                    }
+                    0x08 => {
+                        STATE.with(|cell| {
+                            if let Some(state) = cell.borrow_mut().as_mut() {
+                                state.caret_on = true;
+                                SetTimer(hwnd, 1, 530, None);
+                                if let Some(editing) = state.editing.as_mut() {
+                                    editing.text.pop();
+                                }
+                                update_ime_position(hwnd, state);
+                            }
+                        });
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
+                    }
+                    _ => return 0,
+                }
+            }
             if key == VK_ESCAPE {
                 DestroyWindow(hwnd);
-            } else if key == 'C' as u16 {
-                let text = STATE.with(|cell| {
-                    let guard = cell.borrow();
-                    let state = guard.as_ref()?;
-                    let cursor = state.cursor?;
-                    let color = state.pixel_at(cursor)?;
-                    Some(color_text(color, state.rgb_mode))
-                });
-                if let Some(text) = text {
-                    let _ = clipboard_image::copy_text(&text);
-                    // 与 PixPin 一致：取色并结束本次截图（不保存文件）。
+                return 0;
+            }
+            let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
+            let mut copy_text_value: Option<String> = None;
+            let mut finish = false;
+            let mut repaint = false;
+            STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    match state.phase {
+                        Phase::Selecting => {
+                            if key == 'C' as u16 {
+                                if let Some(cursor) = state.cursor {
+                                    if let Some(color) = state.pixel_at(cursor) {
+                                        copy_text_value = Some(color_text(color, state.rgb_mode));
+                                    }
+                                }
+                            }
+                        }
+                        Phase::Annotating => match key {
+                            // R 矩形 / O 椭圆 / L 直线 / A 箭头 / B 折线 / P 铅笔
+                            0x52 => {
+                                state.doc.set_tool(Shape::Rect);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x4F => {
+                                state.doc.set_tool(Shape::Ellipse);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x4C => {
+                                state.doc.set_tool(Shape::Line);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x41 => {
+                                state.doc.set_tool(Shape::Arrow);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x42 => {
+                                state.doc.set_tool(Shape::Polyline);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x43 => {
+                                state.doc.set_tool(Shape::Circle);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x48 => {
+                                state.doc.set_tool(Shape::Highlighter);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x54 => {
+                                state.doc.set_tool(Shape::Text);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x4E => {
+                                state.doc.set_tool(Shape::Serial);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x4D => {
+                                state.doc.set_tool(Shape::Mosaic);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x46 => {
+                                state.doc.set_tool(Shape::Blur);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x50 => {
+                                state.doc.set_tool(Shape::Pencil);
+                                state.draft_points.clear();
+                                repaint = true;
+                            }
+                            0x31..=0x34 => {
+                                state.doc.set_color((key - 0x31) as usize);
+                                repaint = true;
+                            }
+                            0xDB => {
+                                state.doc.adjust_width(-1);
+                                repaint = true;
+                            }
+                            0xDD => {
+                                state.doc.adjust_width(1);
+                                repaint = true;
+                            }
+                            VK_DELETE => {
+                                state.doc.delete_selected();
+                                repaint = true;
+                            }
+                            VK_RETURN => {
+                                if !state.draft_points.is_empty() {
+                                    finalize_draft(state, state.cursor);
+                                }
+                                finish = true;
+                            }
+                            VK_Z if ctrl => {
+                                state.doc.undo();
+                                repaint = true;
+                            }
+                            VK_Y if ctrl => {
+                                state.doc.redo();
+                                repaint = true;
+                            }
+                            _ => {}
+                        },
+                    }
+                }
+            });
+            if let Some(text) = copy_text_value {
+                let _ = clipboard_image::copy_text(&text);
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            if finish {
+                let selection = STATE.with(|cell| cell.borrow().as_ref().and_then(|s| s.selection));
+                if let Some(selection) = selection {
+                    STATE.with(|cell| {
+                        if let Some(state) = cell.borrow_mut().as_mut() {
+                            state.result = Some(selection);
+                        }
+                    });
                     DestroyWindow(hwnd);
                 }
+                return 0;
+            }
+            if repaint {
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+            }
+            0
+        }
+        WM_CHAR => {
+            let composing = STATE.with(|cell| {
+                cell.borrow().as_ref().map(composing_active).unwrap_or(false)
+            });
+            if composing {
+                return 0;
+            }
+            let ch = wp as u32;
+            if let Some(c) = char::from_u32(ch) {
+                if !c.is_control() {
+                    STATE.with(|cell| {
+                        if let Some(state) = cell.borrow_mut().as_mut() {
+                            state.caret_on = true;
+                            SetTimer(hwnd, 1, 530, None);
+                            if let Some(editing) = state.editing.as_mut() {
+                                editing.text.push(c);
+                            }
+                            update_ime_position(hwnd, state);
+                        }
+                    });
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                }
+            }
+            0
+        }
+        WM_IME_CHAR => {
+            // 组合结果统一走 WM_IME_COMPOSITION，避免重复。
+            0
+        }
+        WM_IME_STARTCOMPOSITION => {
+            STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    if let Some(editing) = state.editing.as_mut() {
+                        editing.composing.clear();
+                    }
+                    update_ime_position(hwnd, state);
+                }
+            });
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+            0
+        }
+        WM_IME_ENDCOMPOSITION => {
+            STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    if let Some(editing) = state.editing.as_mut() {
+                        editing.composing.clear();
+                    }
+                    update_ime_position(hwnd, state);
+                }
+            });
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+            0
+        }
+        WM_IME_COMPOSITION => {
+            let flags = lp as u32;
+            STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    if state.editing.is_none() {
+                        return;
+                    }
+                    if flags & 0x800 != 0 {
+                        if let Some(result) = ime_string(hwnd, 0x800) {
+                            state.caret_on = true;
+                            SetTimer(hwnd, 1, 530, None);
+                            if let Some(editing) = state.editing.as_mut() {
+                                editing.text.push_str(&result);
+                                // 上屏后必须清空组合串，否则会显示成“你好nihao”。
+                                editing.composing.clear();
+                            }
+                        }
+                    }
+                    if flags & 0x8 != 0 {
+                        let composing = ime_string(hwnd, 0x8).unwrap_or_default();
+                        if let Some(editing) = state.editing.as_mut() {
+                            editing.composing = composing;
+                        }
+                    }
+                    update_ime_position(hwnd, state);
+                }
+            });
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+            0
+        }
+        WM_TIMER => {
+            let editing = STATE.with(|cell| {
+                cell.borrow()
+                    .as_ref()
+                    .map(|state| state.editing.is_some())
+                    .unwrap_or(false)
+            });
+            if editing {
+                STATE.with(|cell| {
+                    if let Some(state) = cell.borrow_mut().as_mut() {
+                        state.caret_on = !state.caret_on;
+                    }
+                });
+                InvalidateRect(hwnd, std::ptr::null(), 0);
             }
             0
         }
@@ -635,7 +1400,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // Shift 用抬起事件切换，避免按住时的自动重复来回翻转。
             // 系统可能上报 VK_SHIFT，也可能上报 VK_LSHIFT / VK_RSHIFT。
             let key = wp as u16;
-            if key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT {
+            if (key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT)
+                && STATE.with(|cell| cell.borrow().as_ref().map(|s| s.phase) == Some(Phase::Selecting))
+            {
                 STATE.with(|cell| {
                     if let Some(state) = cell.borrow_mut().as_mut() {
                         state.rgb_mode = !state.rgb_mode;
@@ -650,6 +1417,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_DESTROY => {
+            STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    state.editing = None;
+                }
+            });
             OVERLAY_HWND.store(0, Ordering::SeqCst);
             PostQuitMessage(0);
             0
@@ -657,6 +1429,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         _ => DefWindowProcW(hwnd, msg, wp, lp),
     }
 }
+
 
 /// 抓屏 → 建三张 DIB 段（原图/压暗/后备）→ 覆盖层窗口 → 选区。
 pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
@@ -670,7 +1443,8 @@ pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
         .spawn(move || unsafe {
             let hinst = GetModuleHandleW(std::ptr::null());
             let wc = WNDCLASSW {
-                style: CS_HREDRAW | CS_VREDRAW,
+                // CS_DBLCLKS：折线靠双击收尾，必须有它才会收到 WM_LBUTTONDBLCLK。
+                style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
                 lpfnWndProc: Some(wndproc),
                 cbClsExtra: 0,
                 cbWndExtra: 0,
@@ -746,7 +1520,7 @@ pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
                 class_name.as_ptr(),
                 title.as_ptr(),
-                WS_POPUP | WS_VISIBLE,
+                WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN,
                 origin_x,
                 origin_y,
                 width,
@@ -761,7 +1535,7 @@ pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
             }
             // 解绑输入法：否则 Shift 之后的中文输入法会把 C 吞成 VK_PROCESSKEY(229)，
             // 放大镜的 C/Shift 快捷键就失效了。
-            ImmAssociateContext(hwnd, std::ptr::null_mut());
+            let ime_context = ImmAssociateContext(hwnd, std::ptr::null_mut());
             OVERLAY_HWND.store(hwnd as isize, Ordering::SeqCst);
             STATE.with(|cell| {
                 *cell.borrow_mut() = Some(OverlayState {
@@ -783,6 +1557,13 @@ pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
                     anchor: None,
                     current: None,
                     cursor: None,
+                    phase: Phase::Selecting,
+                    selection: None,
+                    editing: None,
+                    caret_on: false,
+                    ime_context: ime_context as isize,
+                    doc: Document::new(),
+                    draft_points: Vec::new(),
                     rgb_mode: false,
                     last_frame: None,
                     painted_once: false,
@@ -803,27 +1584,8 @@ pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
 
             let state = STATE.with(|cell| cell.borrow_mut().take())?;
             let selection = state.result?;
-            let surface_stride = width as usize * 4;
-            let top_down = crop_top_down(
-                state.original.pixels(),
-                surface_stride,
-                selection.x,
-                selection.y,
-                selection.width,
-                selection.height,
-                width,
-                height,
-            );
-            let bottom_up = crop_bottom_up(
-                state.original.pixels(),
-                surface_stride,
-                selection.x,
-                selection.y,
-                selection.width,
-                selection.height,
-                width,
-                height,
-            );
+            let (top_down, bottom_up) =
+                compose(&state.original, selection, &state.doc.items)?;
             Some(OverlayOutcome {
                 selection,
                 top_down,
@@ -847,45 +1609,7 @@ pub fn abort() {
 
 #[cfg(test)]
 mod tests {
-    use super::{color_text, crop_bottom_up, crop_top_down, union_rect};
-
-    /// 自顶向下样本：像素值 = y * 10 + x。
-    fn sample(width: i32, height: i32) -> Vec<u8> {
-        let stride = width as usize * 4;
-        let mut buf = vec![0u8; stride * height as usize];
-        for y in 0..height {
-            for x in 0..width {
-                let index = y as usize * stride + x as usize * 4;
-                buf[index] = (y * 10 + x) as u8;
-                buf[index + 3] = 255;
-            }
-        }
-        buf
-    }
-
-    #[test]
-    fn crop_top_down_keeps_reading_order() {
-        let buf = sample(4, 4);
-        let out = crop_top_down(&buf, 16, 1, 1, 2, 2, 4, 4);
-        let values: Vec<u8> = out.chunks_exact(4).map(|px| px[0]).collect();
-        assert_eq!(values, vec![11, 12, 21, 22]);
-    }
-
-    #[test]
-    fn crop_bottom_up_flips_rows() {
-        let buf = sample(4, 4);
-        let out = crop_bottom_up(&buf, 16, 1, 1, 2, 2, 4, 4);
-        let values: Vec<u8> = out.chunks_exact(4).map(|px| px[0]).collect();
-        assert_eq!(values, vec![21, 22, 11, 12]);
-    }
-
-    #[test]
-    fn crop_clamps_out_of_bounds() {
-        let buf = sample(4, 4);
-        let out = crop_top_down(&buf, 16, 3, 3, 10, 10, 4, 4);
-        let values: Vec<u8> = out.chunks_exact(4).map(|px| px[0]).collect();
-        assert_eq!(values, vec![33]);
-    }
+    use super::{color_text, square_cursor, union_rect, Selection};
 
     #[test]
     fn union_rect_covers_both() {
@@ -895,6 +1619,25 @@ mod tests {
             union_rect(Some((10, 10, 10, 10)), Some((5, 5, 10, 10))),
             Some((5, 5, 15, 15))
         );
+    }
+
+    #[test]
+    fn circle_cursor_makes_square() {
+        let sel = Selection {
+            x: 0,
+            y: 0,
+            width: 500,
+            height: 400,
+        };
+        // 横向拖得多：边长取 120，纵向也只走 120。
+        let end = square_cursor(sel, (10, 10), (130, 60));
+        assert_eq!(end, (130, 130));
+        // 向左上拖：方向保持。
+        let end = square_cursor(sel, (300, 300), (240, 250));
+        assert_eq!(end, (240, 240));
+        // 贴着选区边界时被夹住，仍是正方形。
+        let end = square_cursor(sel, (480, 380), (600, 600));
+        assert_eq!(end, (500, 400));
     }
 
     #[test]
