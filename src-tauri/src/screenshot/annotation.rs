@@ -96,6 +96,7 @@ pub struct Item {
     pub arrow: u8,
     pub closed: bool,
     pub line_style: u8,
+    pub strength: i32,
 }
 
 impl Item {
@@ -110,6 +111,7 @@ impl Item {
             arrow: 0,
             closed: false,
             line_style: 0,
+            strength: 14,
         }
     }
 
@@ -219,6 +221,8 @@ pub struct Document {
     closed: bool,
     line_style_shapes: u8,
     line_style_lines: u8,
+    mosaic_strength: i32,
+    blur_strength: i32,
     undo: Vec<Vec<Item>>,
     redo: Vec<Vec<Item>>,
     serial_next: u32,
@@ -243,6 +247,8 @@ impl Document {
             closed: false,
             line_style_shapes: 0,
             line_style_lines: 0,
+            mosaic_strength: 14,
+            blur_strength: 6,
             undo: Vec::new(),
             redo: Vec::new(),
             serial_next: 1,
@@ -316,6 +322,16 @@ impl Document {
         }
     }
 
+    pub fn strength(&self, mosaic: bool) -> i32 {
+        if mosaic { self.mosaic_strength } else { self.blur_strength }
+    }
+
+    pub fn adjust_strength(&mut self, mosaic: bool, delta: i32) {
+        let (min, max) = if mosaic { (4, 32) } else { (1, 20) };
+        let value = (self.strength(mosaic) + delta).clamp(min, max);
+        if mosaic { self.mosaic_strength = value } else { self.blur_strength = value }
+    }
+
     pub fn clear_tool(&mut self) {
         self.tool = None;
     }
@@ -359,6 +375,11 @@ impl Document {
         }
         if item.shape == Shape::Polyline {
             item.closed = self.closed;
+        }
+        if item.shape == Shape::Mosaic {
+            item.strength = self.mosaic_strength;
+        } else if item.shape == Shape::Blur {
+            item.strength = self.blur_strength;
         }
         item.line_style = match item.shape {
             Shape::Rect | Shape::Ellipse | Shape::Circle => self.line_style_shapes,
@@ -579,7 +600,7 @@ unsafe fn apply_mosaic(surface: &mut Surface, item: &Item, ox: i32, oy: i32) {
     let Some((x0, y0, width, height)) = region(surface, item, ox, oy) else {
         return;
     };
-    let block = (item.width * 2 + 6).clamp(8, 28) as usize;
+    let block = item.strength.clamp(4, 32) as usize;
     let stride = surface.width as usize * 4;
     let pixels = surface.pixels_mut();
     let mut y = 0;
@@ -623,7 +644,7 @@ unsafe fn apply_blur(surface: &mut Surface, item: &Item, ox: i32, oy: i32) {
     let Some((x0, y0, width, height)) = region(surface, item, ox, oy) else {
         return;
     };
-    let radius = (item.width * 2).clamp(3, 20) as isize;
+    let radius = item.strength.clamp(1, 20) as isize;
     let stride = surface.width as usize * 4;
 
     // 先把区域拷出来，避免读写互相污染。
@@ -975,6 +996,7 @@ pub fn build_draft(
     fill: bool,
     line_style: u8,
     arrow: u8,
+    strength: i32,
 ) -> Option<Item> {
     let first = *points.first()?;
     let to_image = |p: (i32, i32)| (p.0 - origin.0, p.1 - origin.1);
@@ -999,6 +1021,7 @@ pub fn build_draft(
     item.fill = fill;
     item.line_style = line_style;
     item.arrow = arrow;
+    item.strength = strength;
     Some(item)
 }
 
@@ -1057,6 +1080,7 @@ mod tests {
             false,
             0,
             0,
+            0,
         )
         .expect("draft");
         assert_eq!(draft.points, vec![(0, 0), (50, 70)]);
@@ -1069,6 +1093,7 @@ mod tests {
             0,
             4,
             false,
+            0,
             0,
             0,
         )

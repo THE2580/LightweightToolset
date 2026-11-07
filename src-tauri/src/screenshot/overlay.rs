@@ -664,6 +664,7 @@ fn paint(hdc: HDC) {
                         } else {
                             0
                         },
+                        state.doc.strength(state.doc.tool() != Some(Shape::Blur)),
                     )
                 });
                 annotation::draw(
@@ -804,6 +805,7 @@ fn paint(hdc: HDC) {
                         color_index: state.doc.color_index(),
                         width: state.doc.width(),
                         fill: state.doc.fill(),
+                        strength: state.doc.strength(state.doc.tool() != Some(Shape::Blur)),
                         line_style: state.doc.line_style(matches!(
                             state.doc.tool(),
                             Some(Shape::Rect | Shape::Ellipse | Shape::Circle)
@@ -1267,6 +1269,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                             Action::ArrowPick(style) => {
                                                 state.doc.set_arrow_style(style);
                                                 state.arrow_menu_open = false;
+                                            }
+                                            Action::Strength => {}
+                                            Action::PixelMode(shape) => {
+                                                state.picks.set(toolbar::Group::Pixels, shape);
+                                                state.doc.set_tool(shape);
+                                                state.style_open = true;
                                             }
                                             Action::Undo => {
                                                 state.doc.undo();
@@ -1834,6 +1842,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                         && y <= rect.bottom
                                     {
                                         state.doc.adjust_width(if delta > 0 { 1 } else { -1 });
+                                    }
+                                    if *action == Action::Strength
+                                        && x >= rect.left
+                                        && x <= rect.right
+                                        && y >= rect.top
+                                        && y <= rect.bottom
+                                    {
+                                        let mosaic = state.doc.tool() != Some(Shape::Blur);
+                                        state.doc.adjust_strength(mosaic, if delta > 0 { 1 } else { -1 });
                                     }
                                 }
                             }

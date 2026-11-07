@@ -72,6 +72,8 @@ pub enum Action {
     ArrowType,
     LineStylePick(u8),
     ArrowPick(u8),
+    Strength,
+    PixelMode(Shape),
     Undo,
     Redo,
     Delete,
@@ -204,6 +206,7 @@ pub fn layout(
     if tool.is_some() && style_open {
         let is_shape = matches!(tool, Some(Shape::Rect | Shape::Ellipse | Shape::Circle));
         let is_line = matches!(tool, Some(Shape::Line | Shape::Arrow | Shape::Polyline));
+        let is_pixels = matches!(tool, Some(Shape::Mosaic | Shape::Blur));
         let line_pick = picks.lines;
         let row_h = TB_BTN;
         let mut ry = y + height + 4;
@@ -240,7 +243,9 @@ pub fn layout(
             arrow_btn = Some(push_style(Action::ArrowType, 121, &mut sx));
             sep_style(&mut sx, &mut style_separators);
         }
-        push_style(Action::Width, 80, &mut sx);
+        if !is_pixels {
+            push_style(Action::Width, 80, &mut sx);
+        }
         if is_shape {
             push_style(Action::Fill, 68, &mut sx);
             sep_style(&mut sx, &mut style_separators);
@@ -248,6 +253,12 @@ pub fn layout(
                 push_style(Action::Pick(Group::Shapes, shape), button, &mut sx);
             }
             sep_style(&mut sx, &mut style_separators);
+        } else if is_pixels {
+            push_style(Action::Strength, 96, &mut sx);
+            sep_style(&mut sx, &mut style_separators);
+            for shape in [Shape::Mosaic, Shape::Blur] {
+                push_style(Action::PixelMode(shape), button, &mut sx);
+            }
         } else if is_line {
             sep_style(&mut sx, &mut style_separators);
             for shape in [Shape::Line, Shape::Arrow, Shape::Polyline] {
@@ -255,8 +266,10 @@ pub fn layout(
             }
             sep_style(&mut sx, &mut style_separators);
         }
-        for index in 0..PALETTE.len() {
-            push_style(Action::Color(index), 34, &mut sx);
+        if !is_pixels {
+            for index in 0..PALETTE.len() {
+                push_style(Action::Color(index), 34, &mut sx);
+            }
         }
         for (action, rect) in &mut style_buttons {
             if matches!(action, Action::Color(_)) {
@@ -344,6 +357,8 @@ pub fn tooltip(action: Action) -> String {
         Action::Color(_) => "颜色".to_owned(),
         Action::Width => "线宽：滚轮调整".to_owned(),
         Action::Fill => "填充开关".to_owned(),
+        Action::Strength => "强度：滚轮调整".to_owned(),
+        Action::PixelMode(_) => "像素模式".to_owned(),
         Action::LineStyle => "线型".to_owned(),
         Action::ArrowType => "箭头类型".to_owned(),
         Action::LineStylePick(0) => "实线".to_owned(),
@@ -756,6 +771,7 @@ pub struct ToolbarState {
     pub color_index: usize,
     pub width: i32,
     pub fill: bool,
+    pub strength: i32,
     pub line_style: u8,
     pub arrow_style: u8,
     pub line_menu_open: bool,
@@ -801,6 +817,8 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
                 Action::Fill => state.fill,
                 Action::LineStyle => false,
                 Action::ArrowType => false,
+                Action::PixelMode(shape) => Some(*shape) == state.tool,
+                Action::Strength => false,
                 Action::Delete => state.delete_mode,
                 _ => false,
             };
@@ -820,7 +838,7 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
                 Action::Group(group) => match group {
                     Group::Shapes => shapes_group_icon(hdc, *rect, icon_color),
                     Group::Lines => icon(hdc, Shape::Line, *rect, icon_color),
-                    _ => icon(hdc, state.picks.current(*group), *rect, icon_color),
+                    Group::Pixels => icon(hdc, Shape::Mosaic, *rect, icon_color),
                 },
                 Action::Tool(shape) => icon(hdc, *shape, *rect, icon_color),
                 Action::Pick(_, shape) => icon(hdc, *shape, *rect, icon_color),
@@ -878,6 +896,46 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
                     TextOutW(hdc, dot_x + radius + 10, cy - 11, wide.as_ptr(), wide.len() as i32);
                     SelectObject(hdc, old_font);
                     DeleteObject(font);
+                }
+                Action::Strength => {
+                    let text = format!("强度 {}", state.strength);
+                    let font = CreateFontW(
+                        -21,0,0,0,400,0,0,0,
+                        DEFAULT_CHARSET as u32,
+                        OUT_DEFAULT_PRECIS as u32,
+                        CLIP_DEFAULT_PRECIS as u32,
+                        CLEARTYPE_QUALITY as u32,
+                        (DEFAULT_PITCH | FF_DONTCARE) as u32,
+                        windows_sys::w!("Microsoft YaHei") as *const u16,
+                    );
+                    let old_font = SelectObject(hdc, font);
+                    SetBkMode(hdc, TRANSPARENT as i32);
+                    SetTextColor(hdc, icon_color);
+                    let wide: Vec<u16> = text.encode_utf16().collect();
+                    let mut rc = RECT {
+                        left: rect.left + 12,
+                        top: rect.top,
+                        right: rect.right,
+                        bottom: rect.bottom,
+                    };
+                    DrawTextW(
+                        hdc,
+                        wide.as_ptr(),
+                        wide.len() as i32,
+                        &mut rc,
+                        DT_SINGLELINE | DT_VCENTER | DT_LEFT,
+                    );
+                    SelectObject(hdc, old_font);
+                    DeleteObject(font);
+                    if active {
+                        stroke_rect(hdc, *rect, rgb(0x30, 0x7d, 0xef), 2);
+                    }
+                }
+                Action::PixelMode(shape) => {
+                    icon(hdc, *shape, *rect, icon_color);
+                    if active {
+                        stroke_rect(hdc, *rect, rgb(0x30, 0x7d, 0xef), 2);
+                    }
                 }
                 Action::LineStyle => {
                     draw_line_sample(
