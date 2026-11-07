@@ -1,10 +1,18 @@
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
+use windows_sys::Win32::System::Com::{
+    CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Shell::{
+    SHBrowseForFolderW, SHGetPathFromIDListW, BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS,
+    BROWSEINFOW,
+};
 use windows_sys::Win32::UI::Input::Ime::{
     ImmAssociateContext, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext,
     ImmSetCandidateWindow, ImmSetCompositionWindow, CANDIDATEFORM, COMPOSITIONFORM,
@@ -17,6 +25,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::annotation::{self, build_draft, simplify, text_extent, Document, Item, Shape};
+use super::save;
+use super::toolbar::{self, Action, Handle};
 use super::capture;
 use super::clipboard_image;
 use super::dib::Surface;
@@ -45,6 +55,19 @@ struct TextEdit {
     composing: String,
 }
 
+#[derive(Clone, Copy)]
+enum AdjustKind {
+    Move,
+    Resize(Handle),
+}
+
+#[derive(Clone, Copy)]
+struct AdjustState {
+    kind: AdjustKind,
+    start: (i32, i32),
+    selection: Selection,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Selecting,
@@ -61,6 +84,10 @@ pub struct Selection {
 
 pub struct OverlayOutcome {
     pub selection: Selection,
+    /// 是否已通过“保存”按钮/Ctrl+S 落盘（mod.rs 据此跳过默认保存）。
+    pub saved: bool,
+    /// 只复制到剪贴板、不落盘（复制按钮 / Ctrl+C）。
+    pub copy_only: bool,
     /// 自上而下 BGRA（PNG 编码用）。
     pub top_down: Vec<u8>,
     /// 自下而上 BGRA（CF_DIB 剪贴板用）。
@@ -86,6 +113,12 @@ struct OverlayState {
     selection: Option<Selection>,
     editing: Option<TextEdit>,
     caret_on: bool,
+    adjust: Option<AdjustState>,
+    picks: toolbar::Picks,
+    style_open: bool,
+    delete_mode: bool,
+    saved: bool,
+    copy_only: bool,
     ime_context: isize,
     doc: Document,
     draft_points: Vec<(i32, i32)>,
@@ -162,16 +195,33 @@ impl OverlayState {
         self.phase == Phase::Selecting && self.cursor.is_some()
     }
 
+    fn toolbar_visible(&self) -> bool {
+        self.phase == Phase::Annotating && self.adjust.is_none()
+    }
+
     /// 本帧可能绘制到的全部区域：选区（含边框/标签边距）∪ 放大镜面板。
     fn frame_rect(&self) -> Option<(i32, i32, i32, i32)> {
         if self.phase == Phase::Annotating {
             let sel = self.selection?;
-            return Some((
+            let mut frame = (
                 (sel.x - BORDER - 1).clamp(0, self.width),
                 (sel.y - LABEL_HEIGHT - BORDER).clamp(0, self.height),
                 (sel.width + 2 * (BORDER + 1) + 1).clamp(0, self.width),
                 (sel.height + LABEL_HEIGHT + 2 * BORDER + 1).clamp(0, self.height),
-            ));
+            );
+            if self.toolbar_visible() {
+                let layout = toolbar::layout(
+                    sel,
+                    (self.width, self.height),
+                    self.doc.tool(),
+                    self.style_open,
+                );
+                let bounds = layout.bounds();
+                if let Some(union) = union_rect(Some(frame), Some(bounds)) {
+                    frame = clamp_rect(union, self.width, self.height).unwrap_or(frame);
+                }
+            }
+            return Some(frame);
         }
         let mut rect = self.current_rect().map(|(x, y, w, h)| {
             (
@@ -225,6 +275,37 @@ thread_local! {
 
 fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | ((g as u32) << 8) | ((b as u32) << 16)
+}
+
+/// 弹出目录选择器（模态，必须在不持有 STATE 借用时调用）。
+unsafe fn pick_folder(owner: HWND) -> Option<PathBuf> {
+    let _ = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
+    let title: Vec<u16> = "选择保存目录\0".encode_utf16().collect();
+    let mut info: BROWSEINFOW = std::mem::zeroed();
+    info.hwndOwner = owner;
+    info.lpszTitle = title.as_ptr();
+    info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    let pidl = SHBrowseForFolderW(&info);
+    let mut result = None;
+    if !pidl.is_null() {
+        let mut buffer = [0u16; 260];
+        if SHGetPathFromIDListW(pidl, buffer.as_mut_ptr()) != 0 {
+            let len = buffer.iter().position(|c| *c == 0).unwrap_or(0);
+            result = Some(PathBuf::from(String::from_utf16_lossy(&buffer[..len])));
+        }
+        CoTaskMemFree(pidl as *mut std::ffi::c_void);
+    }
+    CoUninitialize();
+    result
+}
+
+/// 把当前选区 + 标注写成 PNG 到指定目录。
+unsafe fn save_current(state: &OverlayState, dir: &std::path::Path) -> Result<PathBuf, String> {
+    let selection = state.selection.ok_or_else(|| "没有选区".to_owned())?;
+    let (top_down, _) = compose(&state.original, selection, &state.doc.items)
+        .ok_or_else(|| "合成失败".to_owned())?;
+    let png = save::encode_png(&top_down, selection.width as u32, selection.height as u32)?;
+    save::write_png_to(dir, &png)
 }
 
 /// 把选区与标注合成为两张 BGRA（自上而下 / 自下而上）。
@@ -553,22 +634,23 @@ fn paint(hdc: HDC) {
                 // 标注只画在选区内
                 let rgn = CreateRectRgn(sel.x, sel.y, sel.x + sel.width, sel.y + sel.height);
                 SelectClipRgn(state.back.dc(), rgn);
-                let tool = state.doc.tool();
-                let draft_cursor = if tool == Shape::Circle {
-                    state.draft_points.first().map(|anchor| {
-                        square_cursor(sel, *anchor, state.cursor.unwrap_or(*anchor))
-                    })
-                } else {
-                    state.cursor
-                };
-                let draft = build_draft(
-                    tool,
-                    &state.draft_points,
-                    draft_cursor,
-                    (sel.x, sel.y),
-                    state.doc.color(),
-                    state.doc.width(),
-                );
+                let draft = state.doc.tool().and_then(|tool| {
+                    let draft_cursor = if tool == Shape::Circle {
+                        state.draft_points.first().map(|anchor| {
+                            square_cursor(sel, *anchor, state.cursor.unwrap_or(*anchor))
+                        })
+                    } else {
+                        state.cursor
+                    };
+                    build_draft(
+                        tool,
+                        &state.draft_points,
+                        draft_cursor,
+                        (sel.x, sel.y),
+                        state.doc.color(),
+                        state.doc.width(),
+                    )
+                });
                 annotation::draw(
                     &mut state.back,
                     &state.doc.items,
@@ -668,6 +750,49 @@ fn paint(hdc: HDC) {
                 }
                 SelectClipRgn(state.back.dc(), std::ptr::null_mut());
                 DeleteObject(rgn);
+
+                // 选区控制点
+                if state.toolbar_visible() {
+                    for (hx, hy) in toolbar::handle_points(sel) {
+                        let rect = RECT {
+                            left: hx - 4,
+                            top: hy - 4,
+                            right: hx + 5,
+                            bottom: hy + 5,
+                        };
+                        let brush = CreateSolidBrush(rgb(0xff, 0xff, 0xff));
+                        FillRect(state.back.dc(), &rect, brush);
+                        DeleteObject(brush);
+                        let pen = CreatePen(PS_SOLID, 1, rgb(0x30, 0x30, 0x30));
+                        let old_pen = SelectObject(state.back.dc(), pen);
+                        let old_brush =
+                            SelectObject(state.back.dc(), GetStockObject(NULL_BRUSH));
+                        Rectangle(
+                            state.back.dc(),
+                            rect.left,
+                            rect.top,
+                            rect.right,
+                            rect.bottom,
+                        );
+                        SelectObject(state.back.dc(), old_brush);
+                        SelectObject(state.back.dc(), old_pen);
+                        DeleteObject(pen);
+                    }
+
+                    let toolbar_state = toolbar::ToolbarState {
+                        selection: sel,
+                        screen: (state.width, state.height),
+                        cursor: state.cursor,
+                        tool: state.doc.tool(),
+                        picks: state.picks,
+                        style_open: state.style_open,
+                        color_index: state.doc.color_index(),
+                        width: state.doc.width(),
+                        fill: state.doc.fill(),
+                        delete_mode: state.delete_mode,
+                    };
+                    toolbar::draw(state.back.dc(), &toolbar_state);
+                }
             } else if let Some(w) = state.current_rect() {
                 let (x, y, sw, sh) = w;
                 let rx = x.max(dx);
@@ -867,7 +992,10 @@ fn finalize_draft(state: &mut OverlayState, end: Option<(i32, i32)>) {
     if state.draft_points.is_empty() {
         return;
     }
-    let tool = state.doc.tool();
+    let Some(tool) = state.doc.tool() else {
+        state.draft_points.clear();
+        return;
+    };
     let clamp = |value: i32, lo: i32, hi: i32| value.clamp(lo, hi);
     let to_image = |p: (i32, i32)| {
         (
@@ -956,11 +1084,41 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             STATE.with(|cell| {
                 if let Some(state) = cell.borrow_mut().as_mut() {
                     state.cursor = Some((cx, cy));
+                    if let Some(adjust) = state.adjust {
+                        if let Some(current) = state.selection {
+                            let screen = (state.width, state.height);
+                            let updated = match adjust.kind {
+                                AdjustKind::Move => toolbar::translate(
+                                    adjust.selection,
+                                    cx - adjust.start.0,
+                                    cy - adjust.start.1,
+                                    screen,
+                                ),
+                                AdjustKind::Resize(handle) => {
+                                    toolbar::resize(adjust.selection, handle, cx, cy, screen)
+                                }
+                            };
+                            if updated != current {
+                                let dx = updated.x - current.x;
+                                let dy = updated.y - current.y;
+                                if dx != 0 || dy != 0 {
+                                    for item in &mut state.doc.items {
+                                        for point in &mut item.points {
+                                            point.0 -= dx;
+                                            point.1 -= dy;
+                                        }
+                                    }
+                                }
+                                state.selection = Some(updated);
+                            }
+                        }
+                        return;
+                    }
                     if state.phase == Phase::Selecting && state.dragging {
                         state.current = Some((cx, cy));
                     }
                     if state.phase == Phase::Annotating
-                        && matches!(state.doc.tool(), Shape::Pencil | Shape::Highlighter)
+                        && matches!(state.doc.tool(), Some(Shape::Pencil | Shape::Highlighter))
                     {
                         if let Some(last) = state.draft_points.last().copied() {
                             if (cx - last.0).abs() + (cy - last.1).abs() >= 2 {
@@ -974,6 +1132,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_LBUTTONDOWN => {
+            let mut destroy_now = false;
+            let mut save_requested = false;
             STATE.with(|cell| {
                 if let Some(state) = cell.borrow_mut().as_mut() {
                     match state.phase {
@@ -990,15 +1150,105 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                 }
                             }
                             if let Some(sel) = state.selection {
+                                if state.toolbar_visible() {
+                                    let layout = toolbar::layout(
+                                        sel,
+                                        (state.width, state.height),
+                                        state.doc.tool(),
+                                        state.style_open,
+                                    );
+                                    if let Some(action) = toolbar::hit(&layout, cx, cy) {
+                                        match action {
+                                            Action::Group(group) => {
+                                                state.delete_mode = false;
+                                                let shape = state.picks.current(group);
+                                                state.doc.set_tool(shape);
+                                                state.style_open = true;
+                                                state.draft_points.clear();
+                                            }
+                                            Action::Pick(group, shape) => {
+                                                state.delete_mode = false;
+                                                state.picks.set(group, shape);
+                                                state.doc.set_tool(shape);
+                                                state.style_open = true;
+                                                state.draft_points.clear();
+                                            }
+                                            Action::Tool(shape) => {
+                                                state.delete_mode = false;
+                                                state.doc.toggle_tool(shape);
+                                                state.style_open = state.doc.tool() == Some(shape);
+                                                state.draft_points.clear();
+                                            }
+                                            Action::Color(index) => state.doc.set_color(index),
+                                            Action::Width => {}
+                                            Action::Fill => state.doc.toggle_fill(),
+                                            Action::Undo => {
+                                                state.doc.undo();
+                                            }
+                                            Action::Redo => {
+                                                state.doc.redo();
+                                            }
+                                            Action::Delete => {
+                                                state.delete_mode = !state.delete_mode;
+                                            }
+                                            Action::Save => {
+                                                // 目录选择器是模态对话框，必须释放借用后再弹。
+                                                save_requested = true;
+                                            }
+                                            Action::Copy => {
+                                                state.result = Some(sel);
+                                                state.copy_only = true;
+                                                destroy_now = true;
+                                            }
+                                            Action::Cancel => {
+                                                destroy_now = true;
+                                            }
+                                        }
+                                        return;
+                                    }
+                                }
+                                if state.delete_mode {
+                                    let lx = cx - sel.x;
+                                    let ly = cy - sel.y;
+                                    if lx >= 0 && ly >= 0 && lx <= sel.width && ly <= sel.height {
+                                        if let Some(index) = state.doc.hit_test(lx, ly) {
+                                            state.doc.delete_at(index);
+                                        }
+                                    }
+                                    return;
+                                }
+                                if toolbar::handle_at(sel, cx, cy).is_some()
+                                    || toolbar::border_at(sel, cx, cy)
+                                {
+                                    let kind = match toolbar::handle_at(sel, cx, cy) {
+                                        Some(handle) => AdjustKind::Resize(handle),
+                                        None => AdjustKind::Move,
+                                    };
+                                    state.adjust = Some(AdjustState {
+                                        kind,
+                                        start: (cx, cy),
+                                        selection: sel,
+                                    });
+                                    state.draft_points.clear();
+                                    return;
+                                }
                                 let lx = cx - sel.x;
                                 let ly = cy - sel.y;
                                 if lx >= 0 && ly >= 0 && lx <= sel.width && ly <= sel.height {
                                     let tool = state.doc.tool();
-                                    if tool == Shape::Text {
+                                    if tool.is_none() {
+                                        state.adjust = Some(AdjustState {
+                                            kind: AdjustKind::Move,
+                                            start: (cx, cy),
+                                            selection: sel,
+                                        });
+                                        return;
+                                    }
+                                    if tool == Some(Shape::Text) {
                                         start_text_edit(hwnd, state, cx, cy);
                                         return;
                                     }
-                                    if tool == Shape::Serial {
+                                    if tool == Some(Shape::Serial) {
                                         let number = state.doc.next_serial();
                                         let mut item = Item::new(
                                             Shape::Serial,
@@ -1015,7 +1265,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                         state.draft_points.clear();
                                     } else {
                                         state.doc.select(None);
-                                        let tool = state.doc.tool();
+                                        let tool = state.doc.tool().unwrap_or(Shape::Rect);
                                         if tool.is_path_shape() {
                                             // 折线：点回起点（±8px）即闭合。
                                             let close = tool == Shape::Polyline
@@ -1040,6 +1290,32 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                 }
             });
+            if save_requested {
+                if let Some(dir) = pick_folder(hwnd) {
+                    let finished = STATE.with(|cell| {
+                        let mut guard = cell.borrow_mut();
+                        if let Some(state) = guard.as_mut() {
+                            if let Some(selection) = state.selection {
+                                if save_current(state, &dir).is_ok() {
+                                    state.result = Some(selection);
+                                    state.saved = true;
+                                    return true;
+                                }
+                            }
+                        }
+                        false
+                    });
+                    if finished {
+                        DestroyWindow(hwnd);
+                        return 0;
+                    }
+                }
+                return 0;
+            }
+            if destroy_now {
+                DestroyWindow(hwnd);
+                return 0;
+            }
             InvalidateRect(hwnd, std::ptr::null(), 0);
             0
         }
@@ -1069,11 +1345,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                             }
                         }
                         Phase::Annotating => {
+                            if state.adjust.is_some() {
+                                state.adjust = None;
+                                repaint = true;
+                                return;
+                            }
                             if state.editing.is_some() {
                                 return;
                             }
                             // 折线点击加点，不在这里收尾（回车/双击收尾）。
-                            if state.doc.tool() != Shape::Polyline {
+                            if state.doc.tool() != Some(Shape::Polyline) {
                                 finalize_draft(state, Some((cx, cy)));
                                 repaint = true;
                             }
@@ -1090,7 +1371,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             STATE.with(|cell| {
                 if let Some(state) = cell.borrow_mut().as_mut() {
                     if state.phase == Phase::Annotating
-                        && state.doc.tool() == Shape::Polyline
+                        && state.doc.tool() == Some(Shape::Polyline)
                     {
                         finalize_draft(state, None);
                     }
@@ -1105,6 +1386,48 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_KEYDOWN => {
             let key = wp as u16;
+            if GetKeyState(VK_CONTROL as i32) < 0 && key == 0x53 {
+                let finished = STATE.with(|cell| {
+                    let mut guard = cell.borrow_mut();
+                    if let Some(state) = guard.as_mut() {
+                        if state.phase == Phase::Annotating {
+                            if let Some(selection) = state.selection {
+                                if save_current(state, &save::default_dir()).is_ok() {
+                                    state.result = Some(selection);
+                                    state.saved = true;
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    false
+                });
+                if finished {
+                    DestroyWindow(hwnd);
+                    return 0;
+                }
+                return 0;
+            }
+            if GetKeyState(VK_CONTROL as i32) < 0 && key == 0x43 {
+                let finished = STATE.with(|cell| {
+                    let mut guard = cell.borrow_mut();
+                    if let Some(state) = guard.as_mut() {
+                        if state.phase == Phase::Annotating {
+                            if let Some(selection) = state.selection {
+                                state.result = Some(selection);
+                                state.copy_only = true;
+                                return true;
+                            }
+                        }
+                    }
+                    false
+                });
+                if finished {
+                    DestroyWindow(hwnd);
+                    return 0;
+                }
+                return 0;
+            }
             let editing = STATE.with(|cell| {
                 cell.borrow()
                     .as_ref()
@@ -1181,61 +1504,73 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                             // R 矩形 / O 椭圆 / L 直线 / A 箭头 / B 折线 / P 铅笔
                             0x52 => {
                                 state.doc.set_tool(Shape::Rect);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
                             0x4F => {
                                 state.doc.set_tool(Shape::Ellipse);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
                             0x4C => {
                                 state.doc.set_tool(Shape::Line);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
                             0x41 => {
                                 state.doc.set_tool(Shape::Arrow);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
                             0x42 => {
                                 state.doc.set_tool(Shape::Polyline);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
                             0x43 => {
                                 state.doc.set_tool(Shape::Circle);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
                             0x48 => {
                                 state.doc.set_tool(Shape::Highlighter);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
                             0x54 => {
                                 state.doc.set_tool(Shape::Text);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
                             0x4E => {
                                 state.doc.set_tool(Shape::Serial);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
                             0x4D => {
                                 state.doc.set_tool(Shape::Mosaic);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
                             0x46 => {
                                 state.doc.set_tool(Shape::Blur);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
                             0x50 => {
                                 state.doc.set_tool(Shape::Pencil);
+                                state.style_open = true;
                                 state.draft_points.clear();
                                 repaint = true;
                             }
@@ -1379,6 +1714,41 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             InvalidateRect(hwnd, std::ptr::null(), 0);
             0
         }
+        WM_MOUSEWHEEL => {
+            let screen_x = (lp as u16) as i16 as i32;
+            let screen_y = (((lp as u64) >> 16) as u16) as i16 as i32;
+            let delta = ((wp >> 16) as u16) as i16;
+            STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    if state.phase == Phase::Annotating && state.style_open {
+                        if let Some(selection) = state.selection {
+                            let x = screen_x - state.origin_x;
+                            let y = screen_y - state.origin_y;
+                            let layout = toolbar::layout(
+                                selection,
+                                (state.width, state.height),
+                                state.doc.tool(),
+                                state.style_open,
+                            );
+                            if let Some(styles) = &layout.styles {
+                                for (action, rect) in styles {
+                                    if *action == Action::Width
+                                        && x >= rect.left
+                                        && x <= rect.right
+                                        && y >= rect.top
+                                        && y <= rect.bottom
+                                    {
+                                        state.doc.adjust_width(if delta > 0 { 1 } else { -1 });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+            0
+        }
         WM_TIMER => {
             let editing = STATE.with(|cell| {
                 cell.borrow()
@@ -1509,7 +1879,7 @@ pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
                 (DEFAULT_PITCH | FF_DONTCARE) as u32,
                 windows_sys::w!("Segoe UI") as *const u16,
             );
-            let pen = CreatePen(PS_SOLID, 1, rgb(0x30, 0x7d, 0xef));
+            let pen = CreatePen(PS_SOLID, 3, rgb(0x30, 0x7d, 0xef));
             let grid_pen = CreatePen(PS_SOLID, 1, rgb(0x66, 0x66, 0x66));
             let cross_pen = CreatePen(PS_SOLID, 2, rgb(0x30, 0x7d, 0xef));
             let white_pen = CreatePen(PS_SOLID, 1, rgb(0xff, 0xff, 0xff));
@@ -1561,6 +1931,12 @@ pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
                     selection: None,
                     editing: None,
                     caret_on: false,
+                    adjust: None,
+                    picks: toolbar::Picks::default(),
+                    style_open: false,
+                    delete_mode: false,
+                    saved: false,
+                    copy_only: false,
                     ime_context: ime_context as isize,
                     doc: Document::new(),
                     draft_points: Vec::new(),
@@ -1590,6 +1966,8 @@ pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
                 selection,
                 top_down,
                 bottom_up,
+                saved: state.saved,
+                copy_only: state.copy_only,
             })
         })
         .ok()?;

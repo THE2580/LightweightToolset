@@ -45,10 +45,9 @@ fn timestamp_name() -> String {
     }
 }
 
-/// 落盘并返回最终路径；同一秒内重复截图自动加 `-1`、`-2` 后缀。
-pub fn write_file(png: &[u8]) -> Result<PathBuf, String> {
-    let dir = default_dir();
-    std::fs::create_dir_all(&dir).map_err(|error| format!("创建截图目录失败: {error}"))?;
+/// 写入指定目录并返回最终路径；同一秒内重复截图自动加 `-1`、`-2` 后缀。
+pub fn write_png_to(dir: &std::path::Path, png: &[u8]) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|error| format!("创建截图目录失败: {error}"))?;
     let base = timestamp_name();
     let mut path = dir.join(&base);
     let mut index = 1;
@@ -62,4 +61,9 @@ pub fn write_file(png: &[u8]) -> Result<PathBuf, String> {
     }
     std::fs::write(&path, png).map_err(|error| format!("写入截图文件失败: {error}"))?;
     Ok(path)
+}
+
+/// 写入默认目录。
+pub fn write_file(png: &[u8]) -> Result<PathBuf, String> {
+    write_png_to(&default_dir(), png)
 }

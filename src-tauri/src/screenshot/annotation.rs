@@ -8,14 +8,16 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | ((g as u32) << 8) | ((b as u32) << 16)
 }
 
-pub const PALETTE: [u32; 4] = [
+pub const PALETTE: [u32; 8] = [
     rgb(0xE5, 0x3E, 0x3E), // 红
+    rgb(0xED, 0x89, 0x36), // 橙
     rgb(0xF2, 0xC9, 0x4C), // 黄
     rgb(0x2E, 0xC4, 0x6B), // 绿
+    rgb(0x38, 0xB2, 0xAC), // 青
     rgb(0x30, 0x7D, 0xEF), // 蓝
+    rgb(0x80, 0x5A, 0xD5), // 紫
+    rgb(0x1A, 0x20, 0x2C), // 黑
 ];
-
-pub const WIDTHS: [i32; 4] = [2, 4, 6, 10];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
@@ -60,6 +62,23 @@ pub enum Shape {
 }
 
 impl Shape {
+    pub fn label(self) -> &'static str {
+        match self {
+            Shape::Rect => "矩形",
+            Shape::Ellipse => "椭圆",
+            Shape::Circle => "正圆",
+            Shape::Line => "直线",
+            Shape::Arrow => "箭头",
+            Shape::Polyline => "折线",
+            Shape::Pencil => "铅笔",
+            Shape::Highlighter => "荧光笔",
+            Shape::Mosaic => "马赛克",
+            Shape::Blur => "模糊",
+            Shape::Text => "文字",
+            Shape::Serial => "序号",
+        }
+    }
+
     pub fn is_path_shape(self) -> bool {
         matches!(self, Shape::Polyline | Shape::Pencil | Shape::Highlighter)
     }
@@ -73,6 +92,7 @@ pub struct Item {
     pub color: u32,
     pub width: i32,
     pub text: String,
+    pub fill: bool,
 }
 
 impl Item {
@@ -83,6 +103,7 @@ impl Item {
             color,
             width,
             text: String::new(),
+            fill: false,
         }
     }
 
@@ -184,9 +205,10 @@ pub fn simplify(points: &[(i32, i32)], epsilon: f64) -> Vec<(i32, i32)> {
 pub struct Document {
     pub items: Vec<Item>,
     pub selected: Option<usize>,
-    tool: Shape,
+    tool: Option<Shape>,
     color_index: usize,
-    width_index: usize,
+    width: i32,
+    fill: bool,
     undo: Vec<Vec<Item>>,
     redo: Vec<Vec<Item>>,
     serial_next: u32,
@@ -203,9 +225,10 @@ impl Document {
         Self {
             items: Vec::new(),
             selected: None,
-            tool: Shape::Rect,
+            tool: None,
             color_index: 0,
-            width_index: 1,
+            width: 4,
+            fill: false,
             undo: Vec::new(),
             redo: Vec::new(),
             serial_next: 1,
@@ -218,29 +241,53 @@ impl Document {
         value
     }
 
-    pub fn tool(&self) -> Shape {
+    pub fn tool(&self) -> Option<Shape> {
         self.tool
     }
 
     pub fn set_tool(&mut self, tool: Shape) {
-        self.tool = tool;
+        self.tool = Some(tool);
+    }
+
+    /// 工具栏再次点击同一工具时取消选中。
+    pub fn toggle_tool(&mut self, tool: Shape) {
+        self.tool = if self.tool == Some(tool) {
+            None
+        } else {
+            Some(tool)
+        };
     }
 
     pub fn color(&self) -> u32 {
         PALETTE[self.color_index.min(PALETTE.len() - 1)]
     }
 
+    pub fn color_index(&self) -> usize {
+        self.color_index
+    }
+
     pub fn width(&self) -> i32 {
-        WIDTHS[self.width_index.min(WIDTHS.len() - 1)]
+        self.width
+    }
+
+    pub fn set_width(&mut self, width: i32) {
+        self.width = width.clamp(1, 50);
+    }
+
+    pub fn adjust_width(&mut self, delta: i32) {
+        self.set_width(self.width + delta);
+    }
+
+    pub fn fill(&self) -> bool {
+        self.fill
+    }
+
+    pub fn toggle_fill(&mut self) {
+        self.fill = !self.fill;
     }
 
     pub fn set_color(&mut self, index: usize) {
         self.color_index = index.min(PALETTE.len() - 1);
-    }
-
-    pub fn adjust_width(&mut self, delta: i32) {
-        let next = (self.width_index as i32 + delta).clamp(0, (WIDTHS.len() - 1) as i32) as usize;
-        self.width_index = next;
     }
 
     fn begin_change(&mut self) {
@@ -251,7 +298,10 @@ impl Document {
         self.redo.clear();
     }
 
-    pub fn push(&mut self, item: Item) {
+    pub fn push(&mut self, mut item: Item) {
+        if matches!(item.shape, Shape::Rect | Shape::Ellipse | Shape::Circle) {
+            item.fill = self.fill;
+        }
         self.begin_change();
         self.items.push(item);
         self.selected = Some(self.items.len() - 1);
@@ -261,9 +311,13 @@ impl Document {
         let Some(index) = self.selected else {
             return false;
         };
+        self.delete_at(index)
+    }
+
+    pub fn delete_at(&mut self, index: usize) -> bool {
         if index >= self.items.len() {
             return false;
-        };
+        }
         self.begin_change();
         self.items.remove(index);
         self.selected = None;
@@ -661,10 +715,20 @@ pub unsafe fn draw(
                     let top = bounds.y + oy;
                     let right = left + bounds.width;
                     let bottom = top + bounds.height;
+                    let brush = if item.fill {
+                        CreateSolidBrush(item.color)
+                    } else {
+                        GetStockObject(NULL_BRUSH) as HBRUSH
+                    };
+                    let old_brush = SelectObject(hdc, brush);
                     if item.shape == Shape::Rect {
                         Rectangle(hdc, left, top, right, bottom);
                     } else {
                         Ellipse(hdc, left, top, right, bottom);
+                    }
+                    SelectObject(hdc, old_brush);
+                    if item.fill {
+                        DeleteObject(brush);
                     }
                 }
             }
@@ -889,7 +953,12 @@ mod tests {
     #[test]
     fn tool_switch_is_kept() {
         let mut doc = Document::new();
+        assert_eq!(doc.tool(), None);
         doc.set_tool(Shape::Arrow);
-        assert_eq!(doc.tool(), Shape::Arrow);
+        assert_eq!(doc.tool(), Some(Shape::Arrow));
+        doc.toggle_tool(Shape::Arrow);
+        assert_eq!(doc.tool(), None);
+        doc.toggle_tool(Shape::Ellipse);
+        assert_eq!(doc.tool(), Some(Shape::Ellipse));
     }
 }

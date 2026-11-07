@@ -3,6 +3,7 @@ mod capture;
 mod clipboard_image;
 mod dib;
 mod overlay;
+mod toolbar;
 mod save;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,6 +54,18 @@ fn run(app: &AppHandle) -> Result<String, String> {
         &outcome.bottom_up,
         Some(&png),
     )?;
+    if outcome.copy_only {
+        return Ok(format!(
+            "screenshot.copied size={}x{}",
+            selection.width, selection.height
+        ));
+    }
+    if outcome.saved {
+        return Ok(format!(
+            "screenshot.saved_manually size={}x{}",
+            selection.width, selection.height
+        ));
+    }
     let path = save::write_file(&png)?;
 
     Ok(format!(
