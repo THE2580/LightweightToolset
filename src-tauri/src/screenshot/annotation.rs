@@ -93,6 +93,9 @@ pub struct Item {
     pub width: i32,
     pub text: String,
     pub fill: bool,
+    pub arrow: u8,
+    pub closed: bool,
+    pub line_style: u8,
 }
 
 impl Item {
@@ -104,6 +107,9 @@ impl Item {
             width,
             text: String::new(),
             fill: false,
+            arrow: 0,
+            closed: false,
+            line_style: 0,
         }
     }
 
@@ -209,6 +215,10 @@ pub struct Document {
     color_index: usize,
     width: i32,
     fill: bool,
+    arrow_style: u8,
+    closed: bool,
+    line_style_shapes: u8,
+    line_style_lines: u8,
     undo: Vec<Vec<Item>>,
     redo: Vec<Vec<Item>>,
     serial_next: u32,
@@ -229,6 +239,10 @@ impl Document {
             color_index: 0,
             width: 4,
             fill: false,
+            arrow_style: 1,
+            closed: false,
+            line_style_shapes: 0,
+            line_style_lines: 0,
             undo: Vec::new(),
             redo: Vec::new(),
             serial_next: 1,
@@ -286,6 +300,42 @@ impl Document {
         self.fill = !self.fill;
     }
 
+    pub fn line_style(&self, shapes: bool) -> u8 {
+        if shapes {
+            self.line_style_shapes
+        } else {
+            self.line_style_lines
+        }
+    }
+
+    pub fn set_line_style(&mut self, shapes: bool, style: u8) {
+        if shapes {
+            self.line_style_shapes = style.min(1);
+        } else {
+            self.line_style_lines = style.min(1);
+        }
+    }
+
+    pub fn clear_tool(&mut self) {
+        self.tool = None;
+    }
+
+    pub fn arrow_style(&self) -> u8 {
+        self.arrow_style
+    }
+
+    pub fn set_arrow_style(&mut self, style: u8) {
+        self.arrow_style = style.min(2);
+    }
+
+    pub fn closed(&self) -> bool {
+        self.closed
+    }
+
+    pub fn toggle_closed(&mut self) {
+        self.closed = !self.closed;
+    }
+
     pub fn set_color(&mut self, index: usize) {
         self.color_index = index.min(PALETTE.len() - 1);
     }
@@ -302,6 +352,19 @@ impl Document {
         if matches!(item.shape, Shape::Rect | Shape::Ellipse | Shape::Circle) {
             item.fill = self.fill;
         }
+        if item.shape == Shape::Arrow {
+            item.arrow = self.arrow_style.clamp(1, 2);
+        } else if item.shape == Shape::Line {
+            item.arrow = 0;
+        }
+        if item.shape == Shape::Polyline {
+            item.closed = self.closed;
+        }
+        item.line_style = match item.shape {
+            Shape::Rect | Shape::Ellipse | Shape::Circle => self.line_style_shapes,
+            Shape::Line | Shape::Arrow | Shape::Polyline => self.line_style_lines,
+            _ => 0,
+        };
         self.begin_change();
         self.items.push(item);
         self.selected = Some(self.items.len() - 1);
@@ -389,6 +452,26 @@ impl Document {
         self.items = next;
         self.selected = self.items.len().checked_sub(1);
         true
+    }
+}
+
+unsafe fn item_pen(item: &Item) -> HPEN {
+    if item.line_style == 1 {
+        let brush = LOGBRUSH {
+            lbStyle: BS_SOLID,
+            lbColor: item.color,
+            lbHatch: 0,
+        };
+        let pattern: [u32; 2] = [6, 4];
+        ExtCreatePen(
+            (PS_GEOMETRIC | PS_USERSTYLE | PS_ENDCAP_FLAT) as u32,
+            item.width.max(1) as u32,
+            &brush,
+            2,
+            pattern.as_ptr(),
+        )
+    } else {
+        CreatePen(PS_SOLID, item.width.max(1), item.color)
     }
 }
 
@@ -698,7 +781,7 @@ pub unsafe fn draw(
 
     let hdc = surface.dc();
     let paint_one = |item: &Item, highlighted: bool| {
-        let pen = CreatePen(PS_SOLID, item.width.max(1), item.color);
+        let pen = item_pen(item);
         let old_pen = SelectObject(hdc, pen);
         let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
@@ -738,8 +821,13 @@ pub unsafe fn draw(
                     let b = item.points[1];
                     MoveToEx(hdc, a.0 + ox, a.1 + oy, std::ptr::null_mut());
                     LineTo(hdc, b.0 + ox, b.1 + oy);
-                    if item.shape == Shape::Arrow {
-                        draw_arrow_head(hdc, item, a, b, ox, oy);
+                    match item.arrow {
+                        0 => {}
+                        1 => draw_arrow_head(hdc, item, a, b, ox, oy),
+                        _ => {
+                            draw_arrow_head(hdc, item, a, b, ox, oy);
+                            draw_arrow_head(hdc, item, b, a, ox, oy);
+                        }
                     }
                 }
             }
@@ -797,14 +885,27 @@ pub unsafe fn draw(
             }
             Shape::Polyline | Shape::Pencil => {
                 if item.points.len() >= 2 {
-                    let points: Vec<POINT> = item
-                        .points
-                        .iter()
-                        .map(|p| POINT {
+                    let mut closed_points: Vec<POINT> = Vec::new();
+                    if item.shape == Shape::Polyline && item.closed {
+                        closed_points.extend(item.points.iter().map(|p| POINT {
                             x: p.0 + ox,
                             y: p.1 + oy,
-                        })
-                        .collect();
+                        }));
+                        if let Some(first) = closed_points.first().copied() {
+                            closed_points.push(first);
+                        }
+                    }
+                    let points: Vec<POINT> = if item.shape == Shape::Polyline && item.closed {
+                        closed_points
+                    } else {
+                        item.points
+                            .iter()
+                            .map(|p| POINT {
+                                x: p.0 + ox,
+                                y: p.1 + oy,
+                            })
+                            .collect()
+                    };
                     Polyline(hdc, points.as_ptr(), points.len() as i32);
                 } else if let Some(p) = item.points.first() {
                     SetPixelV(hdc, p.0 + ox, p.1 + oy, item.color);
@@ -851,6 +952,9 @@ pub fn build_draft(
     origin: (i32, i32),
     color: u32,
     width: i32,
+    fill: bool,
+    line_style: u8,
+    arrow: u8,
 ) -> Option<Item> {
     let first = *points.first()?;
     let to_image = |p: (i32, i32)| (p.0 - origin.0, p.1 - origin.1);
@@ -871,7 +975,11 @@ pub fn build_draft(
     if collected.len() < 2 {
         return None;
     }
-    Some(Item::new(tool, collected, color, width))
+    let mut item = Item::new(tool, collected, color, width);
+    item.fill = fill;
+    item.line_style = line_style;
+    item.arrow = arrow;
+    Some(item)
 }
 
 #[cfg(test)]
@@ -926,6 +1034,9 @@ mod tests {
             (100, 100),
             0,
             4,
+            false,
+            0,
+            0,
         )
         .expect("draft");
         assert_eq!(draft.points, vec![(0, 0), (50, 70)]);
@@ -937,6 +1048,9 @@ mod tests {
             (10, 10),
             0,
             4,
+            false,
+            0,
+            0,
         )
         .expect("polyline");
         assert_eq!(polyline.points, vec![(0, 0), (10, 10), (20, 30)]);

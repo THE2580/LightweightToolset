@@ -146,6 +146,8 @@ Remove-Item -Recurse -Force "$env:TEMP\lwt-dev" -ErrorAction SilentlyContinue
 ## 验证方式
 
 - **改动完成后主动启动开发版（固定动作，不需用户再提）**：每次交付可运行的改动后，先确认 `npm run dev`（Vite，端口 1420）在跑，再把 `src-tauri/target/debug/lightweight-toolset.exe` 复制到 `%TEMP%\lwt-dev\`，用 `Start-Process -Verb RunAs` 启动，并在汇报里写清本次测试点与快捷键。纯文档、纯配置或不影响运行时的改动可跳过，但要在汇报里说明原因。
+- **启动开发版必须逐项自检（固定动作，禁止盲测）**：每次启动开发版前后都要核对：① `netstat` 确认 1420 在监听，并实际请求 `http://localhost:1420` 返回 200；② 结束所有 `%TEMP%\lwt-dev` 旧实例，确认 exe 复制成功（出现 Device busy 说明旧进程未退，不得继续）；③ 启动后核对进程路径确实来自 `%TEMP%\lwt-dev`；④ 确认窗口能正常加载页面——页面空白时先查 Vite/WebView，不得继续做热键或功能测试；⑤ 截图测试使用实际注册成功的热键；为排查临时改过热键，必须改回并重启；⑥ 不得凭“可能被安装版占用”臆测热键失效，要以实际注册结果/日志为准。
+
 - 前端/Build：`npm run build` 无 TS 错误与 Vite 构建错误。
 - Rust：`cargo check` 通过；改动模块的单测通过，全量用 `--test-threads=1`（`input_monitor` 等测试共享全局按键状态，并行会偶发失败）。
 - 运行时/UI 变更：需在 Windows 真机验证；应用为管理员权限，测试高完整性窗口按键时注意同 App ID 的已安装版干扰（开发版已隔离标识，两者可同时运行）。

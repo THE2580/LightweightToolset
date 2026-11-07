@@ -68,6 +68,10 @@ pub enum Action {
     Color(usize),
     Width,
     Fill,
+    LineStyle,
+    ArrowType,
+    LineStylePick(u8),
+    ArrowPick(u8),
     Undo,
     Redo,
     Delete,
@@ -86,6 +90,7 @@ pub struct Layout {
     pub style_bg: Option<(i32, i32, i32, i32)>,
     pub separators: Vec<(i32, i32, i32)>,
     pub style_separators: Vec<(i32, i32, i32)>,
+    pub menus: Vec<(Action, RECT)>,
 }
 
 impl Layout {
@@ -99,6 +104,12 @@ impl Layout {
             top = top.min(py - 2);
             right = right.max(px + pw + 2);
             bottom = bottom.max(py + ph + 2);
+        }
+        for (_, rect) in &self.menus {
+            left = left.min(rect.left);
+            top = top.min(rect.top);
+            right = right.max(rect.right);
+            bottom = bottom.max(rect.bottom);
         }
         for group in [&self.styles] {
             if let Some(buttons) = group {
@@ -120,6 +131,9 @@ pub fn layout(
     screen: (i32, i32),
     tool: Option<Shape>,
     style_open: bool,
+    picks: &Picks,
+    line_menu_open: bool,
+    arrow_menu_open: bool,
 ) -> Layout {
     let button = TB_BTN;
     let content = 13 * (button + GAP) + 2 * DIVIDER - GAP;
@@ -184,10 +198,13 @@ pub fn layout(
         styles: None,
         style_bg: None,
         style_separators: Vec::new(),
+        menus: Vec::new(),
     };
 
     if tool.is_some() && style_open {
         let is_shape = matches!(tool, Some(Shape::Rect | Shape::Ellipse | Shape::Circle));
+        let is_line = matches!(tool, Some(Shape::Line | Shape::Arrow | Shape::Polyline));
+        let line_pick = picks.lines;
         let row_h = TB_BTN;
         let mut ry = y + height + 4;
         if ry + row_h + 16 > screen.1 - 4 {
@@ -197,29 +214,44 @@ pub fn layout(
         let mut style_buttons: Vec<(Action, RECT)> = Vec::new();
         let mut style_separators: Vec<(i32, i32, i32)> = Vec::new();
         let mut sx = x;
-        let mut push_style = |action: Action, w: i32, sx: &mut i32| {
-            style_buttons.push((
-                action,
-                RECT {
-                    left: *sx,
-                    top: stop,
-                    right: *sx + w,
-                    bottom: stop + row_h,
-                },
-            ));
+        let mut push_style = |action: Action, w: i32, sx: &mut i32| -> RECT {
+            let rect = RECT {
+                left: *sx,
+                top: stop,
+                right: *sx + w,
+                bottom: stop + row_h,
+            };
+            style_buttons.push((action, rect));
             *sx += w + GAP;
+            rect
         };
         let mut sep_style = |sx: &mut i32, seps: &mut Vec<(i32, i32, i32)>| {
             seps.push((*sx + (DIVIDER - GAP) / 2, ry, ry + row_h));
             *sx += DIVIDER;
         };
 
-        push_style(Action::Width, 92, &mut sx);
+        let mut line_btn: Option<RECT> = None;
+        let mut arrow_btn: Option<RECT> = None;
+        if is_shape || is_line {
+            line_btn = Some(push_style(Action::LineStyle, 121, &mut sx));
+            sep_style(&mut sx, &mut style_separators);
+        }
+        if is_line && line_pick == Shape::Arrow {
+            arrow_btn = Some(push_style(Action::ArrowType, 121, &mut sx));
+            sep_style(&mut sx, &mut style_separators);
+        }
+        push_style(Action::Width, 80, &mut sx);
         if is_shape {
             push_style(Action::Fill, 68, &mut sx);
             sep_style(&mut sx, &mut style_separators);
             for shape in [Shape::Rect, Shape::Ellipse, Shape::Circle] {
                 push_style(Action::Pick(Group::Shapes, shape), button, &mut sx);
+            }
+            sep_style(&mut sx, &mut style_separators);
+        } else if is_line {
+            sep_style(&mut sx, &mut style_separators);
+            for shape in [Shape::Line, Shape::Arrow, Shape::Polyline] {
+                push_style(Action::Pick(Group::Lines, shape), button, &mut sx);
             }
             sep_style(&mut sx, &mut style_separators);
         }
@@ -234,16 +266,53 @@ pub fn layout(
             }
         }
         let row_w = sx - x;
-        layout.width = layout.width.max(row_w);
+        // 一级栏宽度只由自身按钮决定，不被二级栏撑长。
         layout.styles = Some(style_buttons);
         layout.style_bg = Some((x, ry, row_w, row_h));
         layout.style_separators = style_separators;
+        if line_menu_open {
+            if let Some(anchor) = line_btn {
+                let menu_y = ry + row_h;
+                for style in 0..2u8 {
+                    layout.menus.push((
+                        Action::LineStylePick(style),
+                        RECT {
+                            left: anchor.left,
+                            top: menu_y + style as i32 * 32,
+                            right: anchor.right,
+                            bottom: menu_y + style as i32 * 32 + 30,
+                        },
+                    ));
+                }
+            }
+        }
+        if line_pick == Shape::Arrow && arrow_menu_open {
+            if let Some(anchor) = arrow_btn {
+                let menu_y = ry + row_h;
+                for style in 1..3u8 {
+                    layout.menus.push((
+                        Action::ArrowPick(style),
+                        RECT {
+                            left: anchor.left,
+                            top: menu_y + (style as i32 - 1) * 32,
+                            right: anchor.right,
+                            bottom: menu_y + (style as i32 - 1) * 32 + 30,
+                        },
+                    ));
+                }
+            }
+        }
     }
 
     layout
 }
 
 pub fn hit(layout: &Layout, x: i32, y: i32) -> Option<Action> {
+    for (action, rect) in &layout.menus {
+        if inside(*rect, x, y) {
+            return Some(*action);
+        }
+    }
     for group in [&layout.styles] {
         if let Some(buttons) = group {
             for (action, rect) in buttons {
@@ -275,6 +344,13 @@ pub fn tooltip(action: Action) -> String {
         Action::Color(_) => "颜色".to_owned(),
         Action::Width => "线宽：滚轮调整".to_owned(),
         Action::Fill => "填充开关".to_owned(),
+        Action::LineStyle => "线型".to_owned(),
+        Action::ArrowType => "箭头类型".to_owned(),
+        Action::LineStylePick(0) => "实线".to_owned(),
+        Action::LineStylePick(_) => "虚线".to_owned(),
+        Action::ArrowPick(0) => "无箭头".to_owned(),
+        Action::ArrowPick(1) => "单向箭头".to_owned(),
+        Action::ArrowPick(_) => "双向箭头".to_owned(),
         Action::Undo => "撤销 (Ctrl+Z)".to_owned(),
         Action::Redo => "重做 (Ctrl+Y)".to_owned(),
         Action::Delete => "删除选中标注 (Delete)".to_owned(),
@@ -306,6 +382,50 @@ fn fill(hdc: HDC, rect: RECT, color: u32) {
     }
 }
 
+fn draw_line_sample(hdc: HDC, rect: RECT, color: u32, style: u8) {
+    let cy = (rect.top + rect.bottom) / 2;
+    let left = rect.left + 15;
+    let right = rect.right - 28;
+    if style == 1 {
+        let mut x = left;
+        while x < right {
+            let end = (x + 8).min(right);
+            line(hdc, x, cy, end, cy, 2, color);
+            x += 14;
+        }
+    } else {
+        line(hdc, left, cy, right, cy, 2, color);
+    }
+}
+
+fn draw_menu_line(hdc: HDC, rect: RECT, color: u32, style: u8) {
+    let cy = (rect.top + rect.bottom) / 2;
+    let left = rect.left + 10;
+    let right = rect.right - 15;
+    if style == 1 {
+        let mut x = left;
+        while x < right {
+            let end = (x + 8).min(right);
+            line(hdc, x, cy, end, cy, 2, color);
+            x += 14;
+        }
+    } else {
+        line(hdc, left, cy, right, cy, 2, color);
+    }
+}
+
+fn draw_chevron(hdc: HDC, rect: RECT, color: u32, open: bool) {
+    let x = rect.right - 10;
+    let y = (rect.top + rect.bottom) / 2;
+    if open {
+        line(hdc, x - 4, y + 1, x, y - 3, 2, color);
+        line(hdc, x + 4, y + 1, x, y - 3, 2, color);
+    } else {
+        line(hdc, x - 4, y - 3, x, y + 1, 2, color);
+        line(hdc, x + 4, y - 3, x, y + 1, 2, color);
+    }
+}
+
 fn stroke_rect(hdc: HDC, rect: RECT, color: u32, thickness: i32) {
     unsafe {
         let pen = CreatePen(PS_SOLID, thickness.max(1), color);
@@ -326,6 +446,35 @@ fn line(hdc: HDC, x1: i32, y1: i32, x2: i32, y2: i32, thickness: i32, color: u32
         LineTo(hdc, x2, y2);
         SelectObject(hdc, old_pen);
         DeleteObject(pen);
+    }
+}
+
+fn solid_head(hdc: HDC, tip: (i32, i32), dir: (f32, f32), size: f32, color: u32) {
+    let nx = -dir.1;
+    let ny = dir.0;
+    let bx = tip.0 as f32 - dir.0 * size;
+    let by = tip.1 as f32 - dir.1 * size;
+    let pts = [
+        windows_sys::Win32::Foundation::POINT { x: tip.0, y: tip.1 },
+        windows_sys::Win32::Foundation::POINT {
+            x: (bx + nx * size * 0.6) as i32,
+            y: (by + ny * size * 0.6) as i32,
+        },
+        windows_sys::Win32::Foundation::POINT {
+            x: (bx - nx * size * 0.6) as i32,
+            y: (by - ny * size * 0.6) as i32,
+        },
+    ];
+    unsafe {
+        let brush = CreateSolidBrush(color);
+        let old_brush = SelectObject(hdc, brush);
+        let pen = CreatePen(PS_SOLID, 1, color);
+        let old_pen = SelectObject(hdc, pen);
+        Polygon(hdc, pts.as_ptr(), 3);
+        SelectObject(hdc, old_pen);
+        SelectObject(hdc, old_brush);
+        DeleteObject(pen);
+        DeleteObject(brush);
     }
 }
 
@@ -365,9 +514,8 @@ fn icon(hdc: HDC, shape: Shape, rect: RECT, color: u32) {
         },
         Shape::Line => line(hdc, cx - r, cy + r, cx + r, cy - r, 3, color),
         Shape::Arrow => {
-            line(hdc, cx - r, cy + r, cx + r, cy - r, 3, color);
-            line(hdc, cx + r, cy - r, cx + 1, cy - 5, 3, color);
-            line(hdc, cx + r, cy - r, cx + 6, cy - r + 5, 3, color);
+            line(hdc, cx - r, cy + r, cx + r - 5, cy - r + 5, 3, color);
+            solid_head(hdc, (cx + r, cy - r), (0.707, -0.707), 9.0, color);
         }
         Shape::Polyline => {
             line(hdc, cx - r, cy + 5, cx - 3, cy - 7, 3, color);
@@ -608,11 +756,23 @@ pub struct ToolbarState {
     pub color_index: usize,
     pub width: i32,
     pub fill: bool,
+    pub line_style: u8,
+    pub arrow_style: u8,
+    pub line_menu_open: bool,
+    pub arrow_menu_open: bool,
     pub delete_mode: bool,
 }
 
 pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
-    let layout = layout(state.selection, state.screen, state.tool, state.style_open);
+    let layout = layout(
+        state.selection,
+        state.screen,
+        state.tool,
+        state.style_open,
+        &state.picks,
+        state.line_menu_open,
+        state.arrow_menu_open,
+    );
 
     let bg = RECT {
         left: layout.x,
@@ -639,6 +799,8 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
                 }
                 Action::Color(index) => *index == state.color_index,
                 Action::Fill => state.fill,
+                Action::LineStyle => false,
+                Action::ArrowType => false,
                 Action::Delete => state.delete_mode,
                 _ => false,
             };
@@ -657,6 +819,7 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
             match action {
                 Action::Group(group) => match group {
                     Group::Shapes => shapes_group_icon(hdc, *rect, icon_color),
+                    Group::Lines => icon(hdc, Shape::Line, *rect, icon_color),
                     _ => icon(hdc, state.picks.current(*group), *rect, icon_color),
                 },
                 Action::Tool(shape) => icon(hdc, *shape, *rect, icon_color),
@@ -679,7 +842,7 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
                 }
                 Action::Width => {
                     let cy = (rect.top + rect.bottom) / 2;
-                    let radius = (state.width / 2).clamp(2, 22);
+                    let radius = (state.width / 2).clamp(2, 15);
                     let dot_x = rect.left + 24;
                     let brush = CreateSolidBrush(rgb(0x10, 0x10, 0x10));
                     let pen = CreatePen(PS_SOLID, 1, rgb(0x10, 0x10, 0x10));
@@ -715,6 +878,32 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
                     TextOutW(hdc, dot_x + radius + 10, cy - 11, wide.as_ptr(), wide.len() as i32);
                     SelectObject(hdc, old_font);
                     DeleteObject(font);
+                }
+                Action::LineStyle => {
+                    draw_line_sample(
+                        hdc,
+                        *rect,
+                        icon_color,
+                        if state.line_style == 1 { 1 } else { 0 },
+                    );
+                    draw_chevron(hdc, *rect, rgb(0x80, 0x80, 0x80), state.line_menu_open);
+                    if active {
+                        stroke_rect(hdc, *rect, rgb(0x30, 0x7d, 0xef), 2);
+                    }
+                }
+                Action::ArrowType => {
+                    let cy = (rect.top + rect.bottom) / 2;
+                    let left = rect.left + 14;
+                    let right = rect.right - 30;
+                    line(hdc, left, cy, right - 4, cy, 2, icon_color);
+                    solid_head(hdc, (right, cy), (1.0, 0.0), 9.0, icon_color);
+                    if state.arrow_style == 2 {
+                        solid_head(hdc, (left, cy), (-1.0, 0.0), 9.0, icon_color);
+                    }
+                    draw_chevron(hdc, *rect, rgb(0x80, 0x80, 0x80), state.arrow_menu_open);
+                    if active {
+                        stroke_rect(hdc, *rect, rgb(0x30, 0x7d, 0xef), 2);
+                    }
                 }
                 Action::Fill => {
             let inset = 8;
@@ -782,6 +971,50 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
         }
         SelectClipRgn(hdc, std::ptr::null_mut());
         DeleteObject(clip);
+    }
+    if !layout.menus.is_empty() {
+        let mut left = i32::MAX;
+        let mut top = i32::MAX;
+        let mut right = i32::MIN;
+        let mut bottom = i32::MIN;
+        for (_, rect) in &layout.menus {
+            left = left.min(rect.left);
+            top = top.min(rect.top);
+            right = right.max(rect.right);
+            bottom = bottom.max(rect.bottom);
+        }
+        let bg = RECT {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        fill(hdc, bg, rgb(0xff, 0xff, 0xff));
+        stroke_rect(hdc, bg, rgb(0xc0, 0xc0, 0xc0), 1);
+        for (action, rect) in &layout.menus {
+            let is_hovered = cursor.map(|(x, y)| inside(*rect, x, y)).unwrap_or(false);
+            if is_hovered {
+                fill(hdc, *rect, rgb(0xb8, 0xd2, 0xff));
+                hovered = Some((*action, *rect));
+            }
+            match action {
+                Action::LineStylePick(style) => {
+                    draw_menu_line(hdc, *rect, rgb(0x20, 0x20, 0x20), *style);
+                }
+                Action::ArrowPick(style) => {
+                    let cy = (rect.top + rect.bottom) / 2;
+                    let left = rect.left + 14;
+                    let right = rect.right - 14;
+                    let color = rgb(0x20, 0x20, 0x20);
+                    line(hdc, left, cy, right - 4, cy, 2, color);
+                    solid_head(hdc, (right, cy), (1.0, 0.0), 9.0, color);
+                    if *style == 2 {
+                        solid_head(hdc, (left, cy), (-1.0, 0.0), 9.0, color);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
     if let Some((action, rect)) = hovered {
         let text = tooltip(action);

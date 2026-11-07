@@ -116,6 +116,8 @@ struct OverlayState {
     adjust: Option<AdjustState>,
     picks: toolbar::Picks,
     style_open: bool,
+    line_menu_open: bool,
+    arrow_menu_open: bool,
     delete_mode: bool,
     saved: bool,
     copy_only: bool,
@@ -215,6 +217,9 @@ impl OverlayState {
                     (self.width, self.height),
                     self.doc.tool(),
                     self.style_open,
+                    &self.picks,
+                    self.line_menu_open,
+                    self.arrow_menu_open,
                 );
                 let bounds = layout.bounds();
                 if let Some(union) = union_rect(Some(frame), Some(bounds)) {
@@ -649,6 +654,16 @@ fn paint(hdc: HDC) {
                         (sel.x, sel.y),
                         state.doc.color(),
                         state.doc.width(),
+                        state.doc.fill(),
+                        state.doc.line_style(matches!(
+                            state.doc.tool(),
+                            Some(Shape::Rect | Shape::Ellipse | Shape::Circle)
+                        )),
+                        if state.doc.tool() == Some(Shape::Arrow) {
+                            state.doc.arrow_style()
+                        } else {
+                            0
+                        },
                     )
                 });
                 annotation::draw(
@@ -789,6 +804,13 @@ fn paint(hdc: HDC) {
                         color_index: state.doc.color_index(),
                         width: state.doc.width(),
                         fill: state.doc.fill(),
+                        line_style: state.doc.line_style(matches!(
+                            state.doc.tool(),
+                            Some(Shape::Rect | Shape::Ellipse | Shape::Circle)
+                        )),
+                        arrow_style: state.doc.arrow_style(),
+                        line_menu_open: state.line_menu_open,
+                        arrow_menu_open: state.arrow_menu_open,
                         delete_mode: state.delete_mode,
                     };
                     toolbar::draw(state.back.dc(), &toolbar_state);
@@ -1156,14 +1178,53 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                         (state.width, state.height),
                                         state.doc.tool(),
                                         state.style_open,
+                                        &state.picks,
+                                        state.line_menu_open,
+                                        state.arrow_menu_open,
                                     );
-                                    if let Some(action) = toolbar::hit(&layout, cx, cy) {
+                                    let hit = toolbar::hit(&layout, cx, cy);
+                                    if state.line_menu_open || state.arrow_menu_open {
+                                        let keep = matches!(
+                                            hit,
+                                            Some(Action::LineStyle)
+                                                | Some(Action::ArrowType)
+                                                | Some(Action::LineStylePick(_))
+                                                | Some(Action::ArrowPick(_))
+                                        );
+                                        if !keep {
+                                            state.line_menu_open = false;
+                                            state.arrow_menu_open = false;
+                                        }
+                                    }
+                                    if let Some(action) = hit {
+                                        if !matches!(
+                                            action,
+                                            Action::LineStyle
+                                                | Action::ArrowType
+                                                | Action::LineStylePick(_)
+                                                | Action::ArrowPick(_)
+                                        ) {
+                                            state.line_menu_open = false;
+                                            state.arrow_menu_open = false;
+                                        }
                                         match action {
                                             Action::Group(group) => {
                                                 state.delete_mode = false;
-                                                let shape = state.picks.current(group);
-                                                state.doc.set_tool(shape);
-                                                state.style_open = true;
+                                                let same = state
+                                                    .doc
+                                                    .tool()
+                                                    .and_then(toolbar::group_of)
+                                                    == Some(group);
+                                                if same && state.style_open {
+                                                    state.doc.clear_tool();
+                                                    state.style_open = false;
+                                                    state.line_menu_open = false;
+                                                    state.arrow_menu_open = false;
+                                                } else {
+                                                    let shape = state.picks.current(group);
+                                                    state.doc.set_tool(shape);
+                                                    state.style_open = true;
+                                                }
                                                 state.draft_points.clear();
                                             }
                                             Action::Pick(group, shape) => {
@@ -1171,17 +1232,42 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                                 state.picks.set(group, shape);
                                                 state.doc.set_tool(shape);
                                                 state.style_open = true;
+                                                state.line_menu_open = false;
+                                                state.arrow_menu_open = false;
                                                 state.draft_points.clear();
                                             }
                                             Action::Tool(shape) => {
                                                 state.delete_mode = false;
                                                 state.doc.toggle_tool(shape);
-                                                state.style_open = state.doc.tool() == Some(shape);
+                                                state.style_open =
+                                                    state.doc.tool() == Some(shape);
+                                                state.line_menu_open = false;
+                                                state.arrow_menu_open = false;
                                                 state.draft_points.clear();
                                             }
                                             Action::Color(index) => state.doc.set_color(index),
                                             Action::Width => {}
                                             Action::Fill => state.doc.toggle_fill(),
+                                            Action::LineStyle => {
+                                                state.line_menu_open = !state.line_menu_open;
+                                                state.arrow_menu_open = false;
+                                            }
+                                            Action::ArrowType => {
+                                                state.arrow_menu_open = !state.arrow_menu_open;
+                                                state.line_menu_open = false;
+                                            }
+                                            Action::LineStylePick(style) => {
+                                                let shapes = matches!(
+                                                    state.doc.tool(),
+                                                    Some(Shape::Rect | Shape::Ellipse | Shape::Circle)
+                                                );
+                                                state.doc.set_line_style(shapes, style);
+                                                state.line_menu_open = false;
+                                            }
+                                            Action::ArrowPick(style) => {
+                                                state.doc.set_arrow_style(style);
+                                                state.arrow_menu_open = false;
+                                            }
                                             Action::Undo => {
                                                 state.doc.undo();
                                             }
@@ -1267,18 +1353,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                         state.doc.select(None);
                                         let tool = state.doc.tool().unwrap_or(Shape::Rect);
                                         if tool.is_path_shape() {
-                                            // 折线：点回起点（±8px）即闭合。
-                                            let close = tool == Shape::Polyline
-                                                && state.draft_points.len() >= 2
-                                                && state.draft_points.first().is_some_and(|first| {
-                                                    (cx - first.0).abs() <= 8
-                                                        && (cy - first.1).abs() <= 8
-                                                });
-                                            if close {
-                                                finalize_draft(state, None);
-                                            } else {
-                                                state.draft_points.push((cx, cy));
-                                            }
+                                            state.draft_points.push((cx, cy));
                                         } else {
                                             state.draft_points.clear();
                                             state.draft_points.push((cx, cy));
@@ -1381,6 +1456,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_RBUTTONUP | WM_MBUTTONUP => {
+            let finish_polyline = STATE.with(|cell| {
+                let mut guard = cell.borrow_mut();
+                if let Some(state) = guard.as_mut() {
+                    if state.phase == Phase::Annotating
+                        && state.doc.tool() == Some(Shape::Polyline)
+                        && !state.draft_points.is_empty()
+                    {
+                        finalize_draft(state, None);
+                        return true;
+                    }
+                }
+                false
+            });
+            if finish_polyline {
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+                return 0;
+            }
             DestroyWindow(hwnd);
             0
         }
@@ -1729,6 +1821,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                 (state.width, state.height),
                                 state.doc.tool(),
                                 state.style_open,
+                                &state.picks,
+                                state.line_menu_open,
+                                state.arrow_menu_open,
                             );
                             if let Some(styles) = &layout.styles {
                                 for (action, rect) in styles {
@@ -1776,6 +1871,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 STATE.with(|cell| {
                     if let Some(state) = cell.borrow_mut().as_mut() {
                         state.rgb_mode = !state.rgb_mode;
+                    }
+                });
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+            }
+            0
+        }
+        WM_ACTIVATE => {
+            let inactive = (wp & 0xFFFF) == 0;
+            if inactive {
+                STATE.with(|cell| {
+                    if let Some(state) = cell.borrow_mut().as_mut() {
+                        state.line_menu_open = false;
+                        state.arrow_menu_open = false;
                     }
                 });
                 InvalidateRect(hwnd, std::ptr::null(), 0);
@@ -1934,6 +2042,8 @@ pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
                     adjust: None,
                     picks: toolbar::Picks::default(),
                     style_open: false,
+                    line_menu_open: false,
+                    arrow_menu_open: false,
                     delete_mode: false,
                     saved: false,
                     copy_only: false,
