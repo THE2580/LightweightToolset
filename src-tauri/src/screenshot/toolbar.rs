@@ -73,6 +73,9 @@ pub enum Action {
     LineStylePick(u8),
     ArrowPick(u8),
     Strength,
+    Opacity,
+    FontSize,
+    SerialSize,
     PixelMode(Shape),
     Undo,
     Redo,
@@ -243,8 +246,20 @@ pub fn layout(
             arrow_btn = Some(push_style(Action::ArrowType, 121, &mut sx));
             sep_style(&mut sx, &mut style_separators);
         }
-        if !is_pixels {
+        let is_text = tool == Some(Shape::Text);
+        let is_serial = tool == Some(Shape::Serial);
+        if !is_pixels && !is_text && !is_serial {
             push_style(Action::Width, 80, &mut sx);
+        }
+        if is_text {
+            push_style(Action::FontSize, 96, &mut sx);
+        }
+        if is_serial {
+            push_style(Action::SerialSize, 96, &mut sx);
+        }
+        if matches!(tool, Some(Shape::Highlighter)) {
+            sep_style(&mut sx, &mut style_separators);
+            push_style(Action::Opacity, 152, &mut sx);
         }
         if is_shape {
             push_style(Action::Fill, 68, &mut sx);
@@ -361,6 +376,9 @@ pub fn tooltip(action: Action) -> String {
         Action::Width => "线宽：滚轮调整".to_owned(),
         Action::Fill => "填充开关".to_owned(),
         Action::Strength => "强度：滚轮调整".to_owned(),
+        Action::Opacity => "不透明度：滚轮调整".to_owned(),
+        Action::FontSize => "字号：滚轮调整".to_owned(),
+        Action::SerialSize => "序号大小：滚轮调整".to_owned(),
         Action::PixelMode(_) => "像素模式".to_owned(),
         Action::LineStyle => "线型".to_owned(),
         Action::ArrowType => "箭头类型".to_owned(),
@@ -775,6 +793,9 @@ pub struct ToolbarState {
     pub width: i32,
     pub fill: bool,
     pub strength: i32,
+    pub opacity: u8,
+    pub font_size: i32,
+    pub serial_size: i32,
     pub line_style: u8,
     pub arrow_style: u8,
     pub line_menu_open: bool,
@@ -822,6 +843,9 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
                 Action::ArrowType => false,
                 Action::PixelMode(shape) => Some(*shape) == state.tool,
                 Action::Strength => false,
+                Action::Opacity => false,
+                Action::FontSize => false,
+                Action::SerialSize => false,
                 Action::Delete => state.delete_mode,
                 _ => false,
             };
@@ -897,6 +921,71 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
                     SetTextColor(hdc, rgb(0x20, 0x20, 0x20));
                     let wide: Vec<u16> = text.encode_utf16().collect();
                     TextOutW(hdc, dot_x + radius + 10, cy - 11, wide.as_ptr(), wide.len() as i32);
+                    SelectObject(hdc, old_font);
+                    DeleteObject(font);
+                }
+                Action::SerialSize => {
+                    let text = format!("大小 {}", state.serial_size);
+                    let font = CreateFontW(
+                        -21,0,0,0,400,0,0,0,
+                        DEFAULT_CHARSET as u32,
+                        OUT_DEFAULT_PRECIS as u32,
+                        CLIP_DEFAULT_PRECIS as u32,
+                        CLEARTYPE_QUALITY as u32,
+                        (DEFAULT_PITCH | FF_DONTCARE) as u32,
+                        windows_sys::w!("Microsoft YaHei") as *const u16,
+                    );
+                    let old_font = SelectObject(hdc, font);
+                    SetBkMode(hdc, TRANSPARENT as i32);
+                    SetTextColor(hdc, icon_color);
+                    let wide: Vec<u16> = text.encode_utf16().collect();
+                    let mut rc = RECT { left: rect.left + 10, top: rect.top, right: rect.right, bottom: rect.bottom };
+                    DrawTextW(hdc, wide.as_ptr(), wide.len() as i32, &mut rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+                    SelectObject(hdc, old_font);
+                    DeleteObject(font);
+                }
+                Action::FontSize => {
+                    let text = format!("字号 {}", state.font_size);
+                    let font = CreateFontW(
+                        -22,0,0,0,400,0,0,0,
+                        DEFAULT_CHARSET as u32,
+                        OUT_DEFAULT_PRECIS as u32,
+                        CLIP_DEFAULT_PRECIS as u32,
+                        CLEARTYPE_QUALITY as u32,
+                        (DEFAULT_PITCH | FF_DONTCARE) as u32,
+                        windows_sys::w!("Microsoft YaHei") as *const u16,
+                    );
+                    let old_font = SelectObject(hdc, font);
+                    SetBkMode(hdc, TRANSPARENT as i32);
+                    SetTextColor(hdc, icon_color);
+                    let wide: Vec<u16> = text.encode_utf16().collect();
+                    let mut rc = RECT { left: rect.left + 10, top: rect.top, right: rect.right, bottom: rect.bottom };
+                    DrawTextW(hdc, wide.as_ptr(), wide.len() as i32, &mut rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+                    SelectObject(hdc, old_font);
+                    DeleteObject(font);
+                }
+                Action::Opacity => {
+                    let text = format!("不透明度 {}%", state.opacity);
+                    let font = CreateFontW(
+                        -21,0,0,0,400,0,0,0,
+                        DEFAULT_CHARSET as u32,
+                        OUT_DEFAULT_PRECIS as u32,
+                        CLIP_DEFAULT_PRECIS as u32,
+                        CLEARTYPE_QUALITY as u32,
+                        (DEFAULT_PITCH | FF_DONTCARE) as u32,
+                        windows_sys::w!("Microsoft YaHei") as *const u16,
+                    );
+                    let old_font = SelectObject(hdc, font);
+                    SetBkMode(hdc, TRANSPARENT as i32);
+                    SetTextColor(hdc, icon_color);
+                    let wide: Vec<u16> = text.encode_utf16().collect();
+                    let mut rc = RECT {
+                        left: rect.left + 10,
+                        top: rect.top,
+                        right: rect.right,
+                        bottom: rect.bottom,
+                    };
+                    DrawTextW(hdc, wide.as_ptr(), wide.len() as i32, &mut rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
                     SelectObject(hdc, old_font);
                     DeleteObject(font);
                 }

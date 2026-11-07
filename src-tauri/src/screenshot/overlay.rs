@@ -665,6 +665,7 @@ fn paint(hdc: HDC) {
                             0
                         },
                         state.doc.strength(state.doc.tool() != Some(Shape::Blur)),
+                        state.doc.opacity(),
                     )
                 });
                 annotation::draw(
@@ -678,7 +679,7 @@ fn paint(hdc: HDC) {
                 if let Some(editing) = state.editing.as_ref() {
                     let mut full = editing.text.clone();
                     full.push_str(&editing.composing);
-                    let (width, height) = text_extent(&full);
+                    let (width, height) = text_extent(&full, state.doc.font_size());
                     if !full.is_empty() {
                         let mut draft = Item::new(
                             Shape::Text,
@@ -690,6 +691,7 @@ fn paint(hdc: HDC) {
                             state.doc.width(),
                         );
                         draft.text = full.clone();
+                        draft.width = state.doc.font_size();
                         annotation::draw(
                             &mut state.back,
                             &[],
@@ -701,7 +703,7 @@ fn paint(hdc: HDC) {
                     }
 
                     if !editing.composing.is_empty() {
-                        let (committed_width, _) = text_extent(&editing.text);
+                        let (committed_width, _) = text_extent(&editing.text, state.doc.font_size());
                         let underline = CreatePen(PS_SOLID, 1, state.doc.color());
                         let old_pen = SelectObject(state.back.dc(), underline);
                         MoveToEx(
@@ -806,6 +808,9 @@ fn paint(hdc: HDC) {
                         width: state.doc.width(),
                         fill: state.doc.fill(),
                         strength: state.doc.strength(state.doc.tool() != Some(Shape::Blur)),
+                        opacity: state.doc.opacity(),
+                        font_size: state.doc.font_size(),
+                        serial_size: state.doc.serial_size(),
                         line_style: state.doc.line_style(matches!(
                             state.doc.tool(),
                             Some(Shape::Rect | Shape::Ellipse | Shape::Circle)
@@ -969,7 +974,7 @@ unsafe fn ime_caret(state: &OverlayState) -> Option<POINT> {
     let editing = state.editing.as_ref()?;
     let mut full = editing.text.clone();
     full.push_str(&editing.composing);
-    let (width, _) = text_extent(&full);
+    let (width, _) = text_extent(&full, state.doc.font_size());
     Some(POINT {
         x: editing.origin.0 + width + 1,
         y: editing.origin.1 + annotation::TEXT_HEIGHT,
@@ -1271,6 +1276,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                                 state.arrow_menu_open = false;
                                             }
                                             Action::Strength => {}
+                                            Action::Opacity => {}
+                                            Action::FontSize => {}
+                                            Action::SerialSize => {}
                                             Action::PixelMode(shape) => {
                                                 state.picks.set(toolbar::Group::Pixels, shape);
                                                 state.doc.set_tool(shape);
@@ -1842,6 +1850,26 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                         && y <= rect.bottom
                                     {
                                         state.doc.adjust_width(if delta > 0 { 1 } else { -1 });
+                                    }
+                                    if *action == Action::SerialSize
+                                        && x >= rect.left && x <= rect.right
+                                        && y >= rect.top && y <= rect.bottom
+                                    {
+                                        state.doc.adjust_serial_size(if delta > 0 { 1 } else { -1 });
+                                    }
+                                    if *action == Action::FontSize
+                                        && x >= rect.left && x <= rect.right
+                                        && y >= rect.top && y <= rect.bottom
+                                    {
+                                        state.doc.adjust_font_size(if delta > 0 { 1 } else { -1 });
+                                    }
+                                    if *action == Action::Opacity
+                                        && x >= rect.left
+                                        && x <= rect.right
+                                        && y >= rect.top
+                                        && y <= rect.bottom
+                                    {
+                                        state.doc.adjust_opacity(if delta > 0 { 1 } else { -1 });
                                     }
                                     if *action == Action::Strength
                                         && x >= rect.left

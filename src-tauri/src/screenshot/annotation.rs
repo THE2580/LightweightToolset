@@ -97,6 +97,7 @@ pub struct Item {
     pub closed: bool,
     pub line_style: u8,
     pub strength: i32,
+    pub opacity: u8,
 }
 
 impl Item {
@@ -112,13 +113,14 @@ impl Item {
             closed: false,
             line_style: 0,
             strength: 14,
+            opacity: 45,
         }
     }
 
     pub fn bounds(&self) -> Option<Rect> {
         if self.shape == Shape::Text {
             let origin = *self.points.first()?;
-            let (width, height) = text_extent(&self.text);
+            let (width, height) = text_extent(&self.text, self.width.max(8));
             return Some(Rect {
                 x: origin.0,
                 y: origin.1,
@@ -223,6 +225,9 @@ pub struct Document {
     line_style_lines: u8,
     mosaic_strength: i32,
     blur_strength: i32,
+    opacity: u8,
+    font_size: i32,
+    serial_size: i32,
     undo: Vec<Vec<Item>>,
     redo: Vec<Vec<Item>>,
     serial_next: u32,
@@ -249,6 +254,9 @@ impl Document {
             line_style_lines: 0,
             mosaic_strength: 14,
             blur_strength: 6,
+            opacity: 45,
+            font_size: TEXT_HEIGHT,
+            serial_size: 14,
             undo: Vec::new(),
             redo: Vec::new(),
             serial_next: 1,
@@ -322,6 +330,30 @@ impl Document {
         }
     }
 
+    pub fn font_size(&self) -> i32 {
+        self.font_size
+    }
+
+    pub fn serial_size(&self) -> i32 {
+        self.serial_size
+    }
+
+    pub fn adjust_serial_size(&mut self, delta: i32) {
+        self.serial_size = (self.serial_size + delta).clamp(6, 40);
+    }
+
+    pub fn adjust_font_size(&mut self, delta: i32) {
+        self.font_size = (self.font_size + delta).clamp(8, 96);
+    }
+
+    pub fn opacity(&self) -> u8 {
+        self.opacity
+    }
+
+    pub fn adjust_opacity(&mut self, delta: i32) {
+        self.opacity = ((self.opacity as i32 + delta).clamp(10, 50)) as u8;
+    }
+
     pub fn strength(&self, mosaic: bool) -> i32 {
         if mosaic { self.mosaic_strength } else { self.blur_strength }
     }
@@ -376,6 +408,15 @@ impl Document {
         if item.shape == Shape::Polyline {
             item.closed = self.closed;
         }
+        if item.shape == Shape::Text {
+            item.width = self.font_size;
+        }
+        if item.shape == Shape::Serial {
+            item.width = self.serial_size;
+        }
+        if item.shape == Shape::Highlighter {
+            item.opacity = self.opacity;
+        }
         if item.shape == Shape::Mosaic {
             item.strength = self.mosaic_strength;
         } else if item.shape == Shape::Blur {
@@ -419,7 +460,7 @@ impl Document {
                     .map(|bounds| bounds.border_distance(x, y) as f64)
                     .unwrap_or(f64::MAX),
                 Shape::Text => {
-                    let (width, height) = text_extent(&item.text);
+                    let (width, height) = text_extent(&item.text, item.width.max(8));
                     let origin = item.points.first().copied().unwrap_or((0, 0));
                     let dx = (origin.0 - x).max(x - (origin.0 + width)).max(0);
                     let dy = (origin.1 - y).max(y - (origin.1 + height)).max(0);
@@ -538,10 +579,10 @@ unsafe fn draw_arrow_head(hdc: HDC, item: &Item, from: (i32, i32), tip: (i32, i3
 /// 文字标注的字号（像素高度）。
 pub const TEXT_HEIGHT: i32 = 22;
 
-fn text_font() -> HFONT {
+fn text_font(size: i32) -> HFONT {
     unsafe {
         CreateFontW(
-            -TEXT_HEIGHT,
+            -size,
             0,
             0,
             0,
@@ -560,10 +601,10 @@ fn text_font() -> HFONT {
 }
 
 /// 文字标注的像素尺寸（用于命中测试与选中框）。
-pub fn text_extent(text: &str) -> (i32, i32) {
+pub fn text_extent(text: &str, size: i32) -> (i32, i32) {
     unsafe {
         let dc = GetDC(std::ptr::null_mut());
-        let font = text_font();
+        let font = text_font(size.max(8));
         let old = SelectObject(dc, font);
         let wide: Vec<u16> = text.encode_utf16().collect();
         let mut size: SIZE = std::mem::zeroed();
@@ -577,7 +618,7 @@ pub fn text_extent(text: &str) -> (i32, i32) {
 
 /// 序号圆圈的半径。
 pub fn serial_radius(width: i32) -> i32 {
-    10 + width
+    width.max(6)
 }
 
 /// 在 `hdc` 上绘制标注；`ox/oy` 是图像坐标系的屏幕原点偏移。
@@ -773,7 +814,7 @@ unsafe fn draw_highlighter(hdc: HDC, item: &Item, ox: i32, oy: i32) {
     let blend = BLENDFUNCTION {
         BlendOp: 0,
         BlendFlags: 0,
-        SourceConstantAlpha: 110,
+        SourceConstantAlpha: (item.opacity as u32 * 255 / 100).clamp(1, 255) as u8,
         AlphaFormat: 0,
     };
     AlphaBlend(hdc, bx, by, width, height, temp.dc(), 0, 0, width, height, blend);
@@ -873,7 +914,7 @@ pub unsafe fn draw(
                 }
             }
             Shape::Text => {
-                let font = text_font();
+                let font = text_font(item.width.max(8));
                 let old_font = SelectObject(hdc, font);
                 SetBkMode(hdc, TRANSPARENT as i32);
                 let wide: Vec<u16> = item.text.encode_utf16().collect();
@@ -907,7 +948,7 @@ pub unsafe fn draw(
                 SelectObject(hdc, old_brush);
                 DeleteObject(brush);
 
-                let font = text_font();
+                let font = text_font(item.width.max(8));
                 let old_font = SelectObject(hdc, font);
                 SetBkMode(hdc, TRANSPARENT as i32);
                 SetTextColor(hdc, rgb(0xff, 0xff, 0xff));
@@ -997,6 +1038,7 @@ pub fn build_draft(
     line_style: u8,
     arrow: u8,
     strength: i32,
+    opacity: u8,
 ) -> Option<Item> {
     let first = *points.first()?;
     let to_image = |p: (i32, i32)| (p.0 - origin.0, p.1 - origin.1);
@@ -1022,6 +1064,7 @@ pub fn build_draft(
     item.line_style = line_style;
     item.arrow = arrow;
     item.strength = strength;
+    item.opacity = opacity;
     Some(item)
 }
 
@@ -1081,6 +1124,7 @@ mod tests {
             0,
             0,
             0,
+            45,
         )
         .expect("draft");
         assert_eq!(draft.points, vec![(0, 0), (50, 70)]);
@@ -1096,6 +1140,7 @@ mod tests {
             0,
             0,
             0,
+            45,
         )
         .expect("polyline");
         assert_eq!(polyline.points, vec![(0, 0), (10, 10), (20, 30)]);
