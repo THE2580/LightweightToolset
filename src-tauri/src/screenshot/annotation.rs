@@ -462,10 +462,13 @@ unsafe fn item_pen(item: &Item) -> HPEN {
             lbColor: item.color,
             lbHatch: 0,
         };
-        let pattern: [u32; 2] = [6, 4];
+        let width = item.width.max(1);
+        let dash = (width as u32 * 2).max(6);
+        let gap = (width as u32 * 3 / 2).max(4);
+        let pattern: [u32; 2] = [dash, gap];
         ExtCreatePen(
-            (PS_GEOMETRIC | PS_USERSTYLE | PS_ENDCAP_FLAT) as u32,
-            item.width.max(1) as u32,
+            (PS_GEOMETRIC | PS_USERSTYLE | PS_ENDCAP_FLAT | PS_JOIN_MITER) as u32,
+            width as u32,
             &brush,
             2,
             pattern.as_ptr(),
@@ -484,10 +487,10 @@ unsafe fn draw_arrow_head(hdc: HDC, item: &Item, from: (i32, i32), tip: (i32, i3
     }
     let ux = dx / length;
     let uy = dy / length;
-    let head = (item.width as f64 * 3.0 + 6.0).max(10.0);
+    let head = item.width as f64 * 3.0 + 8.0;
     let base_x = tip.0 as f64 - ux * head;
     let base_y = tip.1 as f64 - uy * head;
-    let half = head * 0.55;
+    let half = (head * 0.55).max(item.width as f64 * 0.9 + 4.0);
     let points = [
         POINT {
             x: tip.0 + ox,
@@ -819,8 +822,25 @@ pub unsafe fn draw(
                 if item.points.len() >= 2 {
                     let a = item.points[0];
                     let b = item.points[1];
-                    MoveToEx(hdc, a.0 + ox, a.1 + oy, std::ptr::null_mut());
-                    LineTo(hdc, b.0 + ox, b.1 + oy);
+                    let dx = (b.0 - a.0) as f64;
+                    let dy = (b.1 - a.1) as f64;
+                    let length = (dx * dx + dy * dy).sqrt().max(0.001);
+                    let ux = dx / length;
+                    let uy = dy / length;
+                    let head = item.width as f64 * 3.0 + 8.0;
+                    let shrink = if item.arrow >= 1 { (head * 0.9) as i32 } else { 0 };
+                    let end = if item.arrow >= 1 {
+                        (b.0 - (ux * shrink as f64) as i32, b.1 - (uy * shrink as f64) as i32)
+                    } else {
+                        b
+                    };
+                    let start = if item.arrow == 2 {
+                        (a.0 + (ux * shrink as f64) as i32, a.1 + (uy * shrink as f64) as i32)
+                    } else {
+                        a
+                    };
+                    MoveToEx(hdc, start.0 + ox, start.1 + oy, std::ptr::null_mut());
+                    LineTo(hdc, end.0 + ox, end.1 + oy);
                     match item.arrow {
                         0 => {}
                         1 => draw_arrow_head(hdc, item, a, b, ox, oy),
