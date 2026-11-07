@@ -266,6 +266,9 @@ pub fn layout(
             }
             sep_style(&mut sx, &mut style_separators);
         }
+        if !is_shape && !is_line && !is_pixels {
+            sep_style(&mut sx, &mut style_separators);
+        }
         if !is_pixels {
             for index in 0..PALETTE.len() {
                 push_style(Action::Color(index), 34, &mut sx);
