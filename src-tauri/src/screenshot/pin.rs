@@ -964,12 +964,9 @@ impl windows::Win32::System::Com::IDataObject_Impl for PinDataObject_Impl {
 
     fn GetDataHere(
         &self,
-        format: *const windows::Win32::System::Com::FORMATETC,
+        _format: *const windows::Win32::System::Com::FORMATETC,
         _medium: *mut windows::Win32::System::Com::STGMEDIUM,
     ) -> windows::core::Result<()> {
-        if let Some(format) = unsafe { format.as_ref() } {
-            dbg_log(&format!("dataobject.GetDataHere cf={}", format.cfFormat));
-        }
         Err(windows::Win32::Foundation::E_NOTIMPL.into())
     }
 
@@ -986,7 +983,6 @@ impl windows::Win32::System::Com::IDataObject_Impl for PinDataObject_Impl {
             .ok()
             .and_then(|slot| *slot)
             .is_some_and(|(cf, _, _)| cf == format.cfFormat);
-        dbg_log(&format!("dataobject.QueryGetData cf={}", format.cfFormat));
         if format.dwAspect == DVASPECT_CONTENT.0 as u32
             && (PinDataObject::supports(format.cfFormat) || extra)
         {
@@ -1076,6 +1072,7 @@ impl windows::Win32::System::Com::IDataObject_Impl for PinDataObject_Impl {
 }
 
 /// 备用：用系统 `IDragSourceHelper` 设拖动图像（当前未启用，保留实现备查）。
+#[allow(dead_code)]
 unsafe fn set_drag_image(
     data: &windows::Win32::System::Com::IDataObject,
     state: &PinState,
@@ -1163,7 +1160,6 @@ unsafe fn register_ghost_class() {
 }
 
 /// 建一个跟随光标的半透明贴图预览（鼠标穿透，不影响落点判定）。
-#[allow(dead_code)]
 unsafe fn ghost_show(state: &PinState) {
     let width = state.surface.width;
     let height = state.surface.height;
@@ -1261,7 +1257,6 @@ unsafe fn ghost_show(state: &PinState) {
     }
 }
 
-#[allow(dead_code)]
 unsafe fn ghost_move() {
     let entry = GHOST.lock().ok().and_then(|slot| *slot);
     let Some((hwnd, width, height)) = entry else {
@@ -1281,7 +1276,6 @@ unsafe fn ghost_move() {
     );
 }
 
-#[allow(dead_code)]
 unsafe fn ghost_destroy() {
     let entry = GHOST.lock().ok().and_then(|mut slot| slot.take());
     if let Some((hwnd, _, _)) = entry {
@@ -1345,12 +1339,9 @@ unsafe fn super_drag(_hwnd: HWND, state: &PinState) {
         file,
     }
     .into();
-    // 跟随光标的图像交回系统（IDragSourceHelper），与 PixPin/Qt 的做法一致；
-    // 自己画的 ghost 窗口只在需要时再打开。
-    match set_drag_image(&data, state) {
-        Ok(()) => dbg_log("super_drag.drag_image_ok"),
-        Err(error) => dbg_log(&format!("super_drag.drag_image_failed {error:?}")),
-    }
+    // 跟随光标的缩略图自己画（系统 DragImage 在部分接收方不显示），
+    // 所以不再调用 IDragSourceHelper，避免某些环境出现两个图像。
+    ghost_show(state);
     let mut effect = 0u32;
     let source: windows::Win32::System::Ole::IDropSource = PinDropSource.into();
     let drag_hr = windows_sys::Win32::System::Ole::DoDragDrop(
