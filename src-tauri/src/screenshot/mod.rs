@@ -231,7 +231,6 @@ fn run(app: &AppHandle) -> Result<String, String> {
         width: selection.width,
         height: selection.height,
         top_down: outcome.top_down,
-        bottom_up: outcome.bottom_up,
     });
     // 记住这次截图，这样没有覆盖层时按贴图快捷键也能贴出来。
     if let Ok(mut last) = LAST_SHOT.lock() {
@@ -260,10 +259,12 @@ fn run(app: &AppHandle) -> Result<String, String> {
     }
 
     let png = save::encode_png(&image.top_down, selection.width as u32, selection.height as u32)?;
+    // CF_DIB 需要自下而上的行序，只在复制时临时翻转。
+    let bottom_up = pin::flip_rows(&image.top_down, selection.width, selection.height);
     clipboard_image::copy_image(
         selection.width,
         selection.height,
-        &image.bottom_up,
+        &bottom_up,
         Some(&png),
     )?;
     if outcome.copy_only {

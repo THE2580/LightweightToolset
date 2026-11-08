@@ -22,18 +22,35 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
 };
 use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_ESCAPE,
+};
+use windows_sys::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED};
+use windows_sys::Win32::System::Ole::DROPEFFECT_COPY;
+use windows_sys::Win32::UI::Shell::{
+    ILCreateFromPathW, SHCreateShellItemArrayFromIDLists, SHDoDragDrop,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::dib::Surface;
 
-/// 一张贴图的原图：`top_down` 用于编码 PNG，`bottom_up` 用于建 DIB 段。
+/// 一张贴图的像素（自顶向下 BGRA）。底部朝上的版本按需生成，不再常驻内存。
 #[derive(Clone)]
 pub(crate) struct PinImage {
     pub(crate) width: i32,
     pub(crate) height: i32,
     pub(crate) top_down: Vec<u8>,
-    pub(crate) bottom_up: Vec<u8>,
+}
+
+/// 自顶向下 → 自下而上（CF_DIB 需要），只在复制剪贴板时临时生成。
+pub(crate) fn flip_rows(top_down: &[u8], width: i32, height: i32) -> Vec<u8> {
+    let stride = (width * 4) as usize;
+    let mut bottom_up = vec![0u8; stride * height as usize];
+    for row in 0..height as usize {
+        let src = (height as usize - 1 - row) * stride;
+        bottom_up[row * stride..(row + 1) * stride].copy_from_slice(&top_down[src..src + stride]);
+    }
+    bottom_up
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -167,9 +184,9 @@ struct Drag {
 }
 
 struct PinState {
+    /// 贴图窗口的 DIB 段：既是绘制源，也是编码 PNG / 写剪贴板时的唯一像素源。
     surface: Surface,
-    image: Arc<PinImage>,
-    /// 未经旋转/翻转的原始图，「重置所有处理」用。
+    /// 未经旋转/翻转的原始图，「重置所有处理」用（与调用方共享，不额外拷一份）。
     original: Arc<PinImage>,
     zoom: f32,
     lock: PinLock,
@@ -184,6 +201,8 @@ struct PinState {
     glow_until: u32,
     /// 最近一次绘制的阴影参数，避免拖动时无谓重建位图。
     shadow_key: (i32, i32, bool, i32),
+    /// 超级拖放结束后的短暂时间窗：拖放用 Esc 取消时不要让窗口一起关掉。
+    escape_guard: u32,
 }
 
 /// 贴在贴图窗口正下方的一层分层阴影窗口。
@@ -271,6 +290,8 @@ fn host() -> Option<&'static mpsc::Sender<PinCommand>> {
         .name("screenshot-pin".to_owned())
         .spawn(move || unsafe {
             HOST_THREAD.store(GetCurrentThreadId() as usize, Ordering::SeqCst);
+            // 超级拖放走 OLE，线程需要先初始化 COM。
+            CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
             let _ = ready_tx.send(GetCurrentThreadId() as usize);
             register_class(CLASS_PIN);
             register_shadow_class();
@@ -288,6 +309,7 @@ fn host() -> Option<&'static mpsc::Sender<PinCommand>> {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
+            CoUninitialize();
         })
         .is_ok();
     if !spawned {
@@ -418,7 +440,6 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
     let state = Box::new(PinState {
         surface,
         original: Arc::clone(&image),
-        image,
         zoom: 1.0,
         lock: options.lock,
         confirm: options.confirm_close,
@@ -430,6 +451,7 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
         focused: false,
         glow_until: GetTickCount() + GLOW_MS,
         shadow_key: (0, 0, false, -1),
+        escape_guard: 0,
     });
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
     if let Ok(mut pins) = PINS.lock() {
@@ -681,18 +703,97 @@ unsafe fn confirm_close(hwnd: HWND, state: &PinState) -> bool {
 }
 
 unsafe fn copy_to_clipboard(state: &PinState) {
+    let width = state.surface.width;
+    let height = state.surface.height;
+    let png = super::save::encode_png(state.surface.pixels(), width as u32, height as u32).ok();
+    // 底部朝上的副本只在写 CF_DIB 时临时生成。
+    let bottom_up = flip_rows(state.surface.pixels(), width, height);
+    let _ = super::clipboard_image::copy_image(width, height, &bottom_up, png.as_deref());
+}
+
+/// 超级拖放用的临时目录：拖出去的图以 PNG 文件形式交给目标程序。
+fn drag_dir() -> std::path::PathBuf {
+    std::env::temp_dir()
+        .join("LightweightToolset")
+        .join("pin-drag")
+}
+
+/// 把当前贴图写成临时 PNG（保留最近 20 个），返回路径。
+unsafe fn write_drag_file(state: &PinState) -> Option<std::path::PathBuf> {
+    let dir = drag_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    let path = dir.join(format!("Pin_{stamp}.png"));
     let png = super::save::encode_png(
-        &state.image.top_down,
-        state.image.width as u32,
-        state.image.height as u32,
+        state.surface.pixels(),
+        state.surface.width as u32,
+        state.surface.height as u32,
     )
-    .ok();
-    let _ = super::clipboard_image::copy_image(
-        state.image.width,
-        state.image.height,
-        &state.image.bottom_up,
-        png.as_deref(),
+    .ok()?;
+    std::fs::write(&path, png).ok()?;
+    // 只保留最近的 20 个，避免临时目录无限增长。
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut files: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "png"))
+            .collect();
+        if files.len() > 20 {
+            files.sort();
+            let remove = files.len() - 20;
+            for old in files.into_iter().take(remove) {
+                let _ = std::fs::remove_file(old);
+            }
+        }
+    }
+    Some(path)
+}
+
+/// 释放 shell 返回的 IShellItemArray：交给 windows crate 的类型化包装，Drop 时 Release。
+unsafe fn release_item_array(pointer: *mut c_void) {
+    if pointer.is_null() {
+        return;
+    }
+    use windows::core::Interface;
+    let array = windows::Win32::UI::Shell::IShellItemArray::from_raw(pointer);
+    drop(array);
+}
+
+/// 按住 Ctrl 拖动贴图：把这张图作为文件拖给其它程序（超级拖放）。
+unsafe fn super_drag(hwnd: HWND, state: &PinState) {
+    use std::os::windows::ffi::OsStrExt;
+    let Some(path) = write_drag_file(state) else {
+        return;
+    };
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let pidl = ILCreateFromPathW(wide.as_ptr());
+    if pidl.is_null() {
+        return;
+    }
+    let mut array: *mut c_void = std::ptr::null_mut();
+    let ids = [pidl as *const _];
+    let created = SHCreateShellItemArrayFromIDLists(1, ids.as_ptr(), &mut array);
+    if created < 0 || array.is_null() {
+        CoTaskMemFree(pidl as *const c_void);
+        return;
+    }
+    let mut effect = 0u32;
+    SHDoDragDrop(
+        hwnd,
+        array,
+        std::ptr::null_mut(),
+        DROPEFFECT_COPY,
+        &mut effect,
     );
+    release_item_array(array);
+    CoTaskMemFree(pidl as *const c_void);
 }
 
 unsafe fn run_double_click(hwnd: HWND) {
@@ -781,8 +882,8 @@ unsafe fn apply_zoom(hwnd: HWND, state: &mut PinState, delta: i32) {
         return;
     }
     let rect = window_rect(hwnd);
-    let width = ((state.image.width as f32 * zoom).round() as i32).max(MIN_SIDE);
-    let height = ((state.image.height as f32 * zoom).round() as i32).max(MIN_SIDE);
+    let width = ((state.surface.width as f32 * zoom).round() as i32).max(MIN_SIDE);
+    let height = ((state.surface.height as f32 * zoom).round() as i32).max(MIN_SIDE);
     state.zoom = zoom;
     // 缩放后短暂显示百分比，之后自动消失。
     state.zoom_until = GetTickCount() + 900;
@@ -816,8 +917,8 @@ unsafe fn paint(hwnd: HWND, state: &PinState) {
         state.surface.dc(),
         0,
         0,
-        state.image.width,
-        state.image.height,
+        state.surface.width,
+        state.surface.height,
         SRCCOPY,
     );
     if GetTickCount() < state.zoom_until {
@@ -857,8 +958,8 @@ enum Process {
 }
 
 /// 旋转/翻转：按目标像素反查源像素，重新生成两种行序的像素。
-fn processed(image: &PinImage, kind: Process) -> PinImage {
-    let (ow, oh) = (image.width, image.height);
+fn processed(source: &[u8], width: i32, height: i32, kind: Process) -> PinImage {
+    let (ow, oh) = (width, height);
     let (nw, nh) = match kind {
         Process::RotateLeft | Process::RotateRight => (oh, ow),
         _ => (ow, oh),
@@ -874,20 +975,13 @@ fn processed(image: &PinImage, kind: Process) -> PinImage {
             };
             let src = ((sy * ow + sx) * 4) as usize;
             let dst = ((ny * nw + nx) * 4) as usize;
-            top_down[dst..dst + 4].copy_from_slice(&image.top_down[src..src + 4]);
+            top_down[dst..dst + 4].copy_from_slice(&source[src..src + 4]);
         }
-    }
-    let stride = (nw * 4) as usize;
-    let mut bottom_up = vec![0u8; top_down.len()];
-    for row in 0..nh as usize {
-        let src = (nh as usize - 1 - row) * stride;
-        bottom_up[row * stride..(row + 1) * stride].copy_from_slice(&top_down[src..src + stride]);
     }
     PinImage {
         width: nw,
         height: nh,
         top_down,
-        bottom_up,
     }
 }
 
@@ -901,7 +995,6 @@ unsafe fn install_image(hwnd: HWND, state: &mut PinState, next: PinImage) {
         surface.pixels_mut().copy_from_slice(&next.top_down);
         state.surface = surface;
     }
-    state.image = Arc::new(next);
     SetWindowPos(
         hwnd,
         HWND_TOPMOST,
@@ -1316,9 +1409,9 @@ unsafe fn save_as(hwnd: HWND, state: &PinState) {
     let length = buffer.iter().position(|value| *value == 0).unwrap_or(0);
     let path = String::from_utf16_lossy(&buffer[..length]);
     if let Ok(png) = super::save::encode_png(
-        &state.image.top_down,
-        state.image.width as u32,
-        state.image.height as u32,
+        state.surface.pixels(),
+        state.surface.width as u32,
+        state.surface.height as u32,
     ) {
         let _ = std::fs::write(path, png);
     }
@@ -1327,19 +1420,19 @@ unsafe fn save_as(hwnd: HWND, state: &PinState) {
 unsafe fn handle_menu(hwnd: HWND, state: &mut PinState, command: usize) {
     match command {
         MENU_ROTATE_LEFT => {
-            let next = processed(&state.image, Process::RotateLeft);
+            let next = processed(state.surface.pixels(), state.surface.width, state.surface.height, Process::RotateLeft);
             install_image(hwnd, state, next);
         }
         MENU_ROTATE_RIGHT => {
-            let next = processed(&state.image, Process::RotateRight);
+            let next = processed(state.surface.pixels(), state.surface.width, state.surface.height, Process::RotateRight);
             install_image(hwnd, state, next);
         }
         MENU_FLIP_H => {
-            let next = processed(&state.image, Process::FlipHorizontal);
+            let next = processed(state.surface.pixels(), state.surface.width, state.surface.height, Process::FlipHorizontal);
             install_image(hwnd, state, next);
         }
         MENU_FLIP_V => {
-            let next = processed(&state.image, Process::FlipVertical);
+            let next = processed(state.surface.pixels(), state.surface.width, state.surface.height, Process::FlipVertical);
             install_image(hwnd, state, next);
         }
         MENU_RESET_PROCESS => {
@@ -1384,7 +1477,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_LBUTTONDOWN => {
             if let Some(state) = state_of(hwnd) {
-                begin_drag(hwnd, &mut *state, lp);
+                if GetKeyState(VK_CONTROL as i32) < 0 {
+                    // Ctrl + 拖动 = 超级拖放：把这张图当文件拖给其它程序，窗口本身不动。
+                    super_drag(hwnd, &*state);
+                    // 拖放期间按 Esc 是「取消拖放」，结束后可能还会落到窗口上，先挡一下。
+                    (*state).escape_guard = GetTickCount() + 400;
+                } else {
+                    begin_drag(hwnd, &mut *state, lp);
+                }
             }
             0
         }
@@ -1503,7 +1603,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_KEYDOWN => {
             if wp as u16 == VK_ESCAPE {
                 if let Some(state) = state_of(hwnd) {
-                    if confirm_close(hwnd, &*state) {
+                    if GetTickCount() >= (*state).escape_guard && confirm_close(hwnd, &*state) {
                         DestroyWindow(hwnd);
                     }
                 }
@@ -1525,10 +1625,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if let Some(state) = state {
                 shadow_destroy(&mut *state);
                 // 记下关闭前的样子，供「恢复上次关闭的贴图」使用。
+                // 只共享 original 的 Arc（不复制像素），队列上限压到 3 份。
                 let rect = window_rect(hwnd);
                 if let Ok(mut last) = LAST_CLOSED.lock() {
-                    last.push_back((Arc::clone(&(*state).image), rect));
-                    while last.len() > 20 {
+                    last.push_back((Arc::clone(&(*state).original), rect));
+                    while last.len() > 3 {
                         last.pop_front();
                     }
                 }
@@ -1679,16 +1780,10 @@ fn decode_png(path: &Path) -> Option<PinImage> {
         }
         _ => return None,
     }
-    let stride = width as usize * 4;
-    let mut bottom_up = Vec::with_capacity(top_down.len());
-    for row in (0..height as usize).rev() {
-        bottom_up.extend_from_slice(&top_down[row * stride..(row + 1) * stride]);
-    }
     Some(PinImage {
         width,
         height,
         top_down,
-        bottom_up,
     })
 }
 
