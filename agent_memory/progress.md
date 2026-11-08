@@ -71,6 +71,12 @@
      - `LAST_CLOSED` 队列上限 20 → 3，只共享 `original` 的 `Arc`，不复制像素。
      - 超级拖放：按住 Ctrl 拖动贴图 → 写临时 PNG（`%TEMP%\LightweightToolset\pin-drag`，保留最近 20 个）→ `ILCreateFromPathW` + `SHCreateShellItemArrayFromIDLists` + `SHDoDragDrop` 交给别的程序；窗口不动，拖放取消也不关窗（`escape_guard` 400ms）。贴图线程启动时 `CoInitializeEx`（STA）。
      - 坑：手写 vtable 调 `IShellItemArray::Release` 会 0xc0000005 崩溃，改用 `windows::core::Interface::from_raw` + `Drop`。
+   - **超级拖放修复（2026-11-08，提交 `4d9f0de`）**：
+     - 用户反馈「拖动只产生临时文件、不能拖放」。加诊断日志（`%TEMP%\lwt-supdrag.log`，仅 debug 构建）后定位两处失败：
+       ① `SHDoDragDrop` 返回 `0x800401F0 CO_E_NOTINITIALIZED`——线程只调了 `CoInitializeEx`，改成 `OleInitialize`/`OleUninitialize`；
+       ② 修好后返回 `0x80004001 E_NOTIMPL`——`SHDoDragDrop` 要的是 `IDataObject`，之前直接把 `IShellItemArray` 传进去；
+          改为 `IShellItemArray::BindToHandler(None, &BHID_DataObject)` 取数据对象再拖。
+     - 修复后实测 `hr=0x00040100 effect=0x1`（`DRAGDROP_S_DROP` + `DROPEFFECT_COPY`），拖放真正开始并被目标接受。
    - **待办（用户已确认推迟）**：
      - **贴图标注**：右键「标注」进入标注模式，出现只含贴图相关项的标注工具栏（参照截图工具栏样式），工具栏跟随贴图窗口移动，最右端对勾按钮结束标注退出；「隐藏标注」同步实现。
      - **贴图文本选择**：右键「选择所有文本」「文本可选择」两项（含 OCR 文本）。

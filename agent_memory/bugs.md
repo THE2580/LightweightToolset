@@ -57,3 +57,12 @@
 - 修法：改用 `windows::core::Interface::from_raw` 构造类型化接口再 `drop`，由生成代码释放。
 - 教训：windows-sys 只有原始指针，跨 FFI 的对象生命周期交给 `windows` crate 的类型化包装，
   不要自己算 vtable 槽位。
+
+## 贴图超级拖放：两个必踩的坑（2026-11-08）
+
+- `SHDoDragDrop` 在未做 OLE 初始化的线程上直接返回 `0x800401F0 CO_E_NOTINITIALIZED`。
+  需要 `OleInitialize`，只调 `CoInitializeEx` 不够。
+- `SHDoDragDrop(hwnd, pdata, ...)` 的 `pdata` 必须是 `IDataObject*`；把 `IShellItemArray*` 传进去会返回
+  `0x80004001 E_NOTIMPL`，表现为「只生成了临时文件、拖放根本没开始」。
+  正确做法：`IShellItemArray::BindToHandler(None, &BHID_DataObject)` 取出数据对象再交给 `SHDoDragDrop`。
+- 判断是否真的开始拖放：`SHDoDragDrop` 返回 `0x00040100`（`DRAGDROP_S_DROP`）且 `effect` 非 0。
