@@ -25,9 +25,7 @@ use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_ESCAPE,
 };
-use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::Ole::{OleInitialize, OleUninitialize, DROPEFFECT_COPY};
-use windows_sys::Win32::UI::Shell::SHDoDragDrop;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::dib::Surface;
@@ -294,6 +292,7 @@ fn host() -> Option<&'static mpsc::Sender<PinCommand>> {
             let _ = ready_tx.send(GetCurrentThreadId() as usize);
             register_class(CLASS_PIN);
             register_shadow_class();
+            register_ghost_class();
 
             let mut msg: MSG = std::mem::zeroed();
             loop {
@@ -928,17 +927,30 @@ impl windows::Win32::System::Com::IDataObject_Impl for PinDataObject_Impl {
             // DV_E_FORMATETC
             return Err(windows::core::HRESULT(0x8004_0064u32 as i32).into());
         }
-        if let Ok(mut slot) = DRAG_IMAGE_MEDIUM.lock() {
-            if let Some((cf, tymed, handle)) = *slot {
-                if cf == format.cfFormat {
-                    *slot = None;
-                    return Ok(windows::Win32::System::Com::STGMEDIUM {
-                        tymed,
-                        u: windows::Win32::System::Com::STGMEDIUM_0 {
-                            hGlobal: windows::Win32::Foundation::HGLOBAL(handle as *mut c_void),
-                        },
-                        pUnkForRelease: std::mem::ManuallyDrop::new(None),
-                    });
+        let stored = DRAG_IMAGE_MEDIUM.lock().ok().and_then(|slot| *slot);
+        dbg_log(&format!(
+            "dataobject.GetData cf={} stored={:?}",
+            format.cfFormat,
+            stored.map(|(cf, _, _)| cf)
+        ));
+        if let Some((cf, tymed, handle)) = stored {
+            if cf == format.cfFormat
+                && tymed == windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+            {
+                // OLE 可能多次取同一格式，这里复制一份给它，原件留到拖放结束统一释放。
+                unsafe {
+                    let size =
+                        windows_sys::Win32::System::Memory::GlobalSize(handle as *mut c_void);
+                    let source =
+                        windows_sys::Win32::System::Memory::GlobalLock(handle as *mut c_void);
+                    if size > 0 && !source.is_null() {
+                        let bytes = std::slice::from_raw_parts(source as *const u8, size);
+                        let copy = medium_from_bytes(bytes);
+                        windows_sys::Win32::System::Memory::GlobalUnlock(handle as *mut c_void);
+                        if let Ok(medium) = copy {
+                            return Ok(medium);
+                        }
+                    }
                 }
             }
         }
@@ -1022,6 +1034,7 @@ impl windows::Win32::System::Com::IDataObject_Impl for PinDataObject_Impl {
         direction: u32,
     ) -> windows::core::Result<windows::Win32::System::Com::IEnumFORMATETC> {
         use windows::Win32::System::Com::DATADIR_GET;
+        dbg_log(&format!("dataobject.EnumFormatEtc dir={direction}"));
         if direction != DATADIR_GET.0 as u32 {
             return Err(windows::Win32::Foundation::E_NOTIMPL.into());
         }
@@ -1058,7 +1071,8 @@ impl windows::Win32::System::Com::IDataObject_Impl for PinDataObject_Impl {
     }
 }
 
-/// 给数据对象设置拖动时跟随光标的图像（就是这张贴图本身）。
+/// 备用：用系统 `IDragSourceHelper` 设拖动图像（当前未启用，保留实现备查）。
+#[allow(dead_code)]
 unsafe fn set_drag_image(
     data: &windows::Win32::System::Com::IDataObject,
     state: &PinState,
@@ -1116,11 +1130,194 @@ unsafe fn set_drag_image(
     result
 }
 
+// ---------------------------------------------------------------------------
+// 拖拽跟随缩略图：系统 DragImage 在部分接收方不显示，这里自己画一个跟随光标的
+// 分层窗口（鼠标穿透），拖动过程中由 GiveFeedback 驱动移动。
+// ---------------------------------------------------------------------------
+
+const GHOST_CLASS: &str = "LightweightToolsetDragGhost";
+static GHOST: Mutex<Option<(isize, i32, i32)>> = Mutex::new(None);
+
+unsafe extern "system" fn ghost_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    DefWindowProcW(hwnd, msg, wp, lp)
+}
+
+unsafe fn register_ghost_class() {
+    let owned = widen(GHOST_CLASS);
+    let wc = WNDCLASSW {
+        style: 0,
+        lpfnWndProc: Some(ghost_proc),
+        cbClsExtra: 0,
+        cbWndExtra: 0,
+        hInstance: GetModuleHandleW(std::ptr::null()),
+        hIcon: std::ptr::null_mut(),
+        hCursor: std::ptr::null_mut(),
+        hbrBackground: std::ptr::null_mut(),
+        lpszMenuName: std::ptr::null(),
+        lpszClassName: owned.as_ptr(),
+    };
+    RegisterClassW(&wc);
+}
+
+/// 建一个跟随光标的半透明贴图预览（鼠标穿透，不影响落点判定）。
+unsafe fn ghost_show(state: &PinState) {
+    let width = state.surface.width;
+    let height = state.surface.height;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let class = widen(GHOST_CLASS);
+    let hwnd = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        class.as_ptr(),
+        std::ptr::null(),
+        WS_POPUP,
+        0,
+        0,
+        width,
+        height,
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        GetModuleHandleW(std::ptr::null()),
+        std::ptr::null_mut(),
+    );
+    if hwnd.is_null() {
+        dbg_log("ghost.create_failed");
+        return;
+    }
+    dbg_log(&format!("ghost.created {width}x{height}"));
+    let mut info: BITMAPINFO = std::mem::zeroed();
+    info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    let mut bits: *mut c_void = std::ptr::null_mut();
+    let bitmap = CreateDIBSection(
+        std::ptr::null_mut(),
+        &info,
+        DIB_RGB_COLORS,
+        &mut bits,
+        std::ptr::null_mut(),
+        0,
+    );
+    if bitmap.is_null() || bits.is_null() {
+        DestroyWindow(hwnd);
+        return;
+    }
+    std::ptr::copy_nonoverlapping(
+        state.surface.pixels().as_ptr(),
+        bits as *mut u8,
+        (width * height * 4) as usize,
+    );
+    let target = std::slice::from_raw_parts_mut(bits as *mut u8, (width * height * 4) as usize);
+    for pixel in target.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
+    let screen = GetDC(std::ptr::null_mut());
+    let memory = CreateCompatibleDC(screen);
+    let old = SelectObject(memory, bitmap);
+    let mut point: POINT = std::mem::zeroed();
+    GetCursorPos(&mut point);
+    let destination = POINT {
+        x: point.x + 16,
+        y: point.y + 16,
+    };
+    let source = POINT { x: 0, y: 0 };
+    let size = SIZE {
+        cx: width,
+        cy: height,
+    };
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: 230,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+    let updated = UpdateLayeredWindow(
+        hwnd,
+        screen,
+        &destination,
+        &size,
+        memory,
+        &source,
+        0,
+        &blend,
+        ULW_ALPHA,
+    );
+    dbg_log(&format!("ghost.update_layered ok={updated}"));
+    SelectObject(memory, old);
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(std::ptr::null_mut(), screen);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    if let Ok(mut slot) = GHOST.lock() {
+        *slot = Some((hwnd as isize, width, height));
+    }
+}
+
+unsafe fn ghost_move() {
+    let entry = GHOST.lock().ok().and_then(|slot| *slot);
+    let Some((hwnd, width, height)) = entry else {
+        dbg_log("ghost.move_without_window");
+        return;
+    };
+    let mut point: POINT = std::mem::zeroed();
+    GetCursorPos(&mut point);
+    SetWindowPos(
+        hwnd as HWND,
+        HWND_TOPMOST,
+        point.x + 16,
+        point.y + 16,
+        width,
+        height,
+        SWP_NOACTIVATE,
+    );
+}
+
+unsafe fn ghost_destroy() {
+    let entry = GHOST.lock().ok().and_then(|mut slot| slot.take());
+    if let Some((hwnd, _, _)) = entry {
+        DestroyWindow(hwnd as HWND);
+    }
+}
+
+/// 拖放源：系统用它判断「继续拖 / 放下 / 取消」，并让 OLE 绘制拖拽图像。
+#[windows::core::implement(windows::Win32::System::Ole::IDropSource)]
+struct PinDropSource;
+
+impl windows::Win32::System::Ole::IDropSource_Impl for PinDropSource_Impl {
+    fn QueryContinueDrag(
+        &self,
+        escape_pressed: windows::core::BOOL,
+        key_state: windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS,
+    ) -> windows::core::HRESULT {
+        use windows::Win32::Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP};
+        use windows::Win32::System::SystemServices::MK_LBUTTON;
+        if escape_pressed.as_bool() {
+            return DRAGDROP_S_CANCEL;
+        }
+        if key_state.0 & MK_LBUTTON.0 == 0 {
+            return DRAGDROP_S_DROP;
+        }
+        windows::Win32::Foundation::S_OK
+    }
+
+    fn GiveFeedback(
+        &self,
+        _effect: windows::Win32::System::Ole::DROPEFFECT,
+    ) -> windows::core::HRESULT {
+        unsafe { ghost_move() };
+        windows::Win32::Foundation::DRAGDROP_S_USEDEFAULTCURSORS
+    }
+}
+
 /// 按住 Ctrl 拖动贴图：把这张图拖给其它程序（超级拖放）。
 ///
 /// 数据对象自己实现，同时给 CF_DIB（位图）与 CF_HDROP（临时 PNG 文件），
 /// 再用 `IDragSourceHelper` 把跟随光标的图像设成贴图本身。
-unsafe fn super_drag(hwnd: HWND, state: &PinState) {
+unsafe fn super_drag(_hwnd: HWND, state: &PinState) {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::Interface;
 
@@ -1142,15 +1339,14 @@ unsafe fn super_drag(hwnd: HWND, state: &PinState) {
         file,
     }
     .into();
-    match set_drag_image(&data, state) {
-        Ok(()) => dbg_log("super_drag.drag_image_ok"),
-        Err(error) => dbg_log(&format!("super_drag.drag_image_failed {error:?}")),
-    }
+    // 跟随光标的缩略图自己画（系统 DragImage 在部分接收方不显示），
+    // 所以不再调用 IDragSourceHelper，避免某些环境出现两个图像。
+    ghost_show(state);
     let mut effect = 0u32;
-    let drag_hr = SHDoDragDrop(
-        hwnd,
+    let source: windows::Win32::System::Ole::IDropSource = PinDropSource.into();
+    let drag_hr = windows_sys::Win32::System::Ole::DoDragDrop(
         data.as_raw() as *mut c_void,
-        std::ptr::null_mut(),
+        source.as_raw() as *mut c_void,
         DROPEFFECT_COPY,
         &mut effect,
     );
@@ -1158,6 +1354,7 @@ unsafe fn super_drag(hwnd: HWND, state: &PinState) {
         "super_drag.drop hr=0x{:08X} effect=0x{:X}",
         drag_hr, effect
     ));
+    ghost_destroy();
     // 拖动图像那块 HGLOBAL 由 helper 交给我们，拖放结束后释放。
     if let Ok(mut slot) = DRAG_IMAGE_MEDIUM.lock() {
         if let Some((_, _, handle)) = slot.take() {
