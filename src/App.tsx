@@ -351,6 +351,9 @@ type AppSettings = {
   closeBehavior: CloseBehavior;
   developerMode: boolean;
   storagePath: string;
+  screenshotManualSaveDir: string;
+  screenshotQuickSaveDir: string;
+  screenshotPalette: string[];
 };
 
 type SettingsPatch = Partial<Omit<AppSettings, "tools" | "autoStart">>;
@@ -1137,7 +1140,7 @@ function App() {
               />
             </div>
           ) : activeTool ? (
-            <div className="page-enter" key={activeTool.id}><ToolPage onOpenSettingsTab={openSettingsTab} tool={activeTool} /></div>
+            <div className="page-enter" key={activeTool.id}><ToolPage onOpenSettingsTab={openSettingsTab} settings={settings} tool={activeTool} updateSettings={updateSettings} /></div>
           ) : null}
         </main>
       </div>
@@ -1734,7 +1737,15 @@ function formatLogTime(timestampMs: number) {
   return new Date(timestampMs).toLocaleTimeString("zh-CN", { hour12: false });
 }
 
-function ToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: SettingsTab) => void; tool: Tool }) {
+function ToolPage({ onOpenSettingsTab, settings, tool, updateSettings }: {
+  onOpenSettingsTab: (tab: SettingsTab) => void;
+  settings?: AppSettings;
+  tool: Tool;
+  updateSettings: (patch: SettingsPatch) => Promise<void>;
+}) {
+  if (tool.id === "screenshot") {
+    return <ScreenshotToolPage onOpenSettingsTab={onOpenSettingsTab} settings={settings} tool={tool} updateSettings={updateSettings} />;
+  }
   if (tool.id === "clipboard") {
     return <ClipboardToolPage onOpenSettingsTab={onOpenSettingsTab} tool={tool} />;
   }
@@ -1761,6 +1772,129 @@ function ToolPage({ onOpenSettingsTab, tool }: { onOpenSettingsTab: (tab: Settin
       <div className="tool-page-status">
         <span className={tool.workerRunning ? "state-running" : "state-stopped"}>{tool.workerRunning ? "后台 worker 已启动" : "后台 worker 已停止"}</span>
         {tool.supportsHotkey ? <kbd>{tool.hotkey}</kbd> : <span className="state-stopped">无需快捷键</span>}
+      </div>
+    </section>
+  );
+}
+
+
+function ScreenshotToolPage({ onOpenSettingsTab, settings, tool, updateSettings }: {
+  onOpenSettingsTab: (tab: SettingsTab) => void;
+  settings?: AppSettings;
+  tool: Tool;
+  updateSettings: (patch: SettingsPatch) => Promise<void>;
+}) {
+  const [defaultDir, setDefaultDir] = useState("");
+  const [defaultPalette, setDefaultPalette] = useState<string[]>([]);
+  const manualDir = settings?.screenshotManualSaveDir ?? "";
+  const quickDir = settings?.screenshotQuickSaveDir ?? "";
+  const palette = settings?.screenshotPalette ?? [];
+
+  useEffect(() => {
+    void invoke<string>("get_default_screenshot_dir")
+      .then(setDefaultDir)
+      .catch(() => setDefaultDir(""));
+    void invoke<string[]>("get_default_screenshot_palette")
+      .then(setDefaultPalette)
+      .catch(() => setDefaultPalette([]));
+  }, []);
+
+  async function changeDir(kind: "manual" | "quick") {
+    const current = kind === "manual" ? manualDir : quickDir;
+    const selected = await open({
+      defaultPath: current || defaultDir || undefined,
+      directory: true,
+      multiple: false,
+      title: kind === "manual" ? "选择手动保存目录" : "选择快捷保存目录",
+    });
+    if (typeof selected === "string") {
+      void updateSettings(
+        kind === "manual" ? { screenshotManualSaveDir: selected } : { screenshotQuickSaveDir: selected },
+      );
+    }
+  }
+
+  function updateColor(index: number, value: string) {
+    const next = [...palette];
+    next[index] = value.toUpperCase();
+    void updateSettings({ screenshotPalette: next });
+  }
+
+  function renderDirRow(kind: "manual" | "quick") {
+    const value = kind === "manual" ? manualDir : quickDir;
+    return (
+      <div className="settings-row stack" key={kind}>
+        <div>
+          <h2>{kind === "manual" ? "手动保存目录" : "快捷保存目录"}</h2>
+          <p>{kind === "manual" ? "点覆盖层「保存」按钮时，目录选择器默认打开这里" : "在覆盖层内按 Ctrl+S 直接保存到这里"}</p>
+          <p>{defaultDir ? `默认目录：${defaultDir}` : "留空时使用默认截图目录"}</p>
+        </div>
+        <div className="settings-inline wide">
+          <input className="settings-input mono" placeholder="默认截图目录" readOnly value={value} />
+          <button className="secondary-action icon-text-action" onClick={() => void changeDir(kind)} type="button"><FolderOpen size={13} />更改</button>
+          <button className="secondary-action" onClick={() => void invoke("open_screenshot_dir", { saveDir: value })} type="button">打开</button>
+          {value ? (
+            <button
+              aria-label={kind === "manual" ? "恢复默认手动保存目录" : "恢复默认快捷保存目录"}
+              className="icon-action"
+              onClick={() => void updateSettings(kind === "manual" ? { screenshotManualSaveDir: "" } : { screenshotQuickSaveDir: "" })}
+              type="button"
+            >
+              <RotateCcw size={13} />
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <section className="tool-page">
+      <header className="screenshot-header">
+        <div className="screenshot-heading">
+          <span className="screenshot-title-icon"><Crop size={18} /></span>
+          <div>
+            <h1>{tool.name}</h1>
+            <p>{tool.description}</p>
+          </div>
+        </div>
+      </header>
+      <div className="screenshot-toolbar">
+        <span>
+          快捷键
+          {tool.supportsHotkey ? <kbd>{tool.hotkey || "未配置"}</kbd> : <span className="hotkey-disabled">无需快捷键</span>}
+          <button aria-label="前往快捷键设置" className="screenshot-hotkey-link" onClick={() => onOpenSettingsTab("hotkey")} title="前往快捷键设置" type="button"><Settings size={13} /></button>
+        </span>
+      </div>
+      <div className="tool-page-settings">
+        {renderDirRow("manual")}
+        {renderDirRow("quick")}
+        <div className="settings-row stack">
+          <div>
+            <h2>标注颜色</h2>
+            <p>覆盖层工具栏的 8 个色块，点色块即可改色</p>
+          </div>
+          <div className="screenshot-palette">
+            {palette.map((color, index) => (
+              <label className="screenshot-swatch" key={index} style={{ background: color }} title={color}>
+                <input
+                  aria-label={`第 ${index + 1} 个标注颜色`}
+                  onChange={(event) => updateColor(index, event.currentTarget.value)}
+                  type="color"
+                  value={color}
+                />
+              </label>
+            ))}
+            <button
+              className="secondary-action"
+              disabled={defaultPalette.length !== palette.length}
+              onClick={() => void updateSettings({ screenshotPalette: defaultPalette })}
+              type="button"
+            >
+              恢复默认
+            </button>
+          </div>
+        </div>
       </div>
     </section>
   );

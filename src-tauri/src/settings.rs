@@ -59,6 +59,19 @@ pub struct AppSettings {
     pub developer_mode: bool,
     #[serde(default)]
     pub storage_path: String,
+    /// 覆盖层「保存」按钮默认打开的目录；空串表示用 `screenshot/Screenshots`。
+    #[serde(default)]
+    pub screenshot_manual_save_dir: String,
+    /// 保存快捷键（Ctrl+S）直接写入的目录；空串表示用 `screenshot/Screenshots`。
+    #[serde(default)]
+    pub screenshot_quick_save_dir: String,
+    /// 覆盖层标注调色板（8 个 `#RRGGBB`）。
+    #[serde(default = "default_screenshot_palette")]
+    pub screenshot_palette: Vec<String>,
+}
+
+fn default_screenshot_palette() -> Vec<String> {
+    crate::screenshot::default_palette_hex()
 }
 
 impl Default for AppSettings {
@@ -77,6 +90,9 @@ impl Default for AppSettings {
             close_behavior: default_close_behavior(),
             developer_mode: false,
             storage_path: String::new(),
+            screenshot_manual_save_dir: String::new(),
+            screenshot_quick_save_dir: String::new(),
+            screenshot_palette: default_screenshot_palette(),
         }
     }
 }

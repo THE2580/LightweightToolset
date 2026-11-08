@@ -61,6 +61,14 @@ pub struct AppState {
 
 static PROCESS_STARTED_AT: OnceLock<Instant> = OnceLock::new();
 
+impl AppState {
+    /// 当前存储目录：优先读指针文件，保证运行中改存储路径后截图目录立刻跟上。
+    pub(crate) fn storage_dir(&self) -> PathBuf {
+        read_storage_pointer(&self.default_config_dir)
+            .unwrap_or_else(|| self.runtime_storage_dir.clone())
+    }
+}
+
 pub fn mark_process_start() {
     PROCESS_STARTED_AT.get_or_init(Instant::now);
 }
@@ -102,6 +110,9 @@ struct SettingsPatch {
     close_behavior: Option<CloseBehavior>,
     developer_mode: Option<bool>,
     storage_path: Option<String>,
+    screenshot_manual_save_dir: Option<String>,
+    screenshot_quick_save_dir: Option<String>,
+    screenshot_palette: Option<Vec<String>>,
 }
 
 fn cold_start_ms(state: &AppState) -> Result<u128, String> {
@@ -999,6 +1010,32 @@ fn open_storage_path(
 }
 
 #[tauri::command]
+fn get_default_screenshot_dir(state: State<'_, AppState>) -> String {
+    screenshot::default_save_dir(&state).display().to_string()
+}
+
+#[tauri::command]
+fn get_default_screenshot_palette() -> Vec<String> {
+    screenshot::default_palette_hex()
+}
+
+#[tauri::command]
+fn open_screenshot_dir(state: State<'_, AppState>, save_dir: Option<String>) -> Result<(), String> {
+    let path = screenshot::resolve_save_dir(&state, save_dir.as_deref().unwrap_or(""));
+    fs::create_dir_all(&path).map_err(|error| format!("创建截图目录失败: {error}"))?;
+    Command::new("explorer")
+        .arg(&path)
+        .spawn()
+        .map_err(|error| format!("打开截图目录失败: {error}"))?;
+    push_debug_log(
+        &state,
+        "screenshot",
+        format!("screenshot.dir.opened path={}", path.display()),
+    );
+    Ok(())
+}
+
+#[tauri::command]
 fn update_app_settings(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1028,6 +1065,27 @@ fn update_app_settings(
     }
     if let Some(show_update_notification) = patch.show_update_notification {
         settings.show_update_notification = show_update_notification;
+    }
+    if let Some(dir) = patch.screenshot_manual_save_dir {
+        settings.screenshot_manual_save_dir = dir;
+    }
+    if let Some(dir) = patch.screenshot_quick_save_dir {
+        settings.screenshot_quick_save_dir = dir;
+    }
+    if let Some(palette) = patch.screenshot_palette {
+        // 只接受能解析的 8 个色值，其余沿用默认，避免脏数据把调色板点坏。
+        let defaults = settings.screenshot_palette.clone();
+        let mut next = Vec::with_capacity(screenshot::PALETTE_LEN);
+        for index in 0..screenshot::PALETTE_LEN {
+            let candidate = palette
+                .get(index)
+                .filter(|value| screenshot::is_valid_hex(value))
+                .cloned()
+                .or_else(|| defaults.get(index).cloned())
+                .unwrap_or_default();
+            next.push(candidate);
+        }
+        settings.screenshot_palette = next;
     }
     if let Some(window_title) = patch.window_title {
         let title = window_title.trim();
@@ -1417,6 +1475,9 @@ pub fn run() {
             clipboard_open_management,
             get_default_storage_path,
             open_storage_path,
+            get_default_screenshot_dir,
+            get_default_screenshot_palette,
+            open_screenshot_dir,
             update_app_settings
         ])
         .run(context)

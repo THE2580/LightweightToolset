@@ -84,7 +84,7 @@ pub struct Selection {
 
 pub struct OverlayOutcome {
     pub selection: Selection,
-    /// 是否已通过“保存”按钮/Ctrl+S 落盘（mod.rs 据此跳过默认保存）。
+    /// 是否已通过“保存”按钮或 `Ctrl+S` 落盘（mod.rs 据此跳过默认保存）。
     pub saved: bool,
     /// 只复制到剪贴板、不落盘（复制按钮 / Ctrl+C）。
     pub copy_only: bool,
@@ -121,6 +121,10 @@ struct OverlayState {
     delete_mode: bool,
     saved: bool,
     copy_only: bool,
+    /// 「保存」按钮弹选择器时的初始目录。
+    manual_dir: PathBuf,
+    /// `Ctrl+S` 直接写入的目录。
+    quick_dir: PathBuf,
     ime_context: isize,
     doc: Document,
     draft_points: Vec<(i32, i32)>,
@@ -283,13 +287,16 @@ fn rgb(r: u8, g: u8, b: u8) -> u32 {
 }
 
 /// 弹出目录选择器（模态，必须在不持有 STATE 借用时调用）。
-unsafe fn pick_folder(owner: HWND) -> Option<PathBuf> {
+unsafe fn pick_folder(owner: HWND, initial: &std::path::Path) -> Option<PathBuf> {
     let _ = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
     let title: Vec<u16> = "选择保存目录\0".encode_utf16().collect();
+    let initial_text: Vec<u16> = format!("{}\0", initial.display()).encode_utf16().collect();
     let mut info: BROWSEINFOW = std::mem::zeroed();
     info.hwndOwner = owner;
     info.lpszTitle = title.as_ptr();
     info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    info.lpfn = Some(browse_callback);
+    info.lParam = initial_text.as_ptr() as isize;
     let pidl = SHBrowseForFolderW(&info);
     let mut result = None;
     if !pidl.is_null() {
@@ -302,6 +309,16 @@ unsafe fn pick_folder(owner: HWND) -> Option<PathBuf> {
     }
     CoUninitialize();
     result
+}
+
+/// 目录选择器的初始化回调：对话框建好后把初始目录选上。
+unsafe extern "system" fn browse_callback(hwnd: HWND, msg: u32, _lp: LPARAM, data: LPARAM) -> i32 {
+    const BFFM_INITIALIZED: u32 = 1;
+    const BFFM_SETSELECTIONW: u32 = 0x0467; // WM_USER + 103
+    if msg == BFFM_INITIALIZED && data != 0 {
+        SendMessageW(hwnd, BFFM_SETSELECTIONW, 1, data);
+    }
+    0
 }
 
 /// 把当前选区 + 标注写成 PNG 到指定目录。
@@ -1382,7 +1399,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
             });
             if save_requested {
-                if let Some(dir) = pick_folder(hwnd) {
+                // 选择器是模态对话框，必须先把初始目录取出来、释放 STATE 借用再弹。
+                let initial = STATE
+                    .with(|cell| cell.borrow().as_ref().map(|state| state.manual_dir.clone()))
+                    .unwrap_or_default();
+                if let Some(dir) = pick_folder(hwnd, &initial) {
                     let finished = STATE.with(|cell| {
                         let mut guard = cell.borrow_mut();
                         if let Some(state) = guard.as_mut() {
@@ -1500,7 +1521,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     if let Some(state) = guard.as_mut() {
                         if state.phase == Phase::Annotating {
                             if let Some(selection) = state.selection {
-                                if save_current(state, &save::default_dir()).is_ok() {
+                                let dir = state.quick_dir.clone();
+                                if save_current(state, &dir).is_ok() {
                                     state.result = Some(selection);
                                     state.saved = true;
                                     return true;
@@ -1955,7 +1977,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 
 
 /// 抓屏 → 建三张 DIB 段（原图/压暗/后备）→ 覆盖层窗口 → 选区。
-pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
+pub fn select(
+    width: i32,
+    height: i32,
+    manual_dir: PathBuf,
+    quick_dir: PathBuf,
+) -> Option<OverlayOutcome> {
     let class_name: Vec<u16> = "LightweightToolsetScreenshotOverlay\0"
         .encode_utf16()
         .collect();
@@ -2092,6 +2119,8 @@ pub fn select(width: i32, height: i32) -> Option<OverlayOutcome> {
                     delete_mode: false,
                     saved: false,
                     copy_only: false,
+                    manual_dir,
+                    quick_dir,
                     ime_context: ime_context as isize,
                     doc: Document::new(),
                     draft_points: Vec::new(),

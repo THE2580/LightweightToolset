@@ -1,7 +1,7 @@
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::Graphics::Gdi::*;
 
-use super::annotation::{rgb, Shape, PALETTE};
+use super::annotation::{palette, rgb, Shape, PALETTE_LEN};
 use super::overlay::Selection;
 
 pub const TB_BTN: i32 = 49;
@@ -285,7 +285,7 @@ pub fn layout(
             sep_style(&mut sx, &mut style_separators);
         }
         if !is_pixels {
-            for index in 0..PALETTE.len() {
+            for index in 0..PALETTE_LEN {
                 push_style(Action::Color(index), 34, &mut sx);
             }
         }
@@ -879,7 +879,7 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
                             right: rect.right - inset,
                             bottom: rect.bottom - inset,
                         },
-                        PALETTE[*index],
+                        palette()[*index],
                     );
                     if active {
                         stroke_rect(hdc, *rect, rgb(0xff, 0xff, 0xff), 2);

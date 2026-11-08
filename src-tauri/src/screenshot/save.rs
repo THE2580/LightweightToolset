@@ -25,15 +25,6 @@ pub fn encode_png(bgra_top_down: &[u8], width: u32, height: u32) -> Result<Vec<u
     Ok(out)
 }
 
-pub fn default_dir() -> PathBuf {
-    let base = std::env::var_os("USERPROFILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Pictures")
-        .join("LightweightToolset")
-        .join("Screenshots")
-}
-
 fn timestamp_name() -> String {
     unsafe {
         let mut st: SYSTEMTIME = std::mem::zeroed();
@@ -61,9 +52,4 @@ pub fn write_png_to(dir: &std::path::Path, png: &[u8]) -> Result<PathBuf, String
     }
     std::fs::write(&path, png).map_err(|error| format!("写入截图文件失败: {error}"))?;
     Ok(path)
-}
-
-/// 写入默认目录。
-pub fn write_file(png: &[u8]) -> Result<PathBuf, String> {
-    write_png_to(&default_dir(), png)
 }

@@ -8,7 +8,10 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | ((g as u32) << 8) | ((b as u32) << 16)
 }
 
-pub const PALETTE: [u32; 8] = [
+/// 调色板固定 8 格，可在工具箱设置里改色。
+pub const PALETTE_LEN: usize = 8;
+
+pub const DEFAULT_PALETTE: [u32; PALETTE_LEN] = [
     rgb(0xE5, 0x3E, 0x3E), // 红
     rgb(0xED, 0x89, 0x36), // 橙
     rgb(0xF2, 0xC9, 0x4C), // 黄
@@ -18,6 +21,41 @@ pub const PALETTE: [u32; 8] = [
     rgb(0x80, 0x5A, 0xD5), // 紫
     rgb(0x1A, 0x20, 0x2C), // 黑
 ];
+
+/// 当前覆盖层使用的调色板；每次截图前由设置覆盖。
+static ACTIVE_PALETTE: std::sync::Mutex<[u32; PALETTE_LEN]> = std::sync::Mutex::new(DEFAULT_PALETTE);
+
+pub fn palette() -> [u32; PALETTE_LEN] {
+    ACTIVE_PALETTE.lock().map(|guard| *guard).unwrap_or(DEFAULT_PALETTE)
+}
+
+pub fn set_palette(colors: [u32; PALETTE_LEN]) {
+    if let Ok(mut guard) = ACTIVE_PALETTE.lock() {
+        *guard = colors;
+    }
+}
+
+/// 解析 `#RRGGBB` / `RRGGBB`，失败返回 `None`。
+pub fn parse_hex_color(value: &str) -> Option<u32> {
+    let hex = value.trim().trim_start_matches('#');
+    if hex.len() != 6 || !hex.is_ascii() {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(rgb(r, g, b))
+}
+
+/// 反方向：`u32` → `#RRGGBB`（大写）。
+pub fn hex_color(color: u32) -> String {
+    format!(
+        "#{:02X}{:02X}{:02X}",
+        color & 0xFF,
+        (color >> 8) & 0xFF,
+        (color >> 16) & 0xFF
+    )
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
@@ -287,7 +325,8 @@ impl Document {
     }
 
     pub fn color(&self) -> u32 {
-        PALETTE[self.color_index.min(PALETTE.len() - 1)]
+        let colors = palette();
+        colors[self.color_index.min(PALETTE_LEN - 1)]
     }
 
     pub fn color_index(&self) -> usize {
@@ -385,7 +424,7 @@ impl Document {
     }
 
     pub fn set_color(&mut self, index: usize) {
-        self.color_index = index.min(PALETTE.len() - 1);
+        self.color_index = index.min(PALETTE_LEN - 1);
     }
 
     fn begin_change(&mut self) {
@@ -1070,7 +1109,19 @@ pub fn build_draft(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_draft, distance_to_segment, simplify, Document, Item, Shape};
+    use super::{
+        build_draft, distance_to_segment, hex_color, parse_hex_color, rgb, simplify, Document,
+        Item, Shape,
+    };
+
+    #[test]
+    fn hex_color_round_trips() {
+        assert_eq!(parse_hex_color("#E53E3E"), Some(rgb(0xE5, 0x3E, 0x3E)));
+        assert_eq!(parse_hex_color("30b2ac"), Some(rgb(0x30, 0xB2, 0xAC)));
+        assert_eq!(hex_color(rgb(0x1A, 0x20, 0x2C)), "#1A202C");
+        assert_eq!(parse_hex_color("#12345"), None);
+        assert_eq!(parse_hex_color("#GGGGGG"), None);
+    }
 
     fn rect_item() -> Item {
         Item::new(Shape::Rect, vec![(10, 10), (110, 60)], 0, 4)

@@ -1,31 +1,23 @@
 # Goal
-
-- 在 LightweightToolset 内新增「截图」工具（PixPin 行为复刻）：抓屏 → 覆盖层选区 → 标注 → 复制/保存 → 贴图。
-- 当前已提交：`c0ef236 feat: add screenshot tool with native capture, magnifier and color picker`（S1 + S2-a）。
+复刻 PixPin 截图工具（LightweightToolset 新工具），当前阶段：截图工具页配置（两个保存目录 + 8 色预设）待验收 → S3 贴图。
 
 # Current Focus
-
-- 覆盖层：原生 Win32 窗口（非 WebView），三张 DIB 段（原图/压暗/后备），按「旧帧 ∪ 新帧」脏区重建。
-- 已实现：区域截图、裁剪保存（`图片\LightweightToolset\Screenshots`）、CF_DIB+PNG 剪贴板、放大镜（240px、网格、蓝色十字线、坐标、HEX/RGB、`C` 取色退出、`Shift` 切换）、选区标签（起点坐标 + 尺寸）。
-- 关键常量：`MAG_CELL=16`、`PANEL_WIDTH=MAG_SIZE+2`、字体 17 px；`alpha=115` 压暗。
+工具页配置改造已完成并构建通过；**开发版与 Vite 已关闭（收工）**，工作树未提交。
 
 # Remaining
-
-1. ~~S2-b~S2-e~~ 已完成并提交 `08f9ea7`：标注底座、六种形状、正圆、马赛克/模糊/荧光笔、文字/序号（内联编辑、中文输入、输入框样式）。下一步 S2-f 浮动工具栏/图层。
-2. S2-c 形状（椭圆/箭头/折线/铅笔）、S2-d 马赛克/模糊/荧光笔、S2-e 文字/序号、S2-f 工具栏与图层。
-3. S3 贴图窗口（置顶/缩放/透明度/穿透）与历史。
-4. 多屏已由用户决定移出范围，不再测试或优化。
+1. 下次开工先重启 Vite 与开发版
+2. 用户验收工具页配置（手测覆盖层保存按钮初始目录、Ctrl+S 目录、改色生效）
+3. 验收后提交本批（排除 `window_service.rs`、`window_pinner.rs`、`.codex/`）
+4. 之后按 `progress.md` 的「截图配置待办」推进：近期项（文件名模板、未选区域颜色、放大镜网格线、辅助线），再进 S3 贴图
+5. 不做：「截图查看」、动态截图、UI 检测、多语言等（见 progress 的不做清单）
 
 # Verification
-
-- `cargo test --lib` 23/23（测试二进制需复制到 `%TEMP%` 运行）。
-- 热键→覆盖层：单屏中位 101 ms（修复前 526 ms）。
-- 折线拖动 56 步后「选区/面板之外的强调蓝像素」= 0。
-- 端到端：拖选 600×350 → PNG 精确 600×350、剪贴板 CF_DIB+PNG。
+- `cargo check` 通过（仅既有告警）；`npm run build` 通过；`cargo test --lib screenshot::` 11/11
+- 工具页渲染已用 PrintWindow 截图确认
+- **未验证**：覆盖层「保存」按钮初始目录、`Ctrl+S` 落盘（上次注入测试被提权控制台抢焦点，无效）
+- 最近提交：`4c88fe1`、`1373ed8`、`010f025`
 
 # Resume Here
-
-- `git log -1` 应为 `c0ef236`；工作树预期只剩 `M src-tauri/src/window_pinner.rs`（换行差异）、`M src-tauri/src/window_service.rs`（既有 rustfmt 噪声）与 `?? .codex/`。
-- 启动开发版：`npm run dev` 起 Vite → 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%\lwt-dev\` → `Start-Process -Verb RunAs`（控制台 `-WindowStyle Hidden`）。
-- 开发版数据已预置为只启用 `screenshot`；`%APPDATA%\com.the.lightweight-toolset.dev\settings.json`。
-- S2-b 起点：`src-tauri/src/screenshot/overlay.rs` 的绘制链路与 `mod.rs` 的 `run()`；新增 `annotation.rs`（对象模型/命令栈）与工具栏绘制。
+1. 启动环境：`npm run dev` 起 Vite（确认 `http://localhost:1420` 返回 200）→ `cargo build`（若改过 Rust）→ 复制 debug exe 到 `%TEMP%\lwt-dev` → `Start-Process -Verb RunAs` 启动 → 核对进程路径来自 `%TEMP%\lwt-dev`。
+2. 请用户验收工具页与覆盖层保存行为；有问题改 `src/App.tsx` 的 `ScreenshotToolPage`、`src/App.css` 的 `.screenshot-*`，或 `src-tauri/src/screenshot/{mod,overlay}.rs`。
+3. 验收通过后 `git add` 明确路径提交；然后进入 S3 贴图或近期配置项。

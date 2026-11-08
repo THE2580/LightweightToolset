@@ -45,3 +45,7 @@
 # 历史记录
 
 - 已关闭的 P0、已移除的 helper、旧通知机制与 Chromium 丢钩子的完整证据链，见 `archive/2026-11-02-bugs-compaction.md`。
+- 2026-11-08：截图配置项最终形态：`screenshotManualSaveDir`（覆盖层「保存」按钮初始目录）+ `screenshotQuickSaveDir`（`Ctrl+S` 目录）+ `screenshotPalette`（8 色 `#RRGGBB`）。默认目录是 `<存储目录>/screenshot/Screenshots`，**不再回落图片文件夹**；旧键 `screenshotSaveDir` 已被 serde 忽略，下次保存设置后自然消失。
+- 2026-11-08：工具页设置项要跟着工具走，不要塞进全局设置；「截图查看」已取消，不要再加回来。
+- 2026-11-08：`SHBrowseForFolderW` 想指定初始目录必须给 `BROWSEINFOW.lpfn` 回调，在 `BFFM_INITIALIZED` 里 `SendMessageW(hwnd, BFFM_SETSELECTIONW, 1, 字符串指针)`；`lParam` 只带指针，字符串要在调用期间保持存活。
+- 2026-11-08：开发版测试前必须确认 Vite 1420 返回 200 且进程来自 `%TEMP%\lwt-dev`，否则会出现“页面空白还盲测热键”的假象。

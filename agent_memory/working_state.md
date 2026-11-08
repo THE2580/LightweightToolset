@@ -1,15 +1,18 @@
 # Scope
-
-- 当前范围：S1+S2-a `c0ef236`；标注套件 `08f9ea7`；工具栏 S2-f 已提交 `9d113b5`。
-- 下一步：设置页（默认保存目录 + 保存快捷键），再做 S3 贴图。
+- 截图工具：工具栏与二级栏已完成；工具页配置改为「两个保存目录 + 8 色标注预设」，快捷键固定 `Ctrl+S`，待用户验收。
+- **2026-11-08 开工**：Vite（`:1420`，pid 18328）与开发版（`%TEMP%\lwt-dev`，pid 4556）已重启，首页渲染正常。
+- 「截图查看」已取消，不做。
+- 工作树未提交：`src-tauri/src/{settings,lib}.rs`、`src-tauri/src/screenshot/{mod,overlay,save,annotation,toolbar}.rs`、`src/App.tsx`、`src/App.css`、`agent_memory/*`；`window_pinner.rs`、`window_service.rs`、`.codex/` 为既有无关改动，不要提交。
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`c0ef236`**（截图工具 S1+S2-a，未推送）。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`4c88fe1`**（截图工具全工具二级栏完成，未推送）。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
 # Active Files
+- `src-tauri/src/settings.rs`、`src-tauri/src/lib.rs`：设置页后端字段与 patch（未提交）
+- `src-tauri/src/screenshot/{annotation,overlay,toolbar,mod,save}.rs`：截图工具主实现
 
 - `src-tauri/src/screenshot/`（新）：`mod.rs`（热键入口/编排）、`capture.rs`（BitBlt + 裁切 + 变暗，含 3 个单测）、`overlay.rs`（原生覆盖层窗口）、`clipboard_image.rs`（CF_DIB + PNG）、`save.rs`（PNG 编码 + 落盘）。
 - `src-tauri/src/tools.rs`、`lib.rs`：注册 `screenshot`、热键分支、DPI 声明、停用时关闭覆盖层。
@@ -23,6 +26,10 @@
 
 # Verification
 
+- 2026-11-08 工具页配置改造复验：`cargo check` 通过；`npm run build` 通过；`cargo test --lib screenshot::` 10/10；开发版重启（pid 8724）后截图工具页显示图标/快捷键/两个目录/8 色预设（截图确认）。
+- 2026-11-08 保存目录改造后复验：`cargo check` 通过；`npm run build` 通过；`cargo test --lib screenshot::` 10/10；开发版重启（pid 18776）后截图工具页显示保存目录与 `Ctrl+S` 提示。
+- 2026-11-08 设置页：`cargo check` 通过（仅既有 3 条告警）；`cargo test --lib -- --test-threads=1 screenshot::` 13/13（当时含 3 个 `shortcut_matches` 单测，随自定义快捷键一并删除）。全量 `cargo test --lib` 为 28 passed + 3 failed，失败全在 `window_pinner`（沙箱无法写 `%TEMP%`，与本次改动无关）。
+- 2026-11-08 开发版自检：Vite `:1420` 返回 200；exe 复制到 `%TEMP%\lwt-dev` 并从该路径启动（pid 25576）；PrintWindow 截图确认首页与设置页正常渲染（非白屏）。
 - 2026-11-08 全部工具二级栏完成并验收；待提交。
 - 2026-11-08 粗线宽虚线与箭头修复并验收；单测 28/28。
 - 2026-11-07 线型/交互验证：形状线型菜单可用、虚线导出 2012 px、同组二次点击收起二级栏；测试 28/28。
@@ -71,9 +78,15 @@
 
 # Blockers
 
-- 无。安装版进程全程未被结束或改动。
+- 无硬阻塞。安装版进程全程未被结束或改动。
+- **未验证**：覆盖层的「保存按钮初始目录」与「Ctrl+S 落盘」尚未端到端验证。曾尝试注入键鼠做 E2E，但提权控制台抢走前台焦点，合成的 `Ctrl+S` 没到覆盖层，测试无效（覆盖层事后已关闭，应用已重启）。下次要么请用户手测，要么先把覆盖层 `SetForegroundWindow` 再发按键。
 
 # Next Action
+0. 下次开工先重启环境：`npm run dev`（Vite `:1420`，确认返回 200）→ 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%\lwt-dev` → `Start-Process -Verb RunAs` 启动；若改过 Rust 先 `cargo build`。
+1. 用户在开发版验收截图工具页：两个保存目录（更改/打开/恢复默认）、8 色预设改色与恢复默认、快捷键 ⚙ 跳转。
+2. 实测：覆盖层「保存」按钮应默认打开手动目录；覆盖层 `Ctrl+S` 应写入快捷目录；改色后工具栏色块与绘制颜色同步。
+3. 验收通过后提交本批（排除 `window_service.rs`、`window_pinner.rs`、`.codex/`），再进入 S3 贴图。
+
 
 - 下一步 S2-d：在 `annotation.rs` 增加马赛克/模糊/荧光笔（需要像素级处理与涂抹路径），完成后按约定启动开发版供验收。
 - 发版时按「三处版本号 + 更新 README/简介 + 清理开发版痕迹 + 提交推送 + 注释 tag + Release + 事后沉淀」流程；新增工具要调第一/二位版本号。
