@@ -87,6 +87,11 @@
    - **拖放事故与回退（2026-11-08，提交 `8c97d46`）**：`778e0a4` 把拖拽图像交回系统 `IDragSourceHelper` 后，用户拖放时崩溃并连带结束接收方（DSH）进程；已回退到 `96655a6`/`0c221a9` 的“自绘 ghost 跟随窗口、不启用 helper”版本。**拖放暂时保留该版本（能拖、无缩略图）**，根因排查记入待办（见 `bugs.md` 事故条目）。
    - **REA 取证：PixPin 拖放实现（2026-11-08）**：PixPin.exe 自己不拖放；实现在 `platforms/qwindows.dll`（Qt 平台插件），导入 ole32 `DoDragDrop`/`OleInitialize`/`RegisterDragDrop`/`ReleaseStgMedium` 等，即标准 OLE 拖放 + `IDragSourceHelper`。实测我们的数据对象在整个拖动中从未被问 `DragImageBits`（只问 CF_HDROP），说明缩略图由目标端绘制，机制相同也不保证浏览器显示。
    - **缩放提示改版（2026-11-08）**：贴图滚轮缩放的提示改为半透明黑底（AlphaBlend 55% 黑）+ 1px 白框 + 白字，文案 `缩放：150%`，字体用菜单同款雅黑 12px。
+   - **贴图标注（2026-11-08，提交 `0da62ce`，进行中）**：
+     - 已明确的做法：**复用截图那套原生工具栏**（形状组/线条组/像素组/铅笔/荧光笔/文字/序号/删除 + 撤销/重做 + 二级栏），**尾部去掉「取消/保存/复制/贴图」，换成对勾 `Action::Done`**。用户明确否决自造迷你工具栏。
+     - 已完成：`toolbar.rs` 增加 `Mode{Screenshot,Pin}`，主栏宽度按按钮数动态算，`Action::Done` 图标与提示（「完成标注 (Esc)」）；`overlay.rs` 调用点全部显式传 `Mode::Screenshot`，截图行为不变。
+     - 已完成（临时实现，待替换）：贴图标注模式的状态位 `annotating/annotations_hidden/doc/draft`、菜单「标注/隐藏标注」解禁、矩形/箭头草稿按缩放换算、`paint_composite` 在图像分辨率上叠标注再缩放上屏、`build_draft` 两点形状要用 `cursor` 传终点（否则矩形零尺寸）。
+     - **待替换**：pin 里的 `PinAction`/`pin_toolbar_rect`/`pin_toolbar_hit`/`draw_pin_toolbar` 这套迷你工具栏整体删掉，改为调用 `toolbar::layout(..., Mode::Pin)` + `toolbar::draw(dc, &ToolbarState{mode: Pin, selection: 图像客户区矩形, screen: 客户区大小, ...})` + 按 `layout.buttons/styles/menus` 命中；`PinState` 需要补 `picks/style_open/line_menu_open/arrow_menu_open/delete_mode`。
    - **待办（用户已确认推迟）**：
      - **贴图标注**：右键「标注」进入标注模式，出现只含贴图相关项的标注工具栏（参照截图工具栏样式），工具栏跟随贴图窗口移动，最右端对勾按钮结束标注退出；「隐藏标注」同步实现。
      - **贴图文本选择**：右键「选择所有文本」「文本可选择」两项（含 OCR 文本）。
