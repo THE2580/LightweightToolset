@@ -123,6 +123,11 @@ struct SettingsPatch {
     screenshot_cursor_guide_color: Option<String>,
     screenshot_guides_width: Option<u8>,
     screenshot_cursor_guide_width: Option<u8>,
+    screenshot_pin_lock: Option<String>,
+    screenshot_pin_double_click: Option<String>,
+    screenshot_pin_confirm_close: Option<bool>,
+    screenshot_pin_shadow: Option<bool>,
+    screenshot_pin_history: Option<u8>,
 }
 
 fn cold_start_ms(state: &AppState) -> Result<u128, String> {
@@ -1034,6 +1039,11 @@ struct ScreenshotDefaults {
     cursor_guide_color: String,
     guides_width: u8,
     cursor_guide_width: u8,
+    pin_lock: String,
+    pin_double_click: String,
+    pin_confirm_close: bool,
+    pin_shadow: bool,
+    pin_history: u8,
 }
 
 /// 截图工具页「恢复默认」需要的全部内置默认值。
@@ -1052,6 +1062,11 @@ fn get_screenshot_defaults(state: State<'_, AppState>) -> ScreenshotDefaults {
         cursor_guide_color: "#808080".to_owned(),
         guides_width: 1,
         cursor_guide_width: 1,
+        pin_lock: "none".to_owned(),
+        pin_double_click: "none".to_owned(),
+        pin_confirm_close: false,
+        pin_shadow: true,
+        pin_history: 20,
     }
 }
 
@@ -1169,6 +1184,25 @@ fn update_app_settings(
     }
     if let Some(width) = patch.screenshot_cursor_guide_width {
         settings.screenshot_cursor_guide_width = width.clamp(1, 5);
+    }
+    if let Some(lock) = patch.screenshot_pin_lock {
+        if matches!(lock.as_str(), "none" | "position" | "all") {
+            settings.screenshot_pin_lock = lock;
+        }
+    }
+    if let Some(action) = patch.screenshot_pin_double_click {
+        if matches!(action.as_str(), "none" | "close" | "copy") {
+            settings.screenshot_pin_double_click = action;
+        }
+    }
+    if let Some(confirm) = patch.screenshot_pin_confirm_close {
+        settings.screenshot_pin_confirm_close = confirm;
+    }
+    if let Some(shadow) = patch.screenshot_pin_shadow {
+        settings.screenshot_pin_shadow = shadow;
+    }
+    if let Some(history) = patch.screenshot_pin_history {
+        settings.screenshot_pin_history = history.clamp(1, 100);
     }
     if let Some(window_title) = patch.window_title {
         let title = window_title.trim();
@@ -1337,6 +1371,7 @@ pub fn run() {
                         let mut handled = false;
                         let mut window_pinner_hotkey = false;
                         let mut screenshot_hotkey = false;
+                        let mut pin_command: Option<String> = None;
                         let mut triggered_hotkey_id: Option<String> = None;
                         if let Some(state) = app.try_state::<AppState>() {
                             push_debug_log(
@@ -1358,12 +1393,29 @@ pub fn run() {
                                 } else if registry.tool_for_shortcut(&shortcut_text).as_deref() == Some("screenshot") {
                                     screenshot_hotkey = true;
                                     handled = true;
+                                } else if let Some(command) = app_hotkey.clone() {
+                                    // 贴图组快捷键：截图工具停用时不再响应。
+                                    if command != "main_window" && registry.is_enabled("screenshot") {
+                                        pin_command = Some(command);
+                                        handled = true;
+                                    }
                                 } else if registry.tool_for_shortcut(&shortcut_text).as_deref()
                                     == Some("clipboard")
                                     || registry.only_enabled_tool().as_deref() == Some("clipboard")
                                 {
                                     handled = true;
                                 }
+                            }
+                            if let Some(command) = pin_command.clone() {
+                                match command.as_str() {
+                                    "screenshot_pin" => screenshot::pin_from_hotkey(app),
+                                    "pin_restore" => screenshot::restore_pin(app),
+                                    "pin_close_all" => screenshot::close_all_pins(),
+                                    "pin_toggle_visible" => screenshot::toggle_pins_visible(),
+                                    "pin_passthrough" => screenshot::toggle_pins_passthrough(),
+                                    _ => {}
+                                }
+                                return;
                             }
                             if window_pinner_hotkey {
                                 match window_pinner::toggle_foreground(std::process::id()) {

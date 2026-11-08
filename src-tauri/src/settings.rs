@@ -98,6 +98,37 @@ pub struct AppSettings {
     /// 光标十字线宽（1–5）。
     #[serde(default = "default_screenshot_guide_width")]
     pub screenshot_cursor_guide_width: u8,
+    /// 贴图窗口锁定类型：`none` 不锁定 / `position` 锁位置 / `all` 全锁。
+    #[serde(default = "default_pin_lock")]
+    pub screenshot_pin_lock: String,
+    /// 贴图窗口双击动作：`none` / `close` / `copy`。
+    #[serde(default = "default_pin_double_click")]
+    pub screenshot_pin_double_click: String,
+    /// 关闭贴图窗口前是否确认。
+    #[serde(default)]
+    pub screenshot_pin_confirm_close: bool,
+    /// 贴图窗口是否带系统投影。
+    #[serde(default = "default_pin_shadow")]
+    pub screenshot_pin_shadow: bool,
+    /// 贴图历史保留数量。
+    #[serde(default = "default_pin_history")]
+    pub screenshot_pin_history: u8,
+}
+
+fn default_pin_lock() -> String {
+    "none".to_owned()
+}
+
+fn default_pin_double_click() -> String {
+    "none".to_owned()
+}
+
+fn default_pin_shadow() -> bool {
+    true
+}
+
+fn default_pin_history() -> u8 {
+    20
 }
 
 fn default_screenshot_guide_width() -> u8 {
@@ -169,6 +200,11 @@ impl Default for AppSettings {
             screenshot_cursor_guide_color: default_screenshot_cursor_guide_color(),
             screenshot_guides_width: default_screenshot_guide_width(),
             screenshot_cursor_guide_width: default_screenshot_guide_width(),
+            screenshot_pin_lock: default_pin_lock(),
+            screenshot_pin_double_click: default_pin_double_click(),
+            screenshot_pin_confirm_close: false,
+            screenshot_pin_shadow: default_pin_shadow(),
+            screenshot_pin_history: default_pin_history(),
         }
     }
 }

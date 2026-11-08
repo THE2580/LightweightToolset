@@ -364,6 +364,11 @@ type AppSettings = {
   screenshotCursorGuideColor: string;
   screenshotGuidesWidth: number;
   screenshotCursorGuideWidth: number;
+  screenshotPinLock: string;
+  screenshotPinDoubleClick: string;
+  screenshotPinConfirmClose: boolean;
+  screenshotPinShadow: boolean;
+  screenshotPinHistory: number;
 };
 
 type SettingsPatch = Partial<Omit<AppSettings, "tools" | "autoStart">>;
@@ -1806,9 +1811,17 @@ type ScreenshotDefaults = {
   cursorGuideColor: string;
   guidesWidth: number;
   cursorGuideWidth: number;
+  pinLock: string;
+  pinDoubleClick: string;
+  pinConfirmClose: boolean;
+  pinShadow: boolean;
+  pinHistory: number;
 };
 
 type ScreenshotTab = "capture" | "pin" | "save" | "annotate" | "hotkey";
+
+/// 贴图组快捷键：由截图工具页「快捷键」标签配置，不在全局设置里重复出现。
+const PIN_HOTKEY_IDS = ["screenshot_pin", "pin_restore", "pin_close_all", "pin_toggle_visible", "pin_passthrough"];
 
 
 function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, updateSettings }: {
@@ -1822,7 +1835,7 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
   const [activeTab, setActiveTab] = useState<ScreenshotTab>("capture");
   const [defaults, setDefaults] = useState<ScreenshotDefaults | null>(null);
   const [templateDraft, setTemplateDraft] = useState(settings?.screenshotFileTemplate ?? "");
-  const [editingHotkey, setEditingHotkey] = useState(false);
+  const [editingHotkeyId, setEditingHotkeyId] = useState<string | null>(null);
   const [hotkeyDraft, setHotkeyDraft] = useState<CaptureHotkeyDraft>({ display: "", value: "" });
   const [notice, setNotice] = useState<HotkeyNotice | null>(null);
   const [noticeClosing, setNoticeClosing] = useState(false);
@@ -1840,7 +1853,14 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
   const cursorGuideColor = settings?.screenshotCursorGuideColor ?? "#808080";
   const guidesWidth = settings?.screenshotGuidesWidth ?? 1;
   const cursorGuideWidth = settings?.screenshotCursorGuideWidth ?? 1;
+  const pinLock = settings?.screenshotPinLock ?? "none";
+  const pinDoubleClick = settings?.screenshotPinDoubleClick ?? "none";
+  const pinConfirmClose = settings?.screenshotPinConfirmClose ?? false;
+  const pinShadow = settings?.screenshotPinShadow ?? true;
+  const pinHistory = settings?.screenshotPinHistory ?? 20;
   const currentHotkey = tools.find((item) => item.id === "screenshot")?.hotkey ?? tool.hotkey;
+  // 贴图组的快捷键与截图快捷键一样走工具页配置。
+  const pinHotkeys = appHotkeys.filter((item) => item.supportsHotkey && PIN_HOTKEY_IDS.includes(item.id));
   const otherHotkeys = [
     ...appHotkeys.filter((item) => item.supportsHotkey).map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey })),
     ...tools
@@ -1896,8 +1916,8 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
     void updateSettings({ screenshotPalette: next });
   }
 
-  async function startHotkeyEditing() {
-    setEditingHotkey(true);
+  async function startHotkeyEditing(id: string) {
+    setEditingHotkeyId(id);
     setHotkeyDraft({ display: "", value: "" });
     try {
       await invoke("suspend_tool_hotkeys");
@@ -1907,7 +1927,7 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
   }
 
   async function stopHotkeyEditing() {
-    setEditingHotkey(false);
+    setEditingHotkeyId(null);
     setHotkeyDraft({ display: "", value: "" });
     try {
       await invoke("resume_tool_hotkeys");
@@ -1932,7 +1952,7 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
     setHotkeyDraft({ display, value: display.replace(/\bWIN\b/g, "SUPER") });
   }
 
-  async function saveHotkey() {
+  async function saveHotkey(id: string, name: string) {
     const normalized = normalizeHotkeyDraft(hotkeyDraft.value);
     if (!normalized) {
       showNotice({ phase: "error", title: "快捷键未填写", message: "请先点击输入框并按下一个快捷键组合。", detail: { kind: "plain-error" } });
@@ -1943,7 +1963,7 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
       showNotice({ phase: "error", title: "快捷键格式不正确", message: validationError, detail: { kind: "plain-error" } });
       return;
     }
-    const conflict = otherHotkeys.find((item) => normalizeHotkeyDraft(item.hotkey) === normalized);
+    const conflict = otherHotkeys.find((item) => item.id !== id && normalizeHotkeyDraft(item.hotkey) === normalized);
     if (conflict) {
       showNotice({
         phase: "error",
@@ -1954,23 +1974,58 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
       return;
     }
     try {
-      const nextSnapshot = await invoke<AppSnapshot>("set_tool_hotkey", { toolId: "screenshot", hotkey: normalized });
+      const nextSnapshot = await invoke<AppSnapshot>("set_tool_hotkey", { toolId: id, hotkey: normalized });
       setSnapshot(nextSnapshot);
       await stopHotkeyEditing();
-      showNotice({ phase: "success", title: "快捷键已更新", message: `截图快捷键已设为 ${formatHotkeyForDisplay(normalized)}。` });
+      showNotice({ phase: "success", title: "快捷键已更新", message: `${name}快捷键已设为 ${formatHotkeyForDisplay(normalized)}。` });
     } catch (reason) {
       showNotice({ phase: "error", title: "快捷键保存失败", message: String(reason), detail: { kind: "plain-error" } });
     }
   }
 
-  async function clearHotkey() {
+  async function clearHotkey(id: string, name: string) {
     try {
-      const nextSnapshot = await invoke<AppSnapshot>("clear_tool_hotkey", { toolId: "screenshot" });
+      const nextSnapshot = await invoke<AppSnapshot>("clear_tool_hotkey", { toolId: id });
       setSnapshot(nextSnapshot);
-      showNotice({ phase: "success", title: "快捷键已停用", message: "截图不再使用快捷键，可从托盘或主窗口进入。" });
+      showNotice({ phase: "success", title: "快捷键已停用", message: `${name}不再使用快捷键。` });
     } catch (reason) {
       showNotice({ phase: "error", title: "快捷键停用失败", message: String(reason), detail: { kind: "plain-error" } });
     }
+  }
+
+  function renderHotkeyRow(id: string, name: string, description: string, hotkey: string) {
+    const editing = editingHotkeyId === id;
+    return (
+      <div className="settings-row hotkey-row" key={id}>
+        <div>
+          <h2>{name}</h2>
+          <p>{description}</p>
+        </div>
+        <div className="hotkey-controls">
+          {editing ? (
+            <>
+              <button
+                autoFocus
+                className={`hotkey-capture ${hotkeyDraft.display ? "" : "empty"}`}
+                onBlur={() => void stopHotkeyEditing()}
+                onKeyDown={captureHotkey}
+                type="button"
+              >
+                {hotkeyDraft.display || "按下快捷键"}
+              </button>
+              <button className="primary-action icon-text-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void saveHotkey(id, name)} type="button"><Check size={12} />保存</button>
+              <button className="secondary-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void stopHotkeyEditing()} type="button">取消</button>
+            </>
+          ) : (
+            <>
+              {hotkey ? <kbd className="hotkey-preview">{formatHotkeyForDisplay(hotkey)}</kbd> : <span className="hotkey-disabled">未设置</span>}
+              <button aria-label={`编辑${name}快捷键`} className="secondary-action hotkey-icon-action" title="编辑快捷键" onClick={() => void startHotkeyEditing(id)} type="button"><Pencil size={14} /></button>
+              {hotkey ? <button aria-label={`停用${name}快捷键`} className="secondary-action hotkey-icon-action danger-action" title="停用快捷键" onClick={() => void clearHotkey(id, name)} type="button"><Trash2 size={14} /></button> : null}
+            </>
+          )}
+        </div>
+      </div>
+    );
   }
 
   function renderDirRow(kind: "manual" | "quick") {
@@ -2242,10 +2297,86 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
           <div className="settings-section page-enter">
             <div className="settings-row">
               <div>
-                <h2>贴图</h2>
-                <p>贴图窗口、贴图历史与贴图快捷键还在开发中，完成后会出现在这里。</p>
+                <h2>锁定类型</h2>
+                <p>贴图窗口贴出后默认的锁定方式</p>
+              </div>
+              <select
+                className="settings-select"
+                onChange={(event) => void updateSettings({ screenshotPinLock: event.currentTarget.value })}
+                value={pinLock}
+              >
+                <option value="none">不锁定</option>
+                <option value="position">锁定位置（仍可缩放）</option>
+                <option value="all">全部锁定</option>
+              </select>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h2>双击动作</h2>
+                <p>在贴图窗口上双击时做什么</p>
+              </div>
+              <select
+                className="settings-select"
+                onChange={(event) => void updateSettings({ screenshotPinDoubleClick: event.currentTarget.value })}
+                value={pinDoubleClick}
+              >
+                <option value="none">不处理</option>
+                <option value="close">关闭贴图</option>
+                <option value="copy">复制到剪贴板</option>
+              </select>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h2>关闭前确认</h2>
+                <p>关闭贴图窗口时先弹窗确认</p>
+              </div>
+              <button
+                aria-label="关闭前确认"
+                className={`switch ${pinConfirmClose ? "on" : ""}`}
+                onClick={() => void updateSettings({ screenshotPinConfirmClose: !pinConfirmClose })}
+                type="button"
+              >
+                <span />
+              </button>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h2>窗口阴影</h2>
+                <p>给贴图窗口加一圈系统投影</p>
+              </div>
+              <button
+                aria-label="窗口阴影"
+                className={`switch ${pinShadow ? "on" : ""}`}
+                onClick={() => void updateSettings({ screenshotPinShadow: !pinShadow })}
+                type="button"
+              >
+                <span />
+              </button>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h2>历史保留数量</h2>
+                <p>贴图历史存在截图数据目录，超出后自动删掉最旧的</p>
+              </div>
+              <div className="settings-inline">
+                <input
+                  aria-label="贴图历史保留数量"
+                  className="settings-input mono narrow"
+                  max={100}
+                  min={1}
+                  onChange={(event) => {
+                    const next = Number(event.currentTarget.value);
+                    if (Number.isFinite(next) && next >= 1 && next <= 100) {
+                      void updateSettings({ screenshotPinHistory: Math.round(next) });
+                    }
+                  }}
+                  type="number"
+                  value={pinHistory}
+                />
+                <span className="settings-unit">张</span>
               </div>
             </div>
+            <p className="settings-note">贴图窗口始终置顶：可拖动移动、拖边角缩放、滚轮缩放；右键或 Esc 关闭。</p>
           </div>
         ) : null}
 
@@ -2321,36 +2452,9 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
 
         {activeTab === "hotkey" ? (
           <div className="settings-section page-enter">
-            <div className="settings-row hotkey-row">
-              <div>
-                <h2>截图快捷键</h2>
-                <p>按下后进入截图；录制时会临时暂停全局热键。</p>
-              </div>
-              <div className="hotkey-controls">
-                {editingHotkey ? (
-                  <>
-                    <button
-                      autoFocus
-                      className={`hotkey-capture ${hotkeyDraft.display ? "" : "empty"}`}
-                      onBlur={() => void stopHotkeyEditing()}
-                      onKeyDown={captureHotkey}
-                      type="button"
-                    >
-                      {hotkeyDraft.display || "按下快捷键"}
-                    </button>
-                    <button className="primary-action icon-text-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void saveHotkey()} type="button"><Check size={12} />保存</button>
-                    <button className="secondary-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void stopHotkeyEditing()} type="button">取消</button>
-                  </>
-                ) : (
-                  <>
-                    {currentHotkey ? <kbd className="hotkey-preview">{formatHotkeyForDisplay(currentHotkey)}</kbd> : <span className="hotkey-disabled">未设置</span>}
-                    <button aria-label="编辑截图快捷键" className="secondary-action hotkey-icon-action" title="编辑快捷键" onClick={() => void startHotkeyEditing()} type="button"><Pencil size={14} /></button>
-                    {currentHotkey ? <button aria-label="停用截图快捷键" className="secondary-action hotkey-icon-action danger-action" title="停用快捷键" onClick={() => void clearHotkey()} type="button"><Trash2 size={14} /></button> : null}
-                  </>
-                )}
-              </div>
-            </div>
-            <p className="settings-note">停用后只能从托盘或主窗口进入截图；新快捷键不能与其它工具的快捷键冲突。</p>
+            {renderHotkeyRow("screenshot", "截图", "按下后进入截图；录制时会临时暂停全局热键。", currentHotkey)}
+            {pinHotkeys.map((item) => renderHotkeyRow(item.id, item.name, item.description, item.hotkey))}
+            <p className="settings-note">停用截图后只能从托盘或主窗口进入截图；新快捷键不能与其它工具的快捷键冲突。</p>
           </div>
         ) : null}
       </section>
@@ -2582,7 +2686,7 @@ function HotkeySettings({
   const [notice, setNotice] = useState<HotkeyNotice | null>(null);
   const [noticeClosing, setNoticeClosing] = useState(false);
   const appItems = appHotkeys
-    .filter((item) => item.supportsHotkey)
+    .filter((item) => item.supportsHotkey && !PIN_HOTKEY_IDS.includes(item.id))
     .map((item) => ({ ...item, group: "app" as const, displayName: item.name }));
   // 截图工具的快捷键已迁到它自己的工具页「快捷键」标签，不再出现在全局设置里。
   const toolItems = tools

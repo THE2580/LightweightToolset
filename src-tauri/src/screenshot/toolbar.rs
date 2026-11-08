@@ -82,6 +82,7 @@ pub enum Action {
     Delete,
     Save,
     Copy,
+    Pin,
     Cancel,
 }
 
@@ -141,7 +142,7 @@ pub fn layout(
     arrow_menu_open: bool,
 ) -> Layout {
     let button = TB_BTN;
-    let content = 13 * (button + GAP) + 2 * DIVIDER - GAP;
+    let content = 14 * (button + GAP) + 2 * DIVIDER - GAP;
     let width = content + PAD * 2;
     let height = button;
 
@@ -192,6 +193,7 @@ pub fn layout(
     push(Action::Cancel, button, &mut bx);
     push(Action::Save, button, &mut bx);
     push(Action::Copy, button, &mut bx);
+    push(Action::Pin, button, &mut bx);
 
     let mut layout = Layout {
         x,
@@ -392,6 +394,7 @@ pub fn tooltip(action: Action) -> String {
         Action::Delete => "删除选中标注 (Delete)".to_owned(),
         Action::Save => "保存到目录…".to_owned(),
         Action::Copy => "复制并完成 (Ctrl+C)".to_owned(),
+        Action::Pin => format!("贴图 ({})", crate::screenshot::pin_hotkey_text()),
         Action::Cancel => "取消 (Esc)".to_owned(),
     }
 }
@@ -772,6 +775,19 @@ fn action_icon(hdc: HDC, action: Action, rect: RECT, color: u32) {
                 color,
                 2,
             );
+        }
+        Action::Pin => {
+            // 图钉：圆头 + 横帽 + 针身。
+            unsafe {
+                line(hdc, cx - 6, cy - 9, cx + 6, cy - 9, 2, color);
+                line(hdc, cx, cy - 9, cx, cy + 2, 3, color);
+                line(hdc, cx, cy + 2, cx, cy + 10, 2, color);
+                let brush = CreateSolidBrush(color);
+                let old = SelectObject(hdc, brush);
+                Ellipse(hdc, cx - 4, cy - 5, cx + 4, cy + 3);
+                SelectObject(hdc, old);
+                DeleteObject(brush);
+            }
         }
         Action::Cancel => {
             line(hdc, cx - 8, cy - 8, cx + 8, cy + 8, 3, color);

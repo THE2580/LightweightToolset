@@ -3,15 +3,31 @@ mod capture;
 mod clipboard_image;
 mod dib;
 mod overlay;
+mod pin;
 mod toolbar;
 mod save;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager};
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+/// 最近一次截图产出的图，没有覆盖层时按贴图快捷键用它。
+static LAST_SHOT: Mutex<Option<Arc<pin::PinImage>>> = Mutex::new(None);
+/// 覆盖层「贴图」按钮/快捷键的提示文本（工具栏悬停用）。
+static PIN_HOTKEY: Mutex<String> = Mutex::new(String::new());
+
+/// 贴图快捷键的显示文本，工具栏提示与设置页共用。
+pub(crate) fn pin_hotkey_text() -> String {
+    let text = PIN_HOTKEY.lock().map(|value| value.clone()).unwrap_or_default();
+    if text.is_empty() {
+        "未设置".to_owned()
+    } else {
+        text
+    }
+}
 
 /// 截图工具数据目录：`<存储目录>/screenshot`，与 clipboard、timer 等工具目录同级。
 pub(crate) fn data_dir(state: &crate::AppState) -> PathBuf {
@@ -77,19 +93,41 @@ fn fallback_save_dir() -> PathBuf {
         .join("Screenshots")
 }
 
-/// 读取覆盖层需要的截图设置：目录、文件名模板、调色板与外观项。
-fn capture_config(app: &AppHandle) -> (overlay::OverlayOptions, [u32; annotation::PALETTE_LEN]) {
+/// 读取覆盖层需要的截图设置：目录、文件名模板、调色板、外观项与贴图选项。
+fn capture_config(
+    app: &AppHandle,
+) -> (
+    overlay::OverlayOptions,
+    [u32; annotation::PALETTE_LEN],
+    pin::PinOptions,
+    usize,
+) {
     let Some(state) = app.try_state::<crate::AppState>() else {
         let dir = fallback_save_dir();
-        return (overlay::OverlayOptions::defaults(dir), annotation::DEFAULT_PALETTE);
+        return (
+            overlay::OverlayOptions::defaults(dir),
+            annotation::DEFAULT_PALETTE,
+            pin::PinOptions::default(),
+            20,
+        );
     };
     let Ok(registry) = state.registry.lock() else {
         let dir = default_save_dir(&state);
-        return (overlay::OverlayOptions::defaults(dir), annotation::DEFAULT_PALETTE);
+        return (
+            overlay::OverlayOptions::defaults(dir),
+            annotation::DEFAULT_PALETTE,
+            pin::PinOptions::default(),
+            20,
+        );
     };
     // 只拷贝设置值，释放注册表锁后再解析目录（避免持锁做文件 IO）。
     let settings = registry.settings().clone();
+    let pin_hotkey = registry.app_hotkey_text("screenshot_pin");
     drop(registry);
+
+    if let Ok(mut text) = PIN_HOTKEY.lock() {
+        *text = pin_hotkey;
+    }
 
     let manual = resolve_save_dir(&state, &settings.screenshot_manual_save_dir);
     let quick = resolve_save_dir(&state, &settings.screenshot_quick_save_dir);
@@ -110,7 +148,41 @@ fn capture_config(app: &AppHandle) -> (overlay::OverlayOptions, [u32; annotation
         guides_width: settings.screenshot_guides_width.clamp(1, 5) as i32,
         cursor_guide_width: settings.screenshot_cursor_guide_width.clamp(1, 5) as i32,
     };
-    (options, parse_palette(&settings.screenshot_palette))
+    let pin_options = pin::PinOptions {
+        shadow: settings.screenshot_pin_shadow,
+        confirm_close: settings.screenshot_pin_confirm_close,
+        double_click: pin::DoubleClick::parse(&settings.screenshot_pin_double_click),
+        lock: pin::PinLock::parse(&settings.screenshot_pin_lock),
+    };
+    (
+        options,
+        parse_palette(&settings.screenshot_palette),
+        pin_options,
+        settings.screenshot_pin_history.clamp(1, 100) as usize,
+    )
+}
+
+/// 只取贴图相关选项（不抓屏时用）。
+fn pin_config(app: &AppHandle) -> (pin::PinOptions, usize, PathBuf) {
+    let Some(state) = app.try_state::<crate::AppState>() else {
+        return (pin::PinOptions::default(), 20, fallback_save_dir());
+    };
+    let Ok(registry) = state.registry.lock() else {
+        return (pin::PinOptions::default(), 20, default_save_dir(&state));
+    };
+    let settings = registry.settings().clone();
+    drop(registry);
+    let options = pin::PinOptions {
+        shadow: settings.screenshot_pin_shadow,
+        confirm_close: settings.screenshot_pin_confirm_close,
+        double_click: pin::DoubleClick::parse(&settings.screenshot_pin_double_click),
+        lock: pin::PinLock::parse(&settings.screenshot_pin_lock),
+    };
+    (
+        options,
+        settings.screenshot_pin_history.clamp(1, 100) as usize,
+        data_dir(&state),
+    )
 }
 
 /// 由全局热键调用：抓屏 → 原生覆盖层选区 → 复制到剪贴板并保存 PNG。
@@ -139,7 +211,7 @@ pub fn capture_from_hotkey(app: &AppHandle) {
 }
 
 fn run(app: &AppHandle) -> Result<String, String> {
-    let (options, palette) = capture_config(app);
+    let (options, palette, pin_options, pin_history) = capture_config(app);
     annotation::set_palette(palette);
     let quick_dir = options.quick_dir.clone();
     let template = options.file_template.clone();
@@ -153,11 +225,40 @@ fn run(app: &AppHandle) -> Result<String, String> {
         overlay::select(width, height, options).ok_or_else(|| "cancelled".to_owned())?;
     let selection = outcome.selection;
 
-    let png = save::encode_png(&outcome.top_down, selection.width as u32, selection.height as u32)?;
+    let image = Arc::new(pin::PinImage {
+        width: selection.width,
+        height: selection.height,
+        top_down: outcome.top_down,
+        bottom_up: outcome.bottom_up,
+    });
+    // 记住这次截图，这样没有覆盖层时按贴图快捷键也能贴出来。
+    if let Ok(mut last) = LAST_SHOT.lock() {
+        *last = Some(Arc::clone(&image));
+    }
+
+    if outcome.pin {
+        // 贴图不落截图目录，只进贴图历史（保留数量可配）。
+        if let Some(state) = app.try_state::<crate::AppState>() {
+            pin::record_history(&data_dir(&state), &image, pin_history);
+        }
+        let rect = windows_sys::Win32::Foundation::RECT {
+            left: selection.x,
+            top: selection.y,
+            right: selection.x + selection.width,
+            bottom: selection.y + selection.height,
+        };
+        pin::create(Arc::clone(&image), rect, pin_options);
+        return Ok(format!(
+            "screenshot.pinned size={}x{}",
+            selection.width, selection.height
+        ));
+    }
+
+    let png = save::encode_png(&image.top_down, selection.width as u32, selection.height as u32)?;
     clipboard_image::copy_image(
         selection.width,
         selection.height,
-        &outcome.bottom_up,
+        &image.bottom_up,
         Some(&png),
     )?;
     if outcome.copy_only {
@@ -182,13 +283,61 @@ fn run(app: &AppHandle) -> Result<String, String> {
     ))
 }
 
+/// 贴图快捷键：覆盖层打开时钉当前选区，否则钉最近一次截图。
+pub fn pin_from_hotkey(app: &AppHandle) {
+    if overlay::request_pin() {
+        return;
+    }
+    let image = LAST_SHOT.lock().ok().and_then(|last| last.clone());
+    let Some(image) = image else {
+        log(app, "screenshot.pin_skipped reason=no_shot".to_owned());
+        return;
+    };
+    let (options, history, dir) = pin_config(app);
+    let rect = windows_sys::Win32::Foundation::RECT {
+        left: 120,
+        top: 120,
+        right: 120 + image.width,
+        bottom: 120 + image.height,
+    };
+    pin::record_history(&dir, &image, history);
+    pin::create(image, rect, options);
+    log(app, "screenshot.pin_from_last".to_owned());
+}
+
+/// 恢复上次关闭的贴图。
+pub fn restore_pin(app: &AppHandle) {
+    let (options, _, dir) = pin_config(app);
+    let restored = pin::restore_last(&dir, options);
+    log(
+        app,
+        format!("screenshot.pin_restore ok={restored}"),
+    );
+}
+
+/// 关闭所有贴图窗口。
+pub fn close_all_pins() {
+    pin::close_all();
+}
+
+/// 隐藏 / 显示所有贴图窗口。
+pub fn toggle_pins_visible() {
+    pin::toggle_visible();
+}
+
+/// 切换所有贴图窗口的鼠标穿透。
+pub fn toggle_pins_passthrough() {
+    pin::toggle_passthrough();
+}
+
 fn log(app: &AppHandle, message: String) {
     if let Some(state) = app.try_state::<crate::AppState>() {
         crate::push_debug_log(&state, "screenshot", message);
     }
 }
 
-/// 工具被停用时调用：关闭可能仍打开的覆盖层。
+/// 工具被停用时调用：关闭可能仍打开的覆盖层与全部贴图窗口。
 pub fn stop() {
     overlay::abort();
+    pin::stop_all();
 }

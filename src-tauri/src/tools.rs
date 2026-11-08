@@ -25,12 +25,44 @@ struct AppHotkeyDefinition {
     default_hotkey: &'static str,
 }
 
-const APP_HOTKEYS: [AppHotkeyDefinition; 1] = [AppHotkeyDefinition {
-    id: "main_window",
-    name: "呼出主窗口",
-    description: "按下快捷键显示并聚焦主窗口",
-    default_hotkey: "CTRL+ALT+M",
-}];
+const APP_HOTKEYS: [AppHotkeyDefinition; 6] = [
+    AppHotkeyDefinition {
+        id: "main_window",
+        name: "呼出主窗口",
+        description: "按下快捷键显示并聚焦主窗口",
+        default_hotkey: "CTRL+ALT+M",
+    },
+    AppHotkeyDefinition {
+        id: "screenshot_pin",
+        name: "贴图",
+        description: "在截图里钉住当前选区，不在截图时钉住最近一次截图",
+        default_hotkey: "CTRL+ALT+P",
+    },
+    AppHotkeyDefinition {
+        id: "pin_restore",
+        name: "恢复上次关闭的贴图",
+        description: "把上一次关闭的贴图重新贴出来",
+        default_hotkey: "CTRL+ALT+R",
+    },
+    AppHotkeyDefinition {
+        id: "pin_close_all",
+        name: "关闭所有贴图窗口",
+        description: "关闭屏幕上所有贴图",
+        default_hotkey: "CTRL+ALT+X",
+    },
+    AppHotkeyDefinition {
+        id: "pin_toggle_visible",
+        name: "隐藏/显示所有贴图窗口",
+        description: "在隐藏与显示之间切换所有贴图",
+        default_hotkey: "CTRL+ALT+H",
+    },
+    AppHotkeyDefinition {
+        id: "pin_passthrough",
+        name: "鼠标穿透",
+        description: "切换所有贴图窗口的鼠标穿透，默认不占用快捷键",
+        default_hotkey: "",
+    },
+];
 
 const TOOLS: [ToolDefinition; 7] = [
     ToolDefinition {
@@ -191,15 +223,31 @@ impl ToolRegistry {
         if self.shortcuts_suspended {
             return Ok(());
         }
+        // 单个快捷键被别的软件占用时不能让其余快捷键一起失效，逐条注册并记录失败项。
+        let mut failures: Vec<String> = Vec::new();
         for hotkey in APP_HOTKEYS.iter() {
-            let Some(shortcut) = self.shortcut_for(hotkey.id)? else {
-                continue;
+            let shortcut = match self.shortcut_for(hotkey.id) {
+                Ok(Some(shortcut)) => shortcut,
+                Ok(None) => continue,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", hotkey.id));
+                    continue;
+                }
             };
-            app.global_shortcut()
-                .register(shortcut)
-                .map_err(|error| format!("注册软件快捷键失败: {error}"))?;
+            if let Err(error) = app.global_shortcut().register(shortcut) {
+                failures.push(format!("{}: {error}", hotkey.id));
+            }
         }
-        Ok(())
+        if failures.is_empty() {
+            return Ok(());
+        }
+        let message = format!("注册软件快捷键失败: {}", failures.join("; "));
+        if let Some(state) = app.try_state::<AppState>() {
+            push_debug_log(state.inner(), "hotkey", message.clone());
+        } else {
+            eprintln!("[hotkey] {message}");
+        }
+        Err(message)
     }
 
     pub fn set_enabled(

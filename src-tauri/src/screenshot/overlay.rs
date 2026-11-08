@@ -32,6 +32,8 @@ use super::clipboard_image;
 use super::dib::Surface;
 
 static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
+/// 贴图快捷键投递到覆盖层的自定义消息：钉住当前选区。
+const WM_OVERLAY_PIN: u32 = WM_APP + 2;
 
 
 const BORDER: i32 = 2;
@@ -146,6 +148,8 @@ pub struct OverlayOutcome {
     pub saved: bool,
     /// 只复制到剪贴板、不落盘（复制按钮 / Ctrl+C）。
     pub copy_only: bool,
+    /// 贴图：把手上的图钉到屏幕上（贴图按钮 / 贴图快捷键）。
+    pub pin: bool,
     /// 自上而下 BGRA（PNG 编码用）。
     pub top_down: Vec<u8>,
     /// 自下而上 BGRA（CF_DIB 剪贴板用）。
@@ -183,6 +187,8 @@ struct OverlayState {
     delete_mode: bool,
     saved: bool,
     copy_only: bool,
+    /// 贴图按钮 / 贴图快捷键：结果交给 mod.rs 建贴图窗口。
+    pin: bool,
     /// 「保存」按钮弹选择器时的初始目录。
     manual_dir: PathBuf,
     /// `Ctrl+S` 直接写入的目录。
@@ -1644,6 +1650,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                                 state.copy_only = true;
                                                 destroy_now = true;
                                             }
+                                            Action::Pin => {
+                                                state.result = Some(sel);
+                                                state.pin = true;
+                                                destroy_now = true;
+                                            }
                                             Action::Cancel => {
                                                 destroy_now = true;
                                             }
@@ -1992,92 +2003,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                 }
                             }
                         }
+                        // 工具切换、换色、线宽只走工具栏与二级栏点选，不再保留字母/数字单键。
                         Phase::Annotating => match key {
-                            // R 矩形 / O 椭圆 / L 直线 / A 箭头 / B 折线 / P 铅笔
-                            0x52 => {
-                                state.doc.set_tool(Shape::Rect);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x4F => {
-                                state.doc.set_tool(Shape::Ellipse);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x4C => {
-                                state.doc.set_tool(Shape::Line);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x41 => {
-                                state.doc.set_tool(Shape::Arrow);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x42 => {
-                                state.doc.set_tool(Shape::Polyline);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x43 => {
-                                state.doc.set_tool(Shape::Circle);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x48 => {
-                                state.doc.set_tool(Shape::Highlighter);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x54 => {
-                                state.doc.set_tool(Shape::Text);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x4E => {
-                                state.doc.set_tool(Shape::Serial);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x4D => {
-                                state.doc.set_tool(Shape::Mosaic);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x46 => {
-                                state.doc.set_tool(Shape::Blur);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x50 => {
-                                state.doc.set_tool(Shape::Pencil);
-                                state.style_open = true;
-                                state.draft_points.clear();
-                                repaint = true;
-                            }
-                            0x31..=0x34 => {
-                                state.doc.set_color((key - 0x31) as usize);
-                                repaint = true;
-                            }
-                            0xDB => {
-                                state.doc.adjust_width(-1);
-                                repaint = true;
-                            }
-                            0xDD => {
-                                state.doc.adjust_width(1);
-                                repaint = true;
-                            }
                             VK_DELETE => {
                                 state.doc.delete_selected();
                                 repaint = true;
@@ -2319,6 +2246,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             0
         }
+        WM_OVERLAY_PIN => {
+            // 贴图快捷键：覆盖层已经画出选区才有效，否则忽略、不打断当前操作。
+            let ready = STATE.with(|cell| {
+                let mut borrow = cell.borrow_mut();
+                let Some(state) = borrow.as_mut() else {
+                    return false;
+                };
+                if state.phase != Phase::Annotating || state.selection.is_none() {
+                    return false;
+                }
+                state.result = state.selection;
+                state.pin = true;
+                true
+            });
+            if ready {
+                DestroyWindow(hwnd);
+            }
+            0
+        }
         WM_CLOSE => {
             DestroyWindow(hwnd);
             0
@@ -2503,6 +2449,7 @@ pub fn select(width: i32, height: i32, options: OverlayOptions) -> Option<Overla
                     delete_mode: false,
                     saved: false,
                     copy_only: false,
+                    pin: false,
                     manual_dir: options.manual_dir,
                     quick_dir: options.quick_dir,
                     file_template: options.file_template,
@@ -2543,11 +2490,21 @@ pub fn select(width: i32, height: i32, options: OverlayOptions) -> Option<Overla
                 bottom_up,
                 saved: state.saved,
                 copy_only: state.copy_only,
+                pin: state.pin,
             })
         })
         .ok()?;
 
     handle.join().ok().flatten()
+}
+
+/// 贴图快捷键：请覆盖层把当前选区钉出去；没有覆盖层时返回 false。
+pub fn request_pin() -> bool {
+    let hwnd = OVERLAY_HWND.load(Ordering::SeqCst);
+    if hwnd == 0 {
+        return false;
+    }
+    unsafe { PostMessageW(hwnd as HWND, WM_OVERLAY_PIN, 0, 0) != 0 }
 }
 
 /// 立刻关闭覆盖层（工具被停用时调用）。
