@@ -308,6 +308,7 @@ impl OverlayState {
                     &self.picks,
                     self.line_menu_open,
                     self.arrow_menu_open,
+                    toolbar::Mode::Screenshot,
                 );
                 let bounds = layout.bounds();
                 if let Some(union) = union_rect(Some(frame), Some(bounds)) {
@@ -395,6 +396,7 @@ fn band_needs_full_paint(state: &OverlayState, band: (i32, i32, i32, i32)) -> bo
                 &state.picks,
                 state.line_menu_open,
                 state.arrow_menu_open,
+                toolbar::Mode::Screenshot,
             );
             if rect_intersects(band, (layout.x, layout.y, layout.width, layout.height)) {
                 return true;
@@ -1132,6 +1134,7 @@ unsafe fn paint_rect(state: &mut OverlayState, hdc: HDC, dirty: (i32, i32, i32, 
                         &state.picks,
                         state.line_menu_open,
                         state.arrow_menu_open,
+                        toolbar::Mode::Screenshot,
                     );
                     let bar_hit = rect_intersects(
                         band,
@@ -1144,6 +1147,7 @@ unsafe fn paint_rect(state: &mut OverlayState, hdc: HDC, dirty: (i32, i32, i32, 
                         });
                     if bar_hit {
                         let toolbar_state = toolbar::ToolbarState {
+                            mode: toolbar::Mode::Screenshot,
                             selection: sel,
                             screen: (state.width, state.height),
                             cursor: state.cursor,
@@ -1536,6 +1540,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                         &state.picks,
                                         state.line_menu_open,
                                         state.arrow_menu_open,
+                                        toolbar::Mode::Screenshot,
                                     );
                                     let hit = toolbar::hit(&layout, cx, cy);
                                     if state.line_menu_open || state.arrow_menu_open {
@@ -1563,6 +1568,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                             state.arrow_menu_open = false;
                                         }
                                         match action {
+                                            // 贴图标注专用，截图路径不会出现。
+                                            Action::Done => {}
                                             Action::Group(group) => {
                                                 state.delete_mode = false;
                                                 let same = state
@@ -2151,6 +2158,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                 &state.picks,
                                 state.line_menu_open,
                                 state.arrow_menu_open,
+                                toolbar::Mode::Screenshot,
                             );
                             if let Some(styles) = &layout.styles {
                                 for (action, rect) in styles {

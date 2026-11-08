@@ -28,6 +28,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::System::Ole::{OleInitialize, OleUninitialize, DROPEFFECT_COPY};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use super::annotation::{self, Shape};
 use super::dib::Surface;
 
 /// 一张贴图的像素（自顶向下 BGRA）。底部朝上的版本按需生成，不再常驻内存。
@@ -199,6 +200,11 @@ struct PinState {
     shadow_key: (i32, i32, bool, i32),
     /// 超级拖放结束后的短暂时间窗：拖放用 Esc 取消时不要让窗口一起关掉。
     escape_guard: u32,
+    /// 标注模式。
+    annotating: bool,
+    annotations_hidden: bool,
+    doc: annotation::Document,
+    draft: Vec<(i32, i32)>,
 }
 
 /// 贴在贴图窗口正下方的一层分层阴影窗口。
@@ -450,6 +456,10 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
         glow_until: GetTickCount() + GLOW_MS,
         shadow_key: (0, 0, false, -1),
         escape_guard: 0,
+        annotating: false,
+        annotations_hidden: false,
+        doc: annotation::Document::new(),
+        draft: Vec::new(),
     });
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
     if let Ok(mut pins) = PINS.lock() {
@@ -1283,6 +1293,219 @@ unsafe fn ghost_destroy() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 贴图标注：进入标注模式后在贴图上画一层精简工具栏，并支持矩形/箭头。
+// ---------------------------------------------------------------------------
+
+/// 标注工具栏的动作。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PinAction {
+    Tool(Shape),
+    Color(usize),
+    Undo,
+    Done,
+}
+
+const PIN_TB_BUTTON: i32 = 30;
+const PIN_TB_GAP: i32 = 4;
+const PIN_TB_PAD: i32 = 6;
+const PIN_TB_COLORS: usize = 4;
+
+/// 工具栏按钮顺序：矩形、箭头、颜色 ×4、撤销、完成。
+fn pin_toolbar_actions() -> Vec<PinAction> {
+    let mut actions = vec![PinAction::Tool(Shape::Rect), PinAction::Tool(Shape::Arrow)];
+    for index in 0..PIN_TB_COLORS {
+        actions.push(PinAction::Color(index));
+    }
+    actions.push(PinAction::Undo);
+    actions.push(PinAction::Done);
+    actions
+}
+
+/// 工具栏矩形（客户区坐标）：贴在左上角内侧 8px。
+fn pin_toolbar_rect(state: &PinState) -> RECT {
+    let count = pin_toolbar_actions().len() as i32;
+    let width = PIN_TB_PAD * 2 + count * PIN_TB_BUTTON + (count - 1) * PIN_TB_GAP;
+    let height = PIN_TB_PAD * 2 + PIN_TB_BUTTON;
+    RECT {
+        left: 8,
+        top: 8,
+        right: 8 + width,
+        bottom: 8 + height,
+    }
+}
+
+/// 命中工具栏按钮。
+fn pin_toolbar_hit(state: &PinState, x: i32, y: i32) -> Option<PinAction> {
+    let rect = pin_toolbar_rect(state);
+    if x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom {
+        return None;
+    }
+    let actions = pin_toolbar_actions();
+    let mut left = rect.left + PIN_TB_PAD;
+    for action in actions {
+        let right = left + PIN_TB_BUTTON;
+        if x >= left && x < right {
+            return Some(action);
+        }
+        left = right + PIN_TB_GAP;
+    }
+    None
+}
+
+/// 画标注工具栏（叠在贴图内容上层）。
+unsafe fn draw_pin_toolbar(dc: HDC, state: &PinState) {
+    let rect = pin_toolbar_rect(state);
+    let brush = CreateSolidBrush(0x00FF_FFFF);
+    let pen = CreatePen(PS_SOLID, 1, 0x00C8_C8C8);
+    let old_brush = SelectObject(dc, brush);
+    let old_pen = SelectObject(dc, pen);
+    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, 8, 8);
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_brush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+
+    let palette = annotation::palette();
+    let mut left = rect.left + PIN_TB_PAD;
+    let top = rect.top + PIN_TB_PAD;
+    for action in pin_toolbar_actions() {
+        let button = RECT {
+            left,
+            top,
+            right: left + PIN_TB_BUTTON,
+            bottom: top + PIN_TB_BUTTON,
+        };
+        let active = match action {
+            PinAction::Tool(shape) => state.doc.tool() == Some(shape),
+            PinAction::Color(index) => state.doc.color_index() == index,
+            _ => false,
+        };
+        if active {
+            let bg = CreateSolidBrush(0x00FF_E6_B8);
+            let old = SelectObject(dc, bg);
+            RoundRect(dc, button.left, button.top, button.right, button.bottom, 6, 6);
+            SelectObject(dc, old);
+            DeleteObject(bg);
+        }
+        let cx = (button.left + button.right) / 2;
+        let cy = (button.top + button.bottom) / 2;
+        match action {
+            PinAction::Tool(Shape::Rect) => {
+                let pen = CreatePen(PS_SOLID, 2, 0x0020_2020);
+                let old_pen = SelectObject(dc, pen);
+                let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+                Rectangle(dc, cx - 8, cy - 6, cx + 8, cy + 6);
+                SelectObject(dc, old_brush);
+                SelectObject(dc, old_pen);
+                DeleteObject(pen);
+            }
+            PinAction::Tool(_) => {
+                let pen = CreatePen(PS_SOLID, 2, 0x0020_2020);
+                let old_pen = SelectObject(dc, pen);
+                MoveToEx(dc, cx - 8, cy + 6, std::ptr::null_mut());
+                LineTo(dc, cx + 6, cy - 6);
+                MoveToEx(dc, cx + 6, cy - 6, std::ptr::null_mut());
+                LineTo(dc, cx + 1, cy - 5);
+                MoveToEx(dc, cx + 6, cy - 6, std::ptr::null_mut());
+                LineTo(dc, cx + 5, cy - 1);
+                SelectObject(dc, old_pen);
+                DeleteObject(pen);
+            }
+            PinAction::Color(index) => {
+                let color = palette[index.min(palette.len() - 1)];
+                let swatch = CreateSolidBrush(color);
+                let old = SelectObject(dc, swatch);
+                RoundRect(dc, cx - 9, cy - 9, cx + 9, cy + 9, 4, 4);
+                SelectObject(dc, old);
+                DeleteObject(swatch);
+            }
+            PinAction::Undo => {
+                let pen = CreatePen(PS_SOLID, 2, 0x0020_2020);
+                let old_pen = SelectObject(dc, pen);
+                let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+                Arc(dc, cx - 9, cy - 8, cx + 9, cy + 8, cx + 9, cy - 8, cx - 9, cy + 2);
+                SelectObject(dc, old_brush);
+                SelectObject(dc, old_pen);
+                DeleteObject(pen);
+            }
+            PinAction::Done => {
+                let pen = CreatePen(PS_SOLID, 3, 0x0020_8020);
+                let old_pen = SelectObject(dc, pen);
+                MoveToEx(dc, cx - 8, cy, std::ptr::null_mut());
+                LineTo(dc, cx - 2, cy + 6);
+                LineTo(dc, cx + 9, cy - 7);
+                SelectObject(dc, old_pen);
+                DeleteObject(pen);
+            }
+        }
+        left += PIN_TB_BUTTON + PIN_TB_GAP;
+    }
+}
+
+/// 标注叠加后的合成图：把标注画进图像分辨率的一份副本，再整体缩放上屏。
+unsafe fn paint_composite(hwnd: HWND, dc: HDC, state: &PinState) {
+    let width = state.surface.width;
+    let height = state.surface.height;
+    let Some(mut composite) = super::dib::Surface::new(width, height) else {
+        return;
+    };
+    BitBlt(
+        composite.dc(),
+        0,
+        0,
+        width,
+        height,
+        state.surface.dc(),
+        0,
+        0,
+        SRCCOPY,
+    );
+    let draft = if state.draft.len() >= 2 {
+        annotation::build_draft(
+            state.doc.tool().unwrap_or(Shape::Rect),
+            &state.draft[..1],
+            state.draft.last().copied(),
+            (0, 0),
+            state.doc.color(),
+            state.doc.width(),
+            state.doc.fill(),
+            state.doc.line_style(true),
+            state.doc.arrow_style(),
+            state.doc.strength(false),
+            state.doc.opacity(),
+        )
+    } else {
+        None
+    };
+    if !state.annotations_hidden {
+        annotation::draw(
+            &mut composite,
+            &state.doc.items,
+            state.doc.selected,
+            0,
+            0,
+            draft.as_ref(),
+        );
+    }
+    let mut client: RECT = std::mem::zeroed();
+    GetClientRect(hwnd, &mut client);
+    SetStretchBltMode(dc, HALFTONE);
+    StretchBlt(
+        dc,
+        0,
+        0,
+        client.right,
+        client.bottom,
+        composite.dc(),
+        0,
+        0,
+        width,
+        height,
+        SRCCOPY,
+    );
+}
+
 /// 拖放源：系统用它判断「继续拖 / 放下 / 取消」，并让 OLE 绘制拖拽图像。
 #[windows::core::implement(windows::Win32::System::Ole::IDropSource)]
 struct PinDropSource;
@@ -1474,22 +1697,31 @@ unsafe fn apply_zoom(hwnd: HWND, state: &mut PinState, delta: i32) {
 unsafe fn paint(hwnd: HWND, state: &PinState) {
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
     let dc = BeginPaint(hwnd, &mut ps);
-    let mut client: RECT = std::mem::zeroed();
-    GetClientRect(hwnd, &mut client);
-    SetStretchBltMode(dc, HALFTONE);
-    StretchBlt(
-        dc,
-        0,
-        0,
-        client.right,
-        client.bottom,
-        state.surface.dc(),
-        0,
-        0,
-        state.surface.width,
-        state.surface.height,
-        SRCCOPY,
-    );
+    let has_annotations = state.annotating || (!state.doc.items.is_empty() && !state.annotations_hidden);
+    if has_annotations {
+        // 标注画在图像分辨率上，再整体缩放上屏。
+        paint_composite(hwnd, dc, state);
+    } else {
+        let mut client: RECT = std::mem::zeroed();
+        GetClientRect(hwnd, &mut client);
+        SetStretchBltMode(dc, HALFTONE);
+        StretchBlt(
+            dc,
+            0,
+            0,
+            client.right,
+            client.bottom,
+            state.surface.dc(),
+            0,
+            0,
+            state.surface.width,
+            state.surface.height,
+            SRCCOPY,
+        );
+    }
+    if state.annotating {
+        draw_pin_toolbar(dc, state);
+    }
     if GetTickCount() < state.zoom_until {
         // 缩放提示：半透明黑底 + 1px 白框 + 白字，格式「缩放：150%」。
         let text = format!("缩放：{:.0}%", state.zoom * 100.0);
@@ -2043,6 +2275,18 @@ unsafe fn handle_menu(hwnd: HWND, state: &mut PinState, command: usize) {
         }
         MENU_COPY_IMAGE => copy_to_clipboard(state),
         MENU_SAVE_AS => save_as(hwnd, state),
+        MENU_ANNOTATE => {
+            state.annotating = !state.annotating;
+            state.draft.clear();
+            if !state.annotating {
+                state.doc.clear_tool();
+            }
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+        }
+        MENU_HIDE_ANNOTATION => {
+            state.annotations_hidden = !state.annotations_hidden;
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+        }
         MENU_SHADOW => {
             state.shadow_enabled = !state.shadow_enabled;
             state.shadow_key = (0, 0, false, -1);
@@ -2079,6 +2323,35 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_LBUTTONDOWN => {
             if let Some(state) = state_of(hwnd) {
+                if (*state).annotating {
+                    let x = (lp & 0xFFFF) as i16 as i32;
+                    let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
+                    if let Some(action) = pin_toolbar_hit(&*state, x, y) {
+                        match action {
+                            PinAction::Tool(shape) => (*state).doc.toggle_tool(shape),
+                            PinAction::Color(index) => (*state).doc.set_color(index),
+                            PinAction::Undo => {
+                                (*state).doc.undo();
+                            }
+                            PinAction::Done => {
+                                (*state).annotating = false;
+                                (*state).doc.clear_tool();
+                                (*state).draft.clear();
+                            }
+                        }
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
+                    }
+                    let zoom = (*state).zoom.max(0.01);
+                    let point = (
+                        ((lp & 0xFFFF) as i16 as i32 as f32 / zoom) as i32,
+                        (((lp >> 16) & 0xFFFF) as i16 as i32 as f32 / zoom) as i32,
+                    );
+                    (*state).draft = vec![point];
+                    dbg_log(&format!("annot.down point={point:?}"));
+                    SetCapture(hwnd);
+                    return 0;
+                }
                 if GetKeyState(VK_CONTROL as i32) < 0 {
                     // Ctrl + 拖动 = 超级拖放：把这张图当文件拖给其它程序，窗口本身不动。
                     super_drag(hwnd, &*state);
@@ -2092,7 +2365,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_MOUSEMOVE => {
             if let Some(state) = state_of(hwnd) {
-                if (*state).drag.is_some() {
+                if !(*state).draft.is_empty() {
+                    let zoom = (*state).zoom.max(0.01);
+                    let point = (
+                        ((lp & 0xFFFF) as i16 as i32 as f32 / zoom) as i32,
+                        (((lp >> 16) & 0xFFFF) as i16 as i32 as f32 / zoom) as i32,
+                    );
+                    if (*state).draft.len() == 1 {
+                        (*state).draft.push(point);
+                    } else if let Some(last) = (*state).draft.last_mut() {
+                        *last = point;
+                    }
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                } else if (*state).drag.is_some() {
                     update_drag(hwnd, &mut *state);
                 }
             }
@@ -2100,6 +2385,33 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_LBUTTONUP => {
             if let Some(state) = state_of(hwnd) {
+                let state_ref = &mut *state;
+                if !state_ref.draft.is_empty() {
+                    if state_ref.draft.len() >= 2 {
+                        let tool = state_ref.doc.tool().unwrap_or(Shape::Rect);
+                        let start = state_ref.draft[0];
+                        let end = *state_ref.draft.last().unwrap();
+                        let draft_points = [start];
+                        if let Some(item) = annotation::build_draft(
+                            tool,
+                            &draft_points,
+                            Some(end),
+                            (0, 0),
+                            state_ref.doc.color(),
+                            state_ref.doc.width(),
+                            state_ref.doc.fill(),
+                            state_ref.doc.line_style(true),
+                            state_ref.doc.arrow_style(),
+                            state_ref.doc.strength(false),
+                            state_ref.doc.opacity(),
+                        ) {
+                            state_ref.doc.push(item);
+                            dbg_log(&format!("annot.push items={}", state_ref.doc.items.len()));
+                        }
+                    }
+                    state_ref.draft.clear();
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                }
                 (*state).drag = None;
             }
             ReleaseCapture();

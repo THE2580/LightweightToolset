@@ -83,6 +83,8 @@ pub enum Action {
     Save,
     Copy,
     Pin,
+    /// 贴图标注模式的「完成」：结束标注并退出标注模式。
+    Done,
     Cancel,
 }
 
@@ -132,6 +134,13 @@ impl Layout {
 }
 
 /// 主栏 + 二级样式栏 + 分组展开面板。
+/// 工具栏用途：截图覆盖层用完整尾巴，贴图标注只保留「完成」。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Screenshot,
+    Pin,
+}
+
 pub fn layout(
     sel: Selection,
     screen: (i32, i32),
@@ -140,9 +149,15 @@ pub fn layout(
     picks: &Picks,
     line_menu_open: bool,
     arrow_menu_open: bool,
+    mode: Mode,
 ) -> Layout {
     let button = TB_BTN;
-    let content = 14 * (button + GAP) + 2 * DIVIDER - GAP;
+    // 3 组 + 4 个单工具 + 删除 + 撤销/重做 + 尾巴（截图 4 个 / 贴图只有完成）。
+    let tail = match mode {
+        Mode::Screenshot => 4,
+        Mode::Pin => 1,
+    };
+    let content = (3 + 4 + 1 + 2 + tail) * (button + GAP) + 2 * DIVIDER - GAP;
     let width = content + PAD * 2;
     let height = button;
 
@@ -190,10 +205,15 @@ pub fn layout(
     push(Action::Undo, button, &mut bx);
     push(Action::Redo, button, &mut bx);
     sep(&mut bx, &mut separators);
-    push(Action::Cancel, button, &mut bx);
-    push(Action::Save, button, &mut bx);
-    push(Action::Copy, button, &mut bx);
-    push(Action::Pin, button, &mut bx);
+    match mode {
+        Mode::Screenshot => {
+            push(Action::Cancel, button, &mut bx);
+            push(Action::Save, button, &mut bx);
+            push(Action::Copy, button, &mut bx);
+            push(Action::Pin, button, &mut bx);
+        }
+        Mode::Pin => push(Action::Done, button, &mut bx),
+    }
 
     let mut layout = Layout {
         x,
@@ -395,6 +415,7 @@ pub fn tooltip(action: Action) -> String {
         Action::Save => "保存到目录…".to_owned(),
         Action::Copy => "复制并完成 (Ctrl+C)".to_owned(),
         Action::Pin => format!("贴图 ({})", crate::screenshot::pin_hotkey_text()),
+        Action::Done => "完成标注 (Esc)".to_owned(),
         Action::Cancel => "取消 (Esc)".to_owned(),
     }
 }
@@ -789,6 +810,10 @@ fn action_icon(hdc: HDC, action: Action, rect: RECT, color: u32) {
                 DeleteObject(brush);
             }
         }
+        Action::Done => {
+            line(hdc, cx - 8, cy, cx - 2, cy + 6, 3, color);
+            line(hdc, cx - 2, cy + 6, cx + 9, cy - 7, 3, color);
+        }
         Action::Cancel => {
             line(hdc, cx - 8, cy - 8, cx + 8, cy + 8, 3, color);
             line(hdc, cx + 8, cy - 8, cx - 8, cy + 8, 3, color);
@@ -798,6 +823,7 @@ fn action_icon(hdc: HDC, action: Action, rect: RECT, color: u32) {
 }
 
 pub struct ToolbarState {
+    pub mode: Mode,
     pub selection: Selection,
     pub screen: (i32, i32),
     pub cursor: Option<(i32, i32)>,
@@ -828,6 +854,7 @@ pub unsafe fn draw(hdc: HDC, state: &ToolbarState) {
         &state.picks,
         state.line_menu_open,
         state.arrow_menu_open,
+        state.mode,
     );
 
     let bg = RECT {
