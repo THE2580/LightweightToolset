@@ -84,6 +84,8 @@
        必须接收（否则 `InitializeFromBitmap` 返回 `E_NOTIMPL`），拖放结束后 `GlobalFree` 掉那块 HGLOBAL。
      - 依赖：`windows` 增加 `Win32_Graphics_Gdi`，新增 `windows-core`（`implement` 宏展开需要 `windows_core` 在依赖里）。
      - 实测：`drag_image_ok` + `hr=0x00040100 effect=0x1`，无崩溃。
+   - **拖放事故与回退（2026-11-08，提交 `8c97d46`）**：`778e0a4` 把拖拽图像交回系统 `IDragSourceHelper` 后，用户拖放时崩溃并连带结束接收方（DSH）进程；已回退到 `96655a6`/`0c221a9` 的“自绘 ghost 跟随窗口、不启用 helper”版本。**拖放暂时保留该版本（能拖、无缩略图）**，根因排查记入待办（见 `bugs.md` 事故条目）。
+   - **REA 取证：PixPin 拖放实现（2026-11-08）**：PixPin.exe 自己不拖放；实现在 `platforms/qwindows.dll`（Qt 平台插件），导入 ole32 `DoDragDrop`/`OleInitialize`/`RegisterDragDrop`/`ReleaseStgMedium` 等，即标准 OLE 拖放 + `IDragSourceHelper`。实测我们的数据对象在整个拖动中从未被问 `DragImageBits`（只问 CF_HDROP），说明缩略图由目标端绘制，机制相同也不保证浏览器显示。
    - **待办（用户已确认推迟）**：
      - **贴图标注**：右键「标注」进入标注模式，出现只含贴图相关项的标注工具栏（参照截图工具栏样式），工具栏跟随贴图窗口移动，最右端对勾按钮结束标注退出；「隐藏标注」同步实现。
      - **贴图文本选择**：右键「选择所有文本」「文本可选择」两项（含 OCR 文本）。

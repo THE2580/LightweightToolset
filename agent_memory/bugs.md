@@ -91,3 +91,19 @@
   的跟随窗口，`IDropSource::GiveFeedback` 里按光标位置移动它，拖放结束销毁。
 - 同时把 `SHDoDragDrop` 换成自实现 `IDropSource` + `DoDragDrop`，控制 `QueryContinueDrag`
   （Esc 取消 / 松开左键放下）。
+
+## 事故：贴图超级拖放时崩溃，连带接收方（DSH）进程结束（2026-11-08）
+
+- 版本：`778e0a4`（把拖拽图像重新交给系统 `IDragSourceHelper` 的那一版）。
+- 现象：用户从贴图按住 Ctrl 拖出，还没看清落点就崩；报错不止我们，连目标程序（DSH）也被结束。
+- 对照：上一版 `96655a6`/`0c221a9`（自绘 ghost 跟随窗口、**不启用** helper）能正常拖放，只是看不见缩略图。
+- 处置：`8c97d46` 回退 `778e0a4`，回到 ghost 版；**拖放暂时保留这一版**（可拖、无缩略图）。
+- 首要嫌疑（未验证）：`IDragSourceHelper` 写回的 `DragImageBits` HGLOBAL 生命周期——我们在拖放结束 `GlobalFree`，若目标也释放同一块即双重释放；其次是 `CF_DIB` 内容的兼容性。
+- 待办（下一轮排查，必须带证据）：① 查 Windows 事件日志两侧的崩溃模块与异常码（我方 + DSH）；② 若重现，先用“只给 CF_HDROP、不给 CF_DIB”和“只给 CF_DIB”两组隔离；③ 拖拽图像 HGLOBAL 改为不再由我们释放（交给 OLE 的 `ReleaseStgMedium` 语义）。
+
+## REA 结论：PixPin 的拖放实现（2026-11-08）
+
+- `D:\PixPin\PixPin.exe`（SHA-256 `d2bbbb72…1abf`）**自己不做拖放**：ole32 仅导入 `CoInitializeEx/CoInitialize/CoUninitialize/CoCreateInstance/CreateStreamOnHGlobal/GetHGlobalFromStream`，无 `DoDragDrop`，无 `RegisterDragDrop`。
+- 真正的拖放在 `D:\PixPin\platforms\qwindows.dll`（SHA-256 `3333ba24…2b85`，1.4 MB，Qt 平台插件）：ole32 导入完整——`DoDragDrop`、`OleInitialize/OleUninitialize`、`RegisterDragDrop/RevokeDragDrop`、`ReleaseStgMedium`、`OleSetClipboard/OleGetClipboard/OleFlushClipboard/OleIsCurrentClipboard`、`CoLockObjectExternal`、`CoCreateGuid`；Shell32 侧有 `SHCreateItemFromParsingName`/`SHCreateItemFromIDList`。
+- 即：PixPin 走的是标准 OLE 拖放（Qt 的 `IDataObject` + `IDropSource` + `DoDragDrop`，拖拽图像由 `CoCreateInstance(CLSID_DragDropHelper)` → `IDragSourceHelper::InitializeFromBitmap`），**不是**自绘跟随窗口。
+- 重要推论：拖拽缩略图由**目标端**绘制（`IDropTargetHelper` 去取 `DragImageBits`）。实测我们的数据对象在整次拖动中只被问过 `EnumFormatEtc(GET)`、`QueryGetData(CF_HDROP)`、`GetData(CF_HDROP)`，**从未被问 `DragImageBits`**——所以把图像交给 helper 也不能保证浏览器类目标显示，这解释了“机制相同但没有缩略图”。
