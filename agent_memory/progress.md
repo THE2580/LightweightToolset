@@ -64,7 +64,7 @@
      - 阴影改 PixPin 同款三态：独立分层窗口 `LightweightToolsetPinShadowFrame`（`UpdateLayeredWindow` + 预乘 BGRA），出现时淡蓝泛光（`GLOW_MS=520`，40ms 一帧渐隐）、焦点淡蓝、失焦灰色；窗口类不再用 `CS_DROPSHADOW`；阴影随拖动/缩放/隐藏/关闭同步。
      - 右键菜单（`WM_COMMAND` 派发）：选择所有文本（灰）、文本可选择（灰）、图像处理 ▸ 向左旋转/向右旋转/水平翻转/垂直翻转/重置所有处理、复制图像、图像另存为…（`GetSaveFileNameW`）、标注（灰）、隐藏标注（灰）、窗口阴影（勾选）、锁定（勾选）、关闭；右键不再直接关窗。
      - 旋转/翻转后窗口左上角不动、宽高互换；「重置所有处理」回到 `PinState.original`。
-   - **右键菜单紧凑版（2026-11-08，提交 `7fc6049`）**：菜单改为 owner-draw（`WM_MEASUREITEM`/`WM_DRAWITEM`），勾选列 14、左内边距 3、右内边距 4、箭头列 9，整体左右留白明显收紧；字体固定 `Microsoft YaHei UI` 12px 并按 DPI 缩放（原先落到 stock 字体，中文回退成宋体）；置灰项改用 `MF_DISABLED`（owner-draw 下 `MF_GRAYED` 仍会被高亮）；分隔线也是 owner-draw 的不可点项（id 0）。条目数据由 `MenuStore` 持有到 `DestroyMenu` 之后。
+   - **右键菜单紧凑版（2026-11-08，提交 `7fc6049`）**：菜单改为 owner-draw（`WM_MEASUREITEM`/`WM_DRAWITEM`），勾选列 14、左内边距 3、右内边距 4、箭头列 9，整体左右留白明显收紧；字体固定 `Microsoft YaHei UI` 12px 并按 DPI 缩放（原先落到 stock 字体，中文回退成宋体）；置灰项改用 `MF_DISABLED`（owner-draw 下 `MF_GRAYED` 仍会被高亮）；分隔线也是 owner-draw 的不可点项（id 0）。条目数据由 `MenuStore` 持有到 `DestroyMenu` 之后。子菜单箭头**不要自绘**——owner-draw 的弹出项系统仍会画箭头，自绘会变成两个箭头（`394291c` 修）。
    - **待办（用户已确认推迟）**：
      - **贴图标注**：右键「标注」进入标注模式，出现只含贴图相关项的标注工具栏（参照截图工具栏样式），工具栏跟随贴图窗口移动，最右端对勾按钮结束标注退出；「隐藏标注」同步实现。
      - **贴图文本选择**：右键「选择所有文本」「文本可选择」两项（含 OCR 文本）。
