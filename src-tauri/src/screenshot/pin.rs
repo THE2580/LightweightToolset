@@ -1149,34 +1149,8 @@ unsafe fn draw_menu_item(_hwnd: HWND, lparam: LPARAM) -> LRESULT {
         &mut text_rect,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
     );
-    if entry.submenu {
-        let right = draw.rcItem.right - (MENU_RIGHT_PAD as f32 * scale) as i32;
-        let center = (draw.rcItem.top + draw.rcItem.bottom) / 2;
-        let size = ((MENU_ARROW_W as f32 * 0.55) as i32).max(3);
-        let points = [
-            POINT {
-                x: right - size,
-                y: center - size,
-            },
-            POINT {
-                x: right,
-                y: center,
-            },
-            POINT {
-                x: right - size,
-                y: center + size,
-            },
-        ];
-        let brush = CreateSolidBrush(color);
-        let pen = CreatePen(PS_SOLID, 1, color);
-        let old_brush = SelectObject(draw.hDC, brush);
-        let old_pen = SelectObject(draw.hDC, pen);
-        Polygon(draw.hDC, points.as_ptr(), points.len() as i32);
-        SelectObject(draw.hDC, old_pen);
-        SelectObject(draw.hDC, old_brush);
-        DeleteObject(pen);
-        DeleteObject(brush);
-    }
+    // 子菜单箭头由系统绘制（owner-draw 的弹出项系统仍会画），这里不能再自己画，
+    // 否则会出现两个箭头；宽度只在 measure 里预留。
     SelectObject(draw.hDC, old_font);
     1
 }
