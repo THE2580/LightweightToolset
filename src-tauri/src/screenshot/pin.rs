@@ -9,6 +9,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+use std::ffi::c_void;
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -19,6 +20,8 @@ use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Controls::Dialogs::{
     GetSaveFileNameW, OFN_EXPLORER, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
+use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED};
+use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -912,16 +915,282 @@ unsafe fn install_image(hwnd: HWND, state: &mut PinState, next: PinImage) {
     shadow_sync(hwnd, state);
 }
 
-unsafe fn append_item(menu: HMENU, id: usize, text: &str, grayed: bool, checked: bool) {
-    let mut flags = MF_STRING;
+/// 右键菜单的一个条目。菜单项用 owner-draw，左右留白按这里的小尺寸走，
+/// 系统原生菜单的勾选列与箭头列太宽（用户要求收紧）。
+struct MenuEntry {
+    text: Vec<u16>,
+    checked: bool,
+    grayed: bool,
+    submenu: bool,
+    separator: bool,
+}
+
+impl MenuEntry {
+    fn item(text: &str, grayed: bool, checked: bool) -> Box<Self> {
+        Box::new(Self {
+            text: text.encode_utf16().collect(),
+            checked,
+            grayed,
+            submenu: false,
+            separator: false,
+        })
+    }
+
+    fn popup(text: &str) -> Box<Self> {
+        Box::new(Self {
+            text: text.encode_utf16().collect(),
+            checked: false,
+            grayed: false,
+            submenu: true,
+            separator: false,
+        })
+    }
+
+    fn separator() -> Box<Self> {
+        Box::new(Self {
+            text: Vec::new(),
+            checked: false,
+            grayed: false,
+            submenu: false,
+            separator: true,
+        })
+    }
+}
+
+// 紧凑版式参数（逻辑像素，随 DPI 缩放见 `menu_scale`）。
+const MENU_CHECK_W: i32 = 14;
+const MENU_LEFT_PAD: i32 = 3;
+const MENU_RIGHT_PAD: i32 = 4;
+const MENU_ARROW_W: i32 = 9;
+const MENU_ROW_PAD: i32 = 4;
+
+/// 菜单字体：优先用系统菜单字体，取不到就退回默认 GUI 字体。
+fn menu_font() -> HFONT {
+    static FONT: OnceLock<usize> = OnceLock::new();
+    *FONT.get_or_init(|| unsafe {
+        let scale = menu_scale();
+        let height = -((12.0 * scale).round() as i32);
+        let face = widen("Microsoft YaHei UI");
+        let font = CreateFontW(
+            height,
+            0,
+            0,
+            0,
+            FW_NORMAL as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET as u32,
+            OUT_DEFAULT_PRECIS as u32,
+            CLIP_DEFAULT_PRECIS as u32,
+            CLEARTYPE_QUALITY as u32,
+            (DEFAULT_PITCH | FF_DONTCARE) as u32,
+            face.as_ptr(),
+        );
+        if !font.is_null() {
+            return font as usize;
+        }
+        // 字体建不出来时退回系统菜单字体，至少保证可读。
+        let mut metrics: NONCLIENTMETRICSW = std::mem::zeroed();
+        metrics.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
+        if SystemParametersInfoW(
+            SPI_GETNONCLIENTMETRICS,
+            metrics.cbSize,
+            &mut metrics as *mut _ as *mut c_void,
+            0,
+        ) != 0
+        {
+            let fallback = CreateFontIndirectW(&metrics.lfMenuFont);
+            if !fallback.is_null() {
+                return fallback as usize;
+            }
+        }
+        GetStockObject(DEFAULT_GUI_FONT) as usize
+    }) as HFONT
+}
+
+/// 每个菜单项的数据指针在菜单销毁前必须有效，这里持有 Box。
+struct MenuStore(Vec<*mut MenuEntry>);
+
+impl MenuStore {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    fn keep(&mut self, entry: Box<MenuEntry>) -> *const u16 {
+        let raw = Box::into_raw(entry);
+        self.0.push(raw);
+        raw as *const u16
+    }
+}
+
+impl Drop for MenuStore {
+    fn drop(&mut self) {
+        for raw in self.0.drain(..) {
+            // 菜单已销毁，条目数据可以释放。
+            drop(unsafe { Box::from_raw(raw) });
+        }
+    }
+}
+
+unsafe fn append_entry(
+    store: &mut MenuStore,
+    menu: HMENU,
+    id: usize,
+    entry: Box<MenuEntry>,
+) {
+    let grayed = entry.grayed;
+    let submenu = entry.submenu;
+    let separator = entry.separator;
+    let data = store.keep(entry);
+    let mut flags = MF_OWNERDRAW;
     if grayed {
-        flags |= MF_GRAYED;
+        // owner-draw 下 MF_GRAYED 仍会被高亮选中，用 MF_DISABLED 才真正不可点。
+        flags |= MF_DISABLED;
     }
-    if checked {
-        flags |= MF_CHECKED;
+    if submenu {
+        flags |= MF_POPUP;
     }
-    let wide = widen(text);
-    AppendMenuW(menu, flags, id, wide.as_ptr());
+    if separator {
+        flags = MF_OWNERDRAW | MF_DISABLED;
+    }
+    AppendMenuW(menu, flags, id, data);
+}
+
+/// 菜单项尺寸：文字宽 + 固定的小内边距，勾选列与箭头列都按窄口径。
+unsafe fn measure_menu_item(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    let measure = &mut *(lparam as *mut MEASUREITEMSTRUCT);
+    let entry = &*(measure.itemData as *const MenuEntry);
+    if entry.separator {
+        measure.itemWidth = 1;
+        measure.itemHeight = (9.0 * menu_scale()) as u32;
+        return 1;
+    }
+    let scale = menu_scale();
+    let dc = GetDC(hwnd);
+    if dc.is_null() {
+        return 1;
+    }
+    let font = menu_font();
+    let old = SelectObject(dc, font);
+    let mut size: SIZE = std::mem::zeroed();
+    GetTextExtentPoint32W(dc, entry.text.as_ptr(), entry.text.len() as i32, &mut size);
+    SelectObject(dc, old);
+    ReleaseDC(hwnd, dc);
+    let arrow = if entry.submenu { MENU_ARROW_W } else { 0 };
+    measure.itemWidth = ((((MENU_LEFT_PAD + MENU_CHECK_W + MENU_RIGHT_PAD + arrow) as f32
+        * scale) as i32)
+        + size.cx) as u32;
+    measure.itemHeight = (size.cy as f32 + (MENU_ROW_PAD * 2) as f32 * scale) as u32;
+    1
+}
+
+unsafe fn draw_menu_item(_hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    let draw = &mut *(lparam as *mut DRAWITEMSTRUCT);
+    let entry = &*(draw.itemData as *const MenuEntry);
+    let selected = draw.itemState & ODS_SELECTED != 0;
+    let scale = menu_scale();
+    if entry.separator {
+        let brush = GetSysColorBrush(COLOR_3DSHADOW);
+        let rect = RECT {
+            left: draw.rcItem.left + (4.0 * scale) as i32,
+            top: (draw.rcItem.top + draw.rcItem.bottom) / 2,
+            right: draw.rcItem.right - (4.0 * scale) as i32,
+            bottom: (draw.rcItem.top + draw.rcItem.bottom) / 2 + 1,
+        };
+        FillRect(draw.hDC, &rect, brush);
+        return 1;
+    }
+    let background = if selected {
+        GetSysColorBrush(COLOR_HIGHLIGHT)
+    } else {
+        GetSysColorBrush(COLOR_MENU)
+    };
+    FillRect(draw.hDC, &draw.rcItem, background);
+    let font = menu_font();
+    let old_font = SelectObject(draw.hDC, font);
+    SetBkMode(draw.hDC, TRANSPARENT as i32);
+    let color = if entry.grayed {
+        GetSysColor(COLOR_GRAYTEXT)
+    } else if selected {
+        GetSysColor(COLOR_HIGHLIGHTTEXT)
+    } else {
+        GetSysColor(COLOR_MENUTEXT)
+    };
+    SetTextColor(draw.hDC, color);
+    if entry.checked {
+        let tick = widen("✓");
+        let mut rect = RECT {
+            left: draw.rcItem.left + (MENU_LEFT_PAD as f32 * scale) as i32,
+            top: draw.rcItem.top,
+            right: draw.rcItem.left
+                + ((MENU_LEFT_PAD + MENU_CHECK_W) as f32 * scale) as i32,
+            bottom: draw.rcItem.bottom,
+        };
+        DrawTextW(
+            draw.hDC,
+            tick.as_ptr(),
+            tick.len() as i32 - 1,
+            &mut rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+        );
+    }
+    let mut text_rect = RECT {
+        left: draw.rcItem.left
+            + ((MENU_LEFT_PAD + MENU_CHECK_W) as f32 * scale) as i32,
+        top: draw.rcItem.top,
+        right: draw.rcItem.right - (MENU_RIGHT_PAD as f32 * scale) as i32,
+        bottom: draw.rcItem.bottom,
+    };
+    DrawTextW(
+        draw.hDC,
+        entry.text.as_ptr(),
+        entry.text.len() as i32,
+        &mut text_rect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+    );
+    if entry.submenu {
+        let right = draw.rcItem.right - (MENU_RIGHT_PAD as f32 * scale) as i32;
+        let center = (draw.rcItem.top + draw.rcItem.bottom) / 2;
+        let size = ((MENU_ARROW_W as f32 * 0.55) as i32).max(3);
+        let points = [
+            POINT {
+                x: right - size,
+                y: center - size,
+            },
+            POINT {
+                x: right,
+                y: center,
+            },
+            POINT {
+                x: right - size,
+                y: center + size,
+            },
+        ];
+        let brush = CreateSolidBrush(color);
+        let pen = CreatePen(PS_SOLID, 1, color);
+        let old_brush = SelectObject(draw.hDC, brush);
+        let old_pen = SelectObject(draw.hDC, pen);
+        Polygon(draw.hDC, points.as_ptr(), points.len() as i32);
+        SelectObject(draw.hDC, old_pen);
+        SelectObject(draw.hDC, old_brush);
+        DeleteObject(pen);
+        DeleteObject(brush);
+    }
+    SelectObject(draw.hDC, old_font);
+    1
+}
+
+/// 菜单按 96 DPI 设计，实际按当前 DPI 放大。
+fn menu_scale() -> f32 {
+    unsafe {
+        let dpi = GetDpiForWindow(GetForegroundWindow());
+        if dpi == 0 {
+            1.0
+        } else {
+            dpi as f32 / 96.0
+        }
+    }
 }
 
 /// 贴图的右键菜单：文本选择与标注先占位（置灰），其余项可用。
@@ -931,29 +1200,105 @@ unsafe fn show_menu(hwnd: HWND, state: &PinState) {
     if menu.is_null() || process.is_null() {
         return;
     }
-    append_item(process, MENU_ROTATE_LEFT, "向左旋转", false, false);
-    append_item(process, MENU_ROTATE_RIGHT, "向右旋转", false, false);
-    append_item(process, MENU_FLIP_H, "水平翻转", false, false);
-    append_item(process, MENU_FLIP_V, "垂直翻转", false, false);
-    AppendMenuW(process, MF_SEPARATOR, 0, std::ptr::null());
-    append_item(process, MENU_RESET_PROCESS, "重置所有处理", false, false);
+    let mut store = MenuStore::new();
+    append_entry(
+        &mut store,
+        process,
+        MENU_ROTATE_LEFT,
+        MenuEntry::item("向左旋转", false, false),
+    );
+    append_entry(
+        &mut store,
+        process,
+        MENU_ROTATE_RIGHT,
+        MenuEntry::item("向右旋转", false, false),
+    );
+    append_entry(
+        &mut store,
+        process,
+        MENU_FLIP_H,
+        MenuEntry::item("水平翻转", false, false),
+    );
+    append_entry(
+        &mut store,
+        process,
+        MENU_FLIP_V,
+        MenuEntry::item("垂直翻转", false, false),
+    );
+    append_entry(&mut store, process, 0, MenuEntry::separator());
+    append_entry(
+        &mut store,
+        process,
+        MENU_RESET_PROCESS,
+        MenuEntry::item("重置所有处理", false, false),
+    );
 
-    append_item(menu, MENU_SELECT_ALL_TEXT, "选择所有文本", true, false);
-    append_item(menu, MENU_TEXT_SELECTABLE, "文本可选择", true, false);
-    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-    let process_text = widen("图像处理");
-    AppendMenuW(menu, MF_POPUP, process as usize, process_text.as_ptr());
-    append_item(menu, MENU_COPY_IMAGE, "复制图像", false, false);
-    append_item(menu, MENU_SAVE_AS, "图像另存为…", false, false);
-    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-    append_item(menu, MENU_ANNOTATE, "标注", true, false);
-    append_item(menu, MENU_HIDE_ANNOTATION, "隐藏标注", true, false);
-    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-    append_item(menu, MENU_SHADOW, "窗口阴影", false, state.shadow_enabled);
-    append_item(menu, MENU_LOCK, "锁定", false, state.lock != PinLock::None);
-    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-    append_item(menu, MENU_CLOSE, "关闭", false, false);
+    append_entry(
+        &mut store,
+        menu,
+        MENU_SELECT_ALL_TEXT,
+        MenuEntry::item("选择所有文本", true, false),
+    );
+    append_entry(
+        &mut store,
+        menu,
+        MENU_TEXT_SELECTABLE,
+        MenuEntry::item("文本可选择", true, false),
+    );
+    append_entry(&mut store, menu, 0, MenuEntry::separator());
+    append_entry(
+        &mut store,
+        menu,
+        process as usize,
+        MenuEntry::popup("图像处理"),
+    );
+    append_entry(
+        &mut store,
+        menu,
+        MENU_COPY_IMAGE,
+        MenuEntry::item("复制图像", false, false),
+    );
+    append_entry(
+        &mut store,
+        menu,
+        MENU_SAVE_AS,
+        MenuEntry::item("图像另存为…", false, false),
+    );
+    append_entry(&mut store, menu, 0, MenuEntry::separator());
+    append_entry(
+        &mut store,
+        menu,
+        MENU_ANNOTATE,
+        MenuEntry::item("标注", true, false),
+    );
+    append_entry(
+        &mut store,
+        menu,
+        MENU_HIDE_ANNOTATION,
+        MenuEntry::item("隐藏标注", true, false),
+    );
+    append_entry(&mut store, menu, 0, MenuEntry::separator());
+    append_entry(
+        &mut store,
+        menu,
+        MENU_SHADOW,
+        MenuEntry::item("窗口阴影", false, state.shadow_enabled),
+    );
+    append_entry(
+        &mut store,
+        menu,
+        MENU_LOCK,
+        MenuEntry::item("锁定", false, state.lock != PinLock::None),
+    );
+    append_entry(&mut store, menu, 0, MenuEntry::separator());
+    append_entry(
+        &mut store,
+        menu,
+        MENU_CLOSE,
+        MenuEntry::item("关闭", false, false),
+    );
 
+    // owner-draw 的条目要报告宽度，菜单宽取各项最大宽度。
     let mut point: POINT = std::mem::zeroed();
     GetCursorPos(&mut point);
     // 不用 TPM_RETURNCMD：命令统一走 WM_COMMAND，右键菜单与外部投递的行为一致。
@@ -1103,6 +1448,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             0
         }
+        WM_MEASUREITEM => measure_menu_item(hwnd, lp),
+        WM_DRAWITEM => draw_menu_item(hwnd, lp),
         WM_MOUSEWHEEL => {
             if let Some(state) = state_of(hwnd) {
                 let delta = ((wp >> 16) & 0xFFFF) as u16 as i16 as i32;
