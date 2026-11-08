@@ -25,11 +25,9 @@ use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_ESCAPE,
 };
-use windows_sys::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED};
-use windows_sys::Win32::System::Ole::DROPEFFECT_COPY;
-use windows_sys::Win32::UI::Shell::{
-    ILCreateFromPathW, SHCreateShellItemArrayFromIDLists, SHDoDragDrop,
-};
+use windows_sys::Win32::System::Com::CoTaskMemFree;
+use windows_sys::Win32::System::Ole::{OleInitialize, OleUninitialize, DROPEFFECT_COPY};
+use windows_sys::Win32::UI::Shell::SHDoDragDrop;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::dib::Surface;
@@ -290,8 +288,9 @@ fn host() -> Option<&'static mpsc::Sender<PinCommand>> {
         .name("screenshot-pin".to_owned())
         .spawn(move || unsafe {
             HOST_THREAD.store(GetCurrentThreadId() as usize, Ordering::SeqCst);
-            // 超级拖放走 OLE，线程需要先初始化 COM。
-            CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
+            // 超级拖放走 OLE 拖放，线程必须 OleInitialize（只 CoInitializeEx 会拿到 CO_E_NOTINITIALIZED）。
+            let ole = OleInitialize(std::ptr::null());
+            dbg_log(&format!("pin_thread.ole_init hr=0x{:08X}", ole as u32));
             let _ = ready_tx.send(GetCurrentThreadId() as usize);
             register_class(CLASS_PIN);
             register_shadow_class();
@@ -309,7 +308,7 @@ fn host() -> Option<&'static mpsc::Sender<PinCommand>> {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
-            CoUninitialize();
+            OleUninitialize();
         })
         .is_ok();
     if !spawned {
@@ -752,47 +751,82 @@ unsafe fn write_drag_file(state: &PinState) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
-/// 释放 shell 返回的 IShellItemArray：交给 windows crate 的类型化包装，Drop 时 Release。
-unsafe fn release_item_array(pointer: *mut c_void) {
-    if pointer.is_null() {
+/// 调试期临时日志（仅 debug 构建），排查完删除。
+fn dbg_log(message: &str) {
+    if !cfg!(debug_assertions) {
         return;
     }
-    use windows::core::Interface;
-    let array = windows::Win32::UI::Shell::IShellItemArray::from_raw(pointer);
-    drop(array);
+    use std::io::Write;
+    let path = std::env::temp_dir().join("lwt-supdrag.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{message}");
+    }
 }
 
 /// 按住 Ctrl 拖动贴图：把这张图作为文件拖给其它程序（超级拖放）。
+///
+/// `SHDoDragDrop` 要的是 `IDataObject`，所以先用 `BindToHandler(BHID_DataObject)`
+/// 从 shell 项数组里取出数据对象，再交给系统拖放。
 unsafe fn super_drag(hwnd: HWND, state: &PinState) {
     use std::os::windows::ffi::OsStrExt;
+    use windows::core::{Interface, PCWSTR};
+    use windows::Win32::System::Com::IDataObject;
+    use windows::Win32::UI::Shell::{
+        ILCreateFromPathW, IShellItemArray, SHCreateShellItemArrayFromIDLists, BHID_DataObject,
+    };
+
+    dbg_log("super_drag.begin");
     let Some(path) = write_drag_file(state) else {
+        dbg_log("super_drag.write_file_failed");
         return;
     };
+    dbg_log(&format!("super_drag.file={}", path.display()));
     let wide: Vec<u16> = path
         .as_os_str()
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
-    let pidl = ILCreateFromPathW(wide.as_ptr());
+    let pidl = ILCreateFromPathW(PCWSTR(wide.as_ptr()));
     if pidl.is_null() {
+        dbg_log("super_drag.pidl_null");
         return;
     }
-    let mut array: *mut c_void = std::ptr::null_mut();
     let ids = [pidl as *const _];
-    let created = SHCreateShellItemArrayFromIDLists(1, ids.as_ptr(), &mut array);
-    if created < 0 || array.is_null() {
-        CoTaskMemFree(pidl as *const c_void);
-        return;
-    }
+    let array: IShellItemArray = match SHCreateShellItemArrayFromIDLists(&ids) {
+        Ok(array) => array,
+        Err(error) => {
+            dbg_log(&format!("super_drag.array_failed {error:?}"));
+            CoTaskMemFree(pidl as *const c_void);
+            return;
+        }
+    };
+    let data: IDataObject = match array.BindToHandler(None, &BHID_DataObject) {
+        Ok(data) => data,
+        Err(error) => {
+            dbg_log(&format!("super_drag.data_object_failed {error:?}"));
+            CoTaskMemFree(pidl as *const c_void);
+            return;
+        }
+    };
+    dbg_log("super_drag.data_object_ok");
     let mut effect = 0u32;
-    SHDoDragDrop(
+    let drag_hr = SHDoDragDrop(
         hwnd,
-        array,
+        data.as_raw() as *mut c_void,
         std::ptr::null_mut(),
         DROPEFFECT_COPY,
         &mut effect,
     );
-    release_item_array(array);
+    dbg_log(&format!(
+        "super_drag.drop hr=0x{:08X} effect=0x{:X}",
+        drag_hr, effect
+    ));
+    drop(data);
+    drop(array);
     CoTaskMemFree(pidl as *const c_void);
 }
 
