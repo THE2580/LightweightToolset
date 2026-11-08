@@ -77,6 +77,13 @@
        ② 修好后返回 `0x80004001 E_NOTIMPL`——`SHDoDragDrop` 要的是 `IDataObject`，之前直接把 `IShellItemArray` 传进去；
           改为 `IShellItemArray::BindToHandler(None, &BHID_DataObject)` 取数据对象再拖。
      - 修复后实测 `hr=0x00040100 effect=0x1`（`DRAGDROP_S_DROP` + `DROPEFFECT_COPY`），拖放真正开始并被目标接受。
+   - **拖放对齐 PixPin（2026-11-08，提交 `fa91823`）**：用户反馈「能拖了但和 PixPin 不一样」——拖拽图像不对、网页上传区收不到。
+     - 原因：之前拖的是 shell 文件数据对象，只有 `CF_HDROP`，拖拽图像是系统文件缩略图。
+     - 改为自己实现 `IDataObject`（`#[implement]` + `PinDataObject_Impl`）：同时提供 `CF_DIB`（BITMAPINFOHEADER + 自下而上 32bpp）与 `CF_HDROP`（DROPFILES + 临时 PNG 路径）。
+     - 用 `IDragSourceHelper::InitializeFromBitmap` 把拖拽图像设成贴图本身；helper 会通过 `SetData` 写回 `DragImageBits`，
+       必须接收（否则 `InitializeFromBitmap` 返回 `E_NOTIMPL`），拖放结束后 `GlobalFree` 掉那块 HGLOBAL。
+     - 依赖：`windows` 增加 `Win32_Graphics_Gdi`，新增 `windows-core`（`implement` 宏展开需要 `windows_core` 在依赖里）。
+     - 实测：`drag_image_ok` + `hr=0x00040100 effect=0x1`，无崩溃。
    - **待办（用户已确认推迟）**：
      - **贴图标注**：右键「标注」进入标注模式，出现只含贴图相关项的标注工具栏（参照截图工具栏样式），工具栏跟随贴图窗口移动，最右端对勾按钮结束标注退出；「隐藏标注」同步实现。
      - **贴图文本选择**：右键「选择所有文本」「文本可选择」两项（含 OCR 文本）。

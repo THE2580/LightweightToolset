@@ -66,3 +66,12 @@
   `0x80004001 E_NOTIMPL`，表现为「只生成了临时文件、拖放根本没开始」。
   正确做法：`IShellItemArray::BindToHandler(None, &BHID_DataObject)` 取出数据对象再交给 `SHDoDragDrop`。
 - 判断是否真的开始拖放：`SHDoDragDrop` 返回 `0x00040100`（`DRAGDROP_S_DROP`）且 `effect` 非 0。
+
+## 贴图超级拖放：拖拽图像与目标拒收（2026-11-08）
+
+- 现象：能发起拖放，但跟随光标的是系统文件缩略图，网页上传区什么都不接收。
+- 原因：数据对象只有 `CF_HDROP`（文件）；很多接收方只吃位图格式。
+- 修法：自定义 `IDataObject` 同时给 `CF_DIB` + `CF_HDROP`；`IDragSourceHelper::InitializeFromBitmap` 设拖拽图像。
+- 关键细节：`InitializeFromBitmap` 会通过 `IDataObject::SetData` 把 `DragImageBits` 写回，
+  `SetData` 返回 `E_NOTIMPL` 时整个调用会失败（`InitializeFromBitmap` 直接返回 `E_NOTIMPL`）。
+  必须存下这块 HGLOBAL，并在 `GetData`/`QueryGetData`/`EnumFormatEtc` 里透出，拖放结束后释放。
