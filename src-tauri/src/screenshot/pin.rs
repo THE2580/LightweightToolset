@@ -1491,29 +1491,62 @@ unsafe fn paint(hwnd: HWND, state: &PinState) {
         SRCCOPY,
     );
     if GetTickCount() < state.zoom_until {
-        let text = format!("{:.0}%", state.zoom * 100.0);
-        let mut tag = RECT {
-            left: 6,
-            top: 6,
-            right: 66,
-            bottom: 30,
-        };
-        let brush = CreateSolidBrush(0x00F0_F0F0);
-        FillRect(dc, &tag, brush);
-        DeleteObject(brush);
-        SetBkMode(dc, TRANSPARENT as i32);
-        SetTextColor(dc, 0x0020_2020);
-        let font = GetStockObject(DEFAULT_GUI_FONT);
-        let old = SelectObject(dc, font);
+        // 缩放提示：半透明黑底 + 1px 白框 + 白字，格式「缩放：150%」。
+        let text = format!("缩放：{:.0}%", state.zoom * 100.0);
         let wide: Vec<u16> = text.encode_utf16().collect();
+        let font = menu_font();
+        let old_font = SelectObject(dc, font);
+        let mut size: SIZE = std::mem::zeroed();
+        GetTextExtentPoint32W(dc, wide.as_ptr(), wide.len() as i32, &mut size);
+        let pad_x = 9;
+        let pad_y = 4;
+        let tag = RECT {
+            left: 8,
+            top: 8,
+            right: 8 + size.cx + pad_x * 2,
+            bottom: 8 + size.cy + pad_y * 2,
+        };
+        // 半透明黑底：用 1x1 黑源做 AlphaBlend。
+        if let Some(mut black) = super::dib::Surface::new(1, 1) {
+            black.set_pixel(0, 0, 0);
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 190,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
+            AlphaBlend(
+                dc,
+                tag.left,
+                tag.top,
+                tag.right - tag.left,
+                tag.bottom - tag.top,
+                black.dc(),
+                0,
+                0,
+                1,
+                1,
+                blend,
+            );
+        }
+        let pen = CreatePen(PS_SOLID, 1, 0x00FF_FFFF);
+        let old_pen = SelectObject(dc, pen);
+        let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Rectangle(dc, tag.left, tag.top, tag.right, tag.bottom);
+        SelectObject(dc, old_brush);
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+        SetBkMode(dc, TRANSPARENT as i32);
+        SetTextColor(dc, 0x00FF_FFFF);
+        let mut text_rect = tag;
         DrawTextW(
             dc,
             wide.as_ptr(),
             wide.len() as i32,
-            &mut tag,
+            &mut text_rect,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE,
         );
-        SelectObject(dc, old);
+        SelectObject(dc, old_font);
     }
     EndPaint(hwnd, &ps);
 }
@@ -2142,8 +2175,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 let tag = RECT {
                     left: 0,
                     top: 0,
-                    right: 72,
-                    bottom: 36,
+                    right: 160,
+                    bottom: 44,
                 };
                 InvalidateRect(hwnd, &tag, 0);
             }
