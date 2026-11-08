@@ -1,17 +1,18 @@
 # Scope
-- 截图工具：工具栏与二级栏已完成；工具页配置改为「两个保存目录 + 8 色标注预设」，快捷键固定 `Ctrl+S`，待用户验收。
-- **2026-11-08 开工**：Vite（`:1420`，pid 18328）与开发版（`%TEMP%\lwt-dev`，pid 4556）已重启，首页渲染正常。
+- 截图工具：工具栏与二级栏、工具页配置（两个保存目录 + 8 色预设）已验收并提交 `2183a2c`。
+- **本批（已验收，正在提交）**：工具页改为「截图 / 贴图 / 保存 / 标注 / 快捷键」横向标签；快捷键设置迁入工具页；文件名模板、未选区域颜色+不透明度、放大镜网格线、辅助线三组线（三态 + 双颜色 + 双线宽 + 自定义虚线 + 单次呈现无闪烁 + 层级在工具栏之下）、选区拖边翻转、设置子项缩进与联动隐藏。
+- **2026-11-08 开工**：Vite（`:1420`，pid 18328）与开发版（`%TEMP%\lwt-dev`，pid 14532）在跑。
 - 「截图查看」已取消，不做。
-- 工作树未提交：`src-tauri/src/{settings,lib}.rs`、`src-tauri/src/screenshot/{mod,overlay,save,annotation,toolbar}.rs`、`src/App.tsx`、`src/App.css`、`agent_memory/*`；`window_pinner.rs`、`window_service.rs`、`.codex/` 为既有无关改动，不要提交。
+- 下一阶段：提交本批 → S3 贴图。
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`4c88fe1`**（截图工具全工具二级栏完成，未推送）。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`c812e41`**（截图工具页标签 + 配置项 + 辅助线重构 + 选区翻转，未推送）。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
 # Active Files
-- `src-tauri/src/settings.rs`、`src-tauri/src/lib.rs`：设置页后端字段与 patch（未提交）
+- `src-tauri/src/settings.rs`、`src-tauri/src/lib.rs`：截图工具页设置字段与 patch，已提交 `2183a2c`
 - `src-tauri/src/screenshot/{annotation,overlay,toolbar,mod,save}.rs`：截图工具主实现
 
 - `src-tauri/src/screenshot/`（新）：`mod.rs`（热键入口/编排）、`capture.rs`（BitBlt + 裁切 + 变暗，含 3 个单测）、`overlay.rs`（原生覆盖层窗口）、`clipboard_image.rs`（CF_DIB + PNG）、`save.rs`（PNG 编码 + 落盘）。
@@ -26,7 +27,18 @@
 
 # Verification
 
-- 2026-11-08 工具页配置改造复验：`cargo check` 通过；`npm run build` 通过；`cargo test --lib screenshot::` 10/10；开发版重启（pid 8724）后截图工具页显示图标/快捷键/两个目录/8 色预设（截图确认）。
+- 2026-11-08 选区翻转 + 设置层级（未提交）：`cargo test --lib screenshot::toolbar` 3/3（正常方向 / 翻转 / 最小尺寸）、`cargo build`、`npm run build` 通过；开发版重启（pid 14532）。
+- 2026-11-08 标签页改造（未提交）：`npm run build` 通过；开发版重启（pid 14576）；截图/保存/标注/快捷键四个标签均截图确认，全局快捷键页已过滤截图组（代码层）。
+- 2026-11-08 辅助线渲染调整（未提交）：`cargo test --lib screenshot::` 14/14、`cargo build`、`npm run build` 通过；实测虚线在 x=1280 为「4px 线 / 4px 背景」交替（间隙是底图不是白色），线宽设为 3 时实测 3px 宽、段长 12px，线宽配置贯通；测试后已把线宽恢复 1 并重启（pid 15980）。
+- 2026-11-08 辅助线重构（未提交）：`cargo test --lib screenshot::` 14/14、`cargo build`、`npm run build` 通过；实测：
+  - 未选区 + Alt：蓝色虚线中心十字在 (1280,800)，灰色实线光标十字跟随 (1200,800)（像素取样命中）。
+  - 选区 (900,600 400×300) + Alt：蓝线在 x=900/1100/1300、y=600/750/900（四边 + 中心）。
+  - 光标 300,300 → 2200,1300 两帧：绿线只出现在当前位置，旧位置无残留。
+  - 三态 always + 颜色改成红/绿后，不按 Alt 也显示红中心十字与绿光标十字，颜色生效。
+  - 测试后已把开发版设置恢复为 alt / #30B4FF / #808080 并重启。
+- **待真机验证**：模板生效（改模板后截图文件名变化）、未选区域颜色/透明度、放大镜网格线开关与颜色、三态下拉在界面上的切换。
+- 2026-11-08 工具页配置验收通过并提交 `2183a2c`（两个保存目录 + 8 色标注预设 + 工具页头部/快捷键行）。
+- 2026-11-08 工具页配置改造复验：`cargo check` 通过；`npm run build` 通过；`cargo test --lib screenshot::` 10/10；开发版重启后截图工具页显示图标/快捷键/两个目录/8 色预设（截图确认）。
 - 2026-11-08 保存目录改造后复验：`cargo check` 通过；`npm run build` 通过；`cargo test --lib screenshot::` 10/10；开发版重启（pid 18776）后截图工具页显示保存目录与 `Ctrl+S` 提示。
 - 2026-11-08 设置页：`cargo check` 通过（仅既有 3 条告警）；`cargo test --lib -- --test-threads=1 screenshot::` 13/13（当时含 3 个 `shortcut_matches` 单测，随自定义快捷键一并删除）。全量 `cargo test --lib` 为 28 passed + 3 failed，失败全在 `window_pinner`（沙箱无法写 `%TEMP%`，与本次改动无关）。
 - 2026-11-08 开发版自检：Vite `:1420` 返回 200；exe 复制到 `%TEMP%\lwt-dev` 并从该路径启动（pid 25576）；PrintWindow 截图确认首页与设置页正常渲染（非白屏）。
@@ -82,10 +94,9 @@
 - **未验证**：覆盖层的「保存按钮初始目录」与「Ctrl+S 落盘」尚未端到端验证。曾尝试注入键鼠做 E2E，但提权控制台抢走前台焦点，合成的 `Ctrl+S` 没到覆盖层，测试无效（覆盖层事后已关闭，应用已重启）。下次要么请用户手测，要么先把覆盖层 `SetForegroundWindow` 再发按键。
 
 # Next Action
-0. 下次开工先重启环境：`npm run dev`（Vite `:1420`，确认返回 200）→ 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%\lwt-dev` → `Start-Process -Verb RunAs` 启动；若改过 Rust 先 `cargo build`。
-1. 用户在开发版验收截图工具页：两个保存目录（更改/打开/恢复默认）、8 色预设改色与恢复默认、快捷键 ⚙ 跳转。
-2. 实测：覆盖层「保存」按钮应默认打开手动目录；覆盖层 `Ctrl+S` 应写入快捷目录；改色后工具栏色块与绘制颜色同步。
-3. 验收通过后提交本批（排除 `window_service.rs`、`window_pinner.rs`、`.codex/`），再进入 S3 贴图。
+0. 环境已在跑：Vite `:1420`、开发版 `%TEMP%\lwt-dev`（pid 14532）；重启时按「起 Vite → `cargo build` → 复制到 `%TEMP%\lwt-dev` → 提权启动」。
+1. 下一阶段：S3 贴图（置顶贴图窗口 + 贴图历史 + 「贴图」标签），开工前复述需求等放行。
+2. 开工前按约定复述需求并等放行；提交时排除 `window_service.rs`、`window_pinner.rs`、`.codex/`。
 
 
 - 下一步 S2-d：在 `annotation.rs` 增加马赛克/模糊/荧光笔（需要像素级处理与涂抹路径），完成后按约定启动开发版供验收。

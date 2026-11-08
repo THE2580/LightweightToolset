@@ -1292,48 +1292,61 @@ pub fn border_at(sel: Selection, x: i32, y: i32) -> bool {
 }
 
 pub fn resize(sel: Selection, handle: Handle, x: i32, y: i32, screen: (i32, i32)) -> Selection {
-    let mut left = sel.x;
-    let mut top = sel.y;
-    let mut right = sel.x + sel.width;
-    let mut bottom = sel.y + sel.height;
+    const MIN: i32 = 8;
     let x = x.clamp(0, screen.0);
     let y = y.clamp(0, screen.1);
+    let sel_right = sel.x + sel.width;
+    let sel_bottom = sel.y + sel.height;
+
+    // 水平方向：被拖动的那条边跟随光标，另一边固定；允许拖过对边形成翻转。
+    let (mut left, mut right) = (sel.x, sel_right);
     match handle {
-        Handle::NorthWest => {
-            left = x;
-            top = y;
+        Handle::NorthWest | Handle::West | Handle::SouthWest => {
+            if x <= sel_right - MIN {
+                left = x;
+                right = sel_right;
+            } else {
+                // 已经越过右边：右边界变成固定边，光标成为新的右边界。
+                left = sel_right;
+                right = x.max(left + MIN).min(screen.0);
+            }
         }
-        Handle::North => top = y,
-        Handle::NorthEast => {
-            right = x;
-            top = y;
+        Handle::NorthEast | Handle::East | Handle::SouthEast => {
+            if x >= sel.x + MIN {
+                left = sel.x;
+                right = x;
+            } else {
+                right = sel.x;
+                left = x.min(right - MIN).max(0);
+            }
         }
-        Handle::East => right = x,
-        Handle::SouthEast => {
-            right = x;
-            bottom = y;
-        }
-        Handle::South => bottom = y,
-        Handle::SouthWest => {
-            left = x;
-            bottom = y;
-        }
-        Handle::West => left = x,
+        _ => {}
     }
-    if right - left < 8 {
-        if matches!(handle, Handle::NorthWest | Handle::SouthWest | Handle::West) {
-            left = right - 8;
-        } else {
-            right = left + 8;
+
+    // 垂直方向同理。
+    let (mut top, mut bottom) = (sel.y, sel_bottom);
+    match handle {
+        Handle::NorthWest | Handle::North | Handle::NorthEast => {
+            if y <= sel_bottom - MIN {
+                top = y;
+                bottom = sel_bottom;
+            } else {
+                top = sel_bottom;
+                bottom = y.max(top + MIN).min(screen.1);
+            }
         }
-    }
-    if bottom - top < 8 {
-        if matches!(handle, Handle::NorthWest | Handle::NorthEast | Handle::North) {
-            top = bottom - 8;
-        } else {
-            bottom = top + 8;
+        Handle::SouthWest | Handle::South | Handle::SouthEast => {
+            if y >= sel.y + MIN {
+                top = sel.y;
+                bottom = y;
+            } else {
+                bottom = sel.y;
+                top = y.min(bottom - MIN).max(0);
+            }
         }
+        _ => {}
     }
+
     Selection {
         x: left,
         y: top,
@@ -1350,5 +1363,43 @@ pub fn translate(sel: Selection, dx: i32, dy: i32, screen: (i32, i32)) -> Select
         y,
         width: sel.width,
         height: sel.height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resize, Handle, Selection};
+
+    fn sel() -> Selection {
+        Selection { x: 100, y: 100, width: 100, height: 100 }
+    }
+
+    #[test]
+    fn resize_keeps_normal_direction() {
+        let r = resize(sel(), Handle::West, 60, 0, (1000, 800));
+        assert_eq!((r.x, r.width), (60, 140));
+        let r = resize(sel(), Handle::East, 260, 0, (1000, 800));
+        assert_eq!((r.x, r.width), (100, 160));
+    }
+
+    #[test]
+    fn resize_flips_when_crossing_opposite_edge() {
+        // 西边拖过右边：矩形翻转到右侧，宽度按光标重新计算。
+        let r = resize(sel(), Handle::West, 300, 0, (1000, 800));
+        assert_eq!((r.x, r.width), (200, 100));
+        // 东边拖过左边。
+        let r = resize(sel(), Handle::East, 20, 0, (1000, 800));
+        assert_eq!((r.x, r.width), (20, 80));
+        // 北边拖过下边。
+        let r = resize(sel(), Handle::North, 0, 320, (1000, 800));
+        assert_eq!((r.y, r.height), (200, 120));
+    }
+
+    #[test]
+    fn resize_never_collapses_below_min_size() {
+        let r = resize(sel(), Handle::West, 195, 0, (1000, 800));
+        assert!(r.width >= 8, "width={}", r.width);
+        let r = resize(sel(), Handle::East, 105, 0, (1000, 800));
+        assert!(r.width >= 8, "width={}", r.width);
     }
 }

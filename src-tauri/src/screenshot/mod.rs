@@ -40,6 +40,13 @@ pub(crate) fn default_palette_hex() -> Vec<String> {
 
 pub(crate) const PALETTE_LEN: usize = annotation::PALETTE_LEN;
 
+/// 压暗层默认不透明度（百分比）。
+pub(crate) const DEFAULT_DIM_OPACITY: u8 = 45;
+
+pub(crate) fn default_file_template() -> String {
+    save::DEFAULT_TEMPLATE.to_owned()
+}
+
 pub(crate) fn is_valid_hex(value: &str) -> bool {
     annotation::parse_hex_color(value).is_some()
 }
@@ -54,6 +61,12 @@ fn parse_palette(values: &[String]) -> [u32; annotation::PALETTE_LEN] {
     colors
 }
 
+/// 百分比 → AlphaBlend 的 0–255 不透明度。
+fn opacity_to_alpha(opacity: u8) -> u8 {
+    let percent = opacity.min(100) as u32;
+    ((percent * 255 + 50) / 100) as u8
+}
+
 /// 无 AppState 时的兜底目录（正常流程不会走到）。
 fn fallback_save_dir() -> PathBuf {
     std::env::var_os("USERPROFILE")
@@ -64,30 +77,40 @@ fn fallback_save_dir() -> PathBuf {
         .join("Screenshots")
 }
 
-/// 读取覆盖层需要的截图设置：手动保存初始目录、快捷保存目录、调色板。
-fn capture_config(app: &AppHandle) -> (PathBuf, PathBuf, [u32; annotation::PALETTE_LEN]) {
-    let default_palette = annotation::DEFAULT_PALETTE;
+/// 读取覆盖层需要的截图设置：目录、文件名模板、调色板与外观项。
+fn capture_config(app: &AppHandle) -> (overlay::OverlayOptions, [u32; annotation::PALETTE_LEN]) {
     let Some(state) = app.try_state::<crate::AppState>() else {
         let dir = fallback_save_dir();
-        return (dir.clone(), dir, default_palette);
+        return (overlay::OverlayOptions::defaults(dir), annotation::DEFAULT_PALETTE);
     };
     let Ok(registry) = state.registry.lock() else {
         let dir = default_save_dir(&state);
-        return (dir.clone(), dir, default_palette);
+        return (overlay::OverlayOptions::defaults(dir), annotation::DEFAULT_PALETTE);
     };
     // 只拷贝设置值，释放注册表锁后再解析目录（避免持锁做文件 IO）。
-    let (manual_raw, quick_raw, palette_raw) = {
-        let settings = registry.settings();
-        (
-            settings.screenshot_manual_save_dir.clone(),
-            settings.screenshot_quick_save_dir.clone(),
-            settings.screenshot_palette.clone(),
-        )
-    };
+    let settings = registry.settings().clone();
     drop(registry);
-    let manual = resolve_save_dir(&state, &manual_raw);
-    let quick = resolve_save_dir(&state, &quick_raw);
-    (manual, quick, parse_palette(&palette_raw))
+
+    let manual = resolve_save_dir(&state, &settings.screenshot_manual_save_dir);
+    let quick = resolve_save_dir(&state, &settings.screenshot_quick_save_dir);
+    let options = overlay::OverlayOptions {
+        manual_dir: manual,
+        quick_dir: quick,
+        file_template: settings.screenshot_file_template.clone(),
+        dim_color: annotation::parse_hex_color(&settings.screenshot_dim_color).unwrap_or(0),
+        dim_alpha: opacity_to_alpha(settings.screenshot_dim_opacity),
+        grid: settings.screenshot_magnifier_grid,
+        grid_color: annotation::parse_hex_color(&settings.screenshot_magnifier_grid_color)
+            .unwrap_or(annotation::rgb(0x66, 0x66, 0x66)),
+        guides_mode: overlay::GuidesMode::parse(&settings.screenshot_guides_mode),
+        guides_color: annotation::parse_hex_color(&settings.screenshot_guides_color)
+            .unwrap_or(annotation::rgb(0x30, 0xB4, 0xFF)),
+        cursor_guide_color: annotation::parse_hex_color(&settings.screenshot_cursor_guide_color)
+            .unwrap_or(annotation::rgb(0x80, 0x80, 0x80)),
+        guides_width: settings.screenshot_guides_width.clamp(1, 5) as i32,
+        cursor_guide_width: settings.screenshot_cursor_guide_width.clamp(1, 5) as i32,
+    };
+    (options, parse_palette(&settings.screenshot_palette))
 }
 
 /// 由全局热键调用：抓屏 → 原生覆盖层选区 → 复制到剪贴板并保存 PNG。
@@ -116,16 +139,18 @@ pub fn capture_from_hotkey(app: &AppHandle) {
 }
 
 fn run(app: &AppHandle) -> Result<String, String> {
-    let (manual_dir, quick_dir, palette) = capture_config(app);
+    let (options, palette) = capture_config(app);
     annotation::set_palette(palette);
+    let quick_dir = options.quick_dir.clone();
+    let template = options.file_template.clone();
     let (vx, vy, width, height) = capture::virtual_rect()?;
     log(
         app,
         format!("screenshot.capture_begin size={width}x{height} origin=({vx}, {vy})"),
     );
 
-    let outcome = overlay::select(width, height, manual_dir, quick_dir.clone())
-        .ok_or_else(|| "cancelled".to_owned())?;
+    let outcome =
+        overlay::select(width, height, options).ok_or_else(|| "cancelled".to_owned())?;
     let selection = outcome.selection;
 
     let png = save::encode_png(&outcome.top_down, selection.width as u32, selection.height as u32)?;
@@ -147,7 +172,7 @@ fn run(app: &AppHandle) -> Result<String, String> {
             selection.width, selection.height
         ));
     }
-    let path = save::write_png_to(&quick_dir, &png)?;
+    let path = save::write_png_to(&quick_dir, &png, &template)?;
 
     Ok(format!(
         "screenshot.saved path={} size={}x{}",

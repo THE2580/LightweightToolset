@@ -1,23 +1,20 @@
 # Goal
-复刻 PixPin 截图工具（LightweightToolset 新工具），当前阶段：截图工具页配置（两个保存目录 + 8 色预设）待验收 → S3 贴图。
+复刻 PixPin 截图工具（LightweightToolset 新工具），当前阶段：本批已验收待提交 → S3 贴图。
 
 # Current Focus
-工具页配置改造已完成并构建通过；**开发版与 Vite 已关闭（收工）**，工作树未提交。
+工具页标签页改造 + 近期配置项 + 辅助线重构（三组线 / 三态 / 双颜色 / 双线宽 / 自定义虚线 / 单次呈现无闪烁）+ 选区翻转 + 设置子项层级，全部已验收通过，正在提交本批。
 
 # Remaining
-1. 下次开工先重启 Vite 与开发版
-2. 用户验收工具页配置（手测覆盖层保存按钮初始目录、Ctrl+S 目录、改色生效）
-3. 验收后提交本批（排除 `window_service.rs`、`window_pinner.rs`、`.codex/`）
-4. 之后按 `progress.md` 的「截图配置待办」推进：近期项（文件名模板、未选区域颜色、放大镜网格线、辅助线），再进 S3 贴图
-5. 不做：「截图查看」、动态截图、UI 检测、多语言等（见 progress 的不做清单）
+1. 提交本批（排除 `window_service.rs`、`window_pinner.rs`、`.codex/`）
+2. S3 贴图：贴图窗口（置顶、拖动/缩放）→ 贴图历史 → 填「贴图」标签
+3. **待办（本工具完成后）**：其他有快捷键的工具逐个迁到各自工具页的「快捷键」标签
 
 # Verification
-- `cargo check` 通过（仅既有告警）；`npm run build` 通过；`cargo test --lib screenshot::` 11/11
-- 工具页渲染已用 PrintWindow 截图确认
-- **未验证**：覆盖层「保存」按钮初始目录、`Ctrl+S` 落盘（上次注入测试被提权控制台抢焦点，无效）
-- 最近提交：`4c88fe1`、`1373ed8`、`010f025`
+- `cargo test --lib screenshot::` 17/17（含 3 个 resize 翻转单测）、`cargo build`、`npm run build` 通过
+- 用户已逐项验收：标签页、配置项、辅助线三态/颜色/宽度/虚线、无残留、层级、选区翻转
+- 最近提交：`c812e41`（本批：工具页标签 + 配置项 + 辅助线重构 + 选区翻转）、`2183a2c`、`4c88fe1`
 
 # Resume Here
-1. 启动环境：`npm run dev` 起 Vite（确认 `http://localhost:1420` 返回 200）→ `cargo build`（若改过 Rust）→ 复制 debug exe 到 `%TEMP%\lwt-dev` → `Start-Process -Verb RunAs` 启动 → 核对进程路径来自 `%TEMP%\lwt-dev`。
-2. 请用户验收工具页与覆盖层保存行为；有问题改 `src/App.tsx` 的 `ScreenshotToolPage`、`src/App.css` 的 `.screenshot-*`，或 `src-tauri/src/screenshot/{mod,overlay}.rs`。
-3. 验收通过后 `git add` 明确路径提交；然后进入 S3 贴图或近期配置项。
+1. 提交后从 `progress.md` 的「贴图阶段」开始 S3，先复述需求等放行。
+2. 贴图建议顺序：贴图窗口（置顶/拖动/缩放/滚轮）→ 贴图历史（`<存储>/screenshot/` 下 `.meta` + 索引）→ 「贴图」标签设置项。
+3. 提交时排除 `window_service.rs`、`window_pinner.rs`、`.codex/`。

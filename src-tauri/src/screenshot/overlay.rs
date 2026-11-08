@@ -19,8 +19,8 @@ use windows_sys::Win32::UI::Input::Ime::{
     CFS_CANDIDATEPOS, CFS_POINT,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, SetFocus, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LSHIFT, VK_RETURN, VK_RSHIFT,
-    VK_SHIFT, VK_Y, VK_Z,
+    GetKeyState, SetFocus, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LSHIFT, VK_MENU, VK_RETURN,
+    VK_RSHIFT, VK_SHIFT, VK_Y, VK_Z,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -36,8 +36,6 @@ static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
 
 const BORDER: i32 = 2;
 const LABEL_HEIGHT: i32 = 24;
-/// 与 `AlphaBlend` 配合：黑色源、45% 不透明度，用来压暗整屏。
-const DIM_ALPHA: u8 = 115;
 
 /// 放大镜：15×15 像素，每格 16 px（与 PixPin 的放大倍率一致）。
 const MAG_CELLS: i32 = 15;
@@ -82,6 +80,66 @@ pub struct Selection {
     pub height: i32,
 }
 
+/// 覆盖层启动参数（来自截图工具设置）。
+pub struct OverlayOptions {
+    pub manual_dir: PathBuf,
+    pub quick_dir: PathBuf,
+    pub file_template: String,
+    pub dim_color: u32,
+    pub dim_alpha: u8,
+    /// 放大镜是否显示网格线。
+    pub grid: bool,
+    pub grid_color: u32,
+    /// 辅助线显示模式：始终 / 按 Alt / 不显示。
+    pub guides_mode: GuidesMode,
+    /// 蓝色辅助线（屏幕中心十字 + 选区系）颜色。
+    pub guides_color: u32,
+    /// 灰色实线光标十字颜色。
+    pub cursor_guide_color: u32,
+    /// 蓝色辅助线线宽（1–5）。
+    pub guides_width: i32,
+    /// 光标十字线宽（1–5）。
+    pub cursor_guide_width: i32,
+}
+
+impl OverlayOptions {
+    /// 兜底参数：默认目录 + 内置外观，正常流程不会用到。
+    pub fn defaults(dir: PathBuf) -> Self {
+        Self {
+            manual_dir: dir.clone(),
+            quick_dir: dir,
+            file_template: super::save::DEFAULT_TEMPLATE.to_owned(),
+            dim_color: 0,
+            dim_alpha: 115,
+            grid: true,
+            grid_color: super::annotation::rgb(0x66, 0x66, 0x66),
+            guides_mode: GuidesMode::Alt,
+            guides_color: super::annotation::rgb(0x30, 0xB4, 0xFF),
+            cursor_guide_color: super::annotation::rgb(0x80, 0x80, 0x80),
+            guides_width: 1,
+            cursor_guide_width: 1,
+        }
+    }
+}
+
+/// 辅助线显示模式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuidesMode {
+    Always,
+    Alt,
+    Off,
+}
+
+impl GuidesMode {
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "always" => Self::Always,
+            "off" => Self::Off,
+            _ => Self::Alt,
+        }
+    }
+}
+
 pub struct OverlayOutcome {
     pub selection: Selection,
     /// 是否已通过“保存”按钮或 `Ctrl+S` 落盘（mod.rs 据此跳过默认保存）。
@@ -105,6 +163,10 @@ struct OverlayState {
     font: HFONT,
     pen: HPEN,
     grid_pen: HPEN,
+    /// 蓝色虚线辅助线（屏幕中心十字 + 选区系）。
+    guide_pen: HPEN,
+    /// 灰色实线光标十字。
+    cursor_guide_pen: HPEN,
     cross_pen: HPEN,
     white_pen: HPEN,
     panel_brush: HBRUSH,
@@ -125,6 +187,20 @@ struct OverlayState {
     manual_dir: PathBuf,
     /// `Ctrl+S` 直接写入的目录。
     quick_dir: PathBuf,
+    /// 文件名模板。
+    file_template: String,
+    /// 放大镜网格线开关。
+    grid: bool,
+    /// 是否启用对齐辅助线。
+    guides_mode: GuidesMode,
+    /// 上一帧画在窗口 DC 上的辅助线带（用于擦除，不进后备缓冲）。
+    guide_bands: Vec<(i32, i32, i32, i32)>,
+    /// 蓝色辅助线线宽。
+    guide_width: i32,
+    /// 光标十字线宽。
+    cursor_guide_width: i32,
+    /// 当前是否按住 Alt。
+    alt_down: bool,
     ime_context: isize,
     doc: Document,
     draft_points: Vec<(i32, i32)>,
@@ -149,6 +225,8 @@ impl Drop for OverlayState {
             for handle in [
                 self.pen as HGDIOBJ,
                 self.grid_pen as HGDIOBJ,
+                self.guide_pen as HGDIOBJ,
+                self.cursor_guide_pen as HGDIOBJ,
                 self.cross_pen as HGDIOBJ,
                 self.white_pen as HGDIOBJ,
             ] {
@@ -261,6 +339,76 @@ impl OverlayState {
     }
 }
 
+fn rect_intersects(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+}
+
+/// 把辅助线画进某一块区域（调用方已保证内容已恢复）。
+unsafe fn draw_guides_in_rect(state: &OverlayState, hdc: HDC, rect: (i32, i32, i32, i32)) {
+    let clip = CreateRectRgn(rect.0, rect.1, rect.0 + rect.2, rect.1 + rect.3);
+    SelectClipRgn(hdc, clip);
+    draw_guides_into(state, hdc);
+    SelectClipRgn(hdc, std::ptr::null_mut());
+    DeleteObject(clip);
+}
+
+/// 这条重绘带是否必须走完整绘制流程（选区内容、标注、控制点、工具栏、放大镜）。
+///
+/// 光标十字的线带通常远离这些元素，只需要「压暗图 + 辅助线」。
+fn band_needs_full_paint(state: &OverlayState, band: (i32, i32, i32, i32)) -> bool {
+    if state.editing.is_some() {
+        return true;
+    }
+    if let Some(sel) = guide_rect(state).or(state.selection) {
+        // 选区本身 + 上方的尺寸标签 + 两侧控制点余量。
+        let expanded = (
+            sel.x - 12,
+            sel.y - 28,
+            sel.width + 24,
+            sel.height + 40,
+        );
+        if rect_intersects(band, expanded) {
+            return true;
+        }
+    }
+    if state.magnifier_visible() {
+        if let Some(cursor) = state.cursor {
+            let panel = state.panel_rect(cursor);
+            if rect_intersects(band, (panel.0, panel.1, panel.2, panel.3)) {
+                return true;
+            }
+        }
+    }
+    if state.toolbar_visible() {
+        if let Some(sel) = state.selection {
+            let layout = toolbar::layout(
+                sel,
+                (state.width, state.height),
+                state.doc.tool(),
+                state.style_open,
+                &state.picks,
+                state.line_menu_open,
+                state.arrow_menu_open,
+            );
+            if rect_intersects(band, (layout.x, layout.y, layout.width, layout.height)) {
+                return true;
+            }
+            if layout
+                .style_bg
+                .is_some_and(|bg| rect_intersects(band, bg))
+            {
+                return true;
+            }
+            if layout.menus.iter().any(|(_, rect)| {
+                rect_intersects(band, (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top))
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn union_rect(
     a: Option<(i32, i32, i32, i32)>,
     b: Option<(i32, i32, i32, i32)>,
@@ -327,7 +475,7 @@ unsafe fn save_current(state: &OverlayState, dir: &std::path::Path) -> Result<Pa
     let (top_down, _) = compose(&state.original, selection, &state.doc.items)
         .ok_or_else(|| "合成失败".to_owned())?;
     let png = save::encode_png(&top_down, selection.width as u32, selection.height as u32)?;
-    save::write_png_to(dir, &png)
+    save::write_png_to(dir, &png, &state.file_template)
 }
 
 /// 把选区与标注合成为两张 BGRA（自上而下 / 自下而上）。
@@ -377,6 +525,110 @@ unsafe fn draw_selection_chrome(hdc: HDC, pen: HPEN, x: i32, y: i32, w: i32, h: 
     Rectangle(hdc, x, y, x + w, y + h);
     SelectObject(hdc, old_brush);
     SelectObject(hdc, old_pen);
+}
+
+/// 辅助线是否应当显示（三态 × Alt 状态）。
+fn guides_visible(state: &OverlayState) -> bool {
+    match state.guides_mode {
+        GuidesMode::Always => true,
+        GuidesMode::Alt => state.alt_down,
+        GuidesMode::Off => false,
+    }
+}
+
+/// 当前选区（标注阶段用已确定的选区，选择阶段用拖动中的框）。
+fn guide_rect(state: &OverlayState) -> Option<Selection> {
+    match state.phase {
+        Phase::Annotating => state.selection,
+        Phase::Selecting => state
+            .current_rect()
+            .map(|(x, y, w, h)| Selection { x, y, width: w, height: h }),
+    }
+}
+
+/// 一组辅助线：起点、终点、是否光标十字。
+type GuideLine = (i32, i32, i32, i32, bool);
+
+/// 当前应该出现的辅助线（不绘制，只算几何）。
+fn guide_lines(state: &OverlayState) -> Vec<GuideLine> {
+    if !guides_visible(state) {
+        return Vec::new();
+    }
+    let width = state.width;
+    let height = state.height;
+    let mut lines: Vec<GuideLine> = Vec::new();
+    if let Some(cursor) = state.cursor {
+        lines.push((cursor.0, 0, cursor.0, height, true));
+        lines.push((0, cursor.1, width, cursor.1, true));
+    }
+    match guide_rect(state) {
+        Some(rect) => {
+            let right = rect.x + rect.width;
+            let bottom = rect.y + rect.height;
+            let center_x = rect.x + rect.width / 2;
+            let center_y = rect.y + rect.height / 2;
+            lines.extend([
+                (rect.x, 0, rect.x, height, false),
+                (right, 0, right, height, false),
+                (0, rect.y, width, rect.y, false),
+                (0, bottom, width, bottom, false),
+                (center_x, 0, center_x, height, false),
+                (0, center_y, width, center_y, false),
+            ]);
+        }
+        None => {
+            let center_x = width / 2;
+            let center_y = height / 2;
+            lines.extend([
+                (center_x, 0, center_x, height, false),
+                (0, center_y, width, center_y, false),
+            ]);
+        }
+    }
+    lines
+}
+
+/// 辅助线的擦除/重绘带：按线宽留边。
+fn guide_band_rects(state: &OverlayState) -> Vec<(i32, i32, i32, i32)> {
+    let mut bands = Vec::new();
+    for (x1, y1, x2, y2, cursor) in guide_lines(state) {
+        let line_width = if cursor {
+            state.cursor_guide_width
+        } else {
+            state.guide_width
+        };
+        let pad = (line_width / 2).max(1) + 1;
+        let left = (x1.min(x2) - pad).max(0);
+        let top = (y1.min(y2) - pad).max(0);
+        let right = (x1.max(x2) + pad).min(state.width);
+        let bottom = (y1.max(y2) + pad).min(state.height);
+        if right > left && bottom > top {
+            let rect = (left, top, right - left, bottom - top);
+            if !bands.contains(&rect) {
+                bands.push(rect);
+            }
+        }
+    }
+    bands
+}
+
+/// 把辅助线画进当前 DC（调用方负责裁剪到需要重绘的区域）。
+unsafe fn draw_guides_into(state: &OverlayState, hdc: HDC) {
+    let lines = guide_lines(state);
+    if lines.is_empty() {
+        return;
+    }
+    for (x1, y1, x2, y2, cursor) in lines {
+        let pen = if cursor {
+            state.cursor_guide_pen
+        } else {
+            state.guide_pen
+        };
+        let old_pen = SelectObject(hdc, pen);
+        MoveToEx(hdc, x1, y1, std::ptr::null_mut());
+        LineTo(hdc, x2, y2);
+        SelectObject(hdc, old_pen);
+    }
 }
 
 /// 选区标签：起点屏幕坐标 + 尺寸（物理像素）。
@@ -478,17 +730,19 @@ unsafe fn draw_magnifier(state: &OverlayState, hdc: HDC, panel: (i32, i32, i32, 
     );
     SetStretchBltMode(hdc, old_mode);
 
-    // 网格
-    let old_pen = SelectObject(hdc, state.grid_pen);
-    for i in 1..MAG_CELLS {
-        let x = mx + i * MAG_CELL;
-        MoveToEx(hdc, x, my, std::ptr::null_mut());
-        LineTo(hdc, x, my + MAG_SIZE);
-        let y = my + i * MAG_CELL;
-        MoveToEx(hdc, mx, y, std::ptr::null_mut());
-        LineTo(hdc, mx + MAG_SIZE, y);
+    // 网格（可按设置关闭）
+    if state.grid {
+        let old_pen = SelectObject(hdc, state.grid_pen);
+        for i in 1..MAG_CELLS {
+            let x = mx + i * MAG_CELL;
+            MoveToEx(hdc, x, my, std::ptr::null_mut());
+            LineTo(hdc, x, my + MAG_SIZE);
+            let y = my + i * MAG_CELL;
+            MoveToEx(hdc, mx, y, std::ptr::null_mut());
+            LineTo(hdc, mx + MAG_SIZE, y);
+        }
+        SelectObject(hdc, old_pen);
     }
-    SelectObject(hdc, old_pen);
 
     // 蓝色十字线
     let center_x = mx + MAG_SIZE / 2;
@@ -608,18 +862,60 @@ fn paint(hdc: HDC) {
         let Some(state) = guard.as_mut() else {
             return;
         };
-        let frame = state.frame_rect();
-        let dirty = if !state.painted_once {
-            Some((0, 0, state.width, state.height))
-        } else {
-            union_rect(state.last_frame, frame).and_then(|r| clamp_rect(r, state.width, state.height))
-        };
-        let Some((dx, dy, dw, dh)) = dirty else {
-            return;
-        };
         unsafe {
+            // 放开 BeginPaint 的更新区裁剪：辅助线区域可能落在更新区之外。
+            SelectClipRgn(hdc, std::ptr::null_mut());
+
+            let frame = state.frame_rect();
+            let base = if !state.painted_once {
+                Some((0, 0, state.width, state.height))
+            } else {
+                union_rect(state.last_frame, frame)
+                    .and_then(|r| clamp_rect(r, state.width, state.height))
+            };
+            let old_bands = std::mem::take(&mut state.guide_bands);
+            let new_bands = guide_band_rects(state);
+
+            // 只重绘变化的辅助线带：没移动的线（例如拖选区时的光标竖线以外的边线）
+            // 仍留在后备缓冲/屏幕里，不必每帧重画。
+            let mut rects: Vec<(i32, i32, i32, i32)> = Vec::with_capacity(2 + old_bands.len() + new_bands.len());
+            if let Some(rect) = base {
+                rects.push(rect);
+            }
+            for rect in &old_bands {
+                if !new_bands.contains(rect) && !rects.contains(rect) {
+                    rects.push(*rect);
+                }
+            }
+            for rect in &new_bands {
+                if !old_bands.contains(rect) && !rects.contains(rect) {
+                    rects.push(*rect);
+                }
+            }
+
+            for rect in &rects {
+                paint_rect(state, hdc, *rect);
+            }
+
+            state.guide_bands = new_bands;
+            state.painted_once = true;
+            state.last_frame = frame;
+        }
+    });
+}
+
+/// 重绘一块区域（重建后备缓冲 + 呈现），最后把辅助线画进这一块。
+unsafe fn paint_rect(state: &mut OverlayState, hdc: HDC, dirty: (i32, i32, i32, i32)) {
+        let (dx, dy, dw, dh) = dirty;
             // 1. 用压暗图恢复变化区域（擦掉上一帧的边框/标签/放大镜/标注）。
             BitBlt(state.back.dc(), dx, dy, dw, dh, state.dimmed.dc(), dx, dy, SRCCOPY);
+
+            // 远离选区和工具栏的线带只需要「压暗图 + 辅助线」，直接呈现，省掉整条绘制流程。
+            if !band_needs_full_paint(state, dirty) {
+                draw_guides_in_rect(state, state.back.dc(), dirty);
+                BitBlt(hdc, dx, dy, dw, dh, state.back.dc(), dx, dy, SRCCOPY);
+                return;
+            }
 
             if state.phase == Phase::Annotating {
                 let Some(sel) = state.selection else {
@@ -786,9 +1082,16 @@ fn paint(hdc: HDC) {
                 SelectClipRgn(state.back.dc(), std::ptr::null_mut());
                 DeleteObject(rgn);
 
-                // 选区控制点
+                // 辅助线画在选区内容之上、控制点/工具栏之下。
+                draw_guides_in_rect(state, state.back.dc(), dirty);
+
+                // 选区控制点（只画与当前重绘块相交的）
+                let band = (dx, dy, dw, dh);
                 if state.toolbar_visible() {
                     for (hx, hy) in toolbar::handle_points(sel) {
+                        if !rect_intersects(band, (hx - 4, hy - 4, 10, 10)) {
+                            continue;
+                        }
                         let rect = RECT {
                             left: hx - 4,
                             top: hy - 4,
@@ -814,30 +1117,51 @@ fn paint(hdc: HDC) {
                         DeleteObject(pen);
                     }
 
-                    let toolbar_state = toolbar::ToolbarState {
-                        selection: sel,
-                        screen: (state.width, state.height),
-                        cursor: state.cursor,
-                        tool: state.doc.tool(),
-                        picks: state.picks,
-                        style_open: state.style_open,
-                        color_index: state.doc.color_index(),
-                        width: state.doc.width(),
-                        fill: state.doc.fill(),
-                        strength: state.doc.strength(state.doc.tool() != Some(Shape::Blur)),
-                        opacity: state.doc.opacity(),
-                        font_size: state.doc.font_size(),
-                        serial_size: state.doc.serial_size(),
-                        line_style: state.doc.line_style(matches!(
-                            state.doc.tool(),
-                            Some(Shape::Rect | Shape::Ellipse | Shape::Circle)
-                        )),
-                        arrow_style: state.doc.arrow_style(),
-                        line_menu_open: state.line_menu_open,
-                        arrow_menu_open: state.arrow_menu_open,
-                        delete_mode: state.delete_mode,
-                    };
-                    toolbar::draw(state.back.dc(), &toolbar_state);
+                    // 工具栏只在与重绘块相交时才重画：否则每条辅助线带都要画一遍图标，明显拖慢。
+                    let layout = toolbar::layout(
+                        sel,
+                        (state.width, state.height),
+                        state.doc.tool(),
+                        state.style_open,
+                        &state.picks,
+                        state.line_menu_open,
+                        state.arrow_menu_open,
+                    );
+                    let bar_hit = rect_intersects(
+                        band,
+                        (layout.x, layout.y, layout.width, layout.height),
+                    ) || layout
+                        .style_bg
+                        .is_some_and(|bg| rect_intersects(band, bg))
+                        || layout.menus.iter().any(|(_, rect)| {
+                            rect_intersects(band, (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top))
+                        });
+                    if bar_hit {
+                        let toolbar_state = toolbar::ToolbarState {
+                            selection: sel,
+                            screen: (state.width, state.height),
+                            cursor: state.cursor,
+                            tool: state.doc.tool(),
+                            picks: state.picks,
+                            style_open: state.style_open,
+                            color_index: state.doc.color_index(),
+                            width: state.doc.width(),
+                            fill: state.doc.fill(),
+                            strength: state.doc.strength(state.doc.tool() != Some(Shape::Blur)),
+                            opacity: state.doc.opacity(),
+                            font_size: state.doc.font_size(),
+                            serial_size: state.doc.serial_size(),
+                            line_style: state.doc.line_style(matches!(
+                                state.doc.tool(),
+                                Some(Shape::Rect | Shape::Ellipse | Shape::Circle)
+                            )),
+                            arrow_style: state.doc.arrow_style(),
+                            line_menu_open: state.line_menu_open,
+                            arrow_menu_open: state.arrow_menu_open,
+                            delete_mode: state.delete_mode,
+                        };
+                        toolbar::draw(state.back.dc(), &toolbar_state);
+                    }
                 }
             } else if let Some(w) = state.current_rect() {
                 let (x, y, sw, sh) = w;
@@ -862,6 +1186,11 @@ fn paint(hdc: HDC) {
                 );
             }
 
+            // 1.5 选择阶段的辅助线（标注阶段已在控制点之前画过）。
+            if state.phase == Phase::Selecting {
+                draw_guides_in_rect(state, state.back.dc(), dirty);
+            }
+
             // 2. 放大镜（仅选区阶段；面板整体落在脏区内才画）。
             if state.magnifier_visible() {
                 if let Some(cursor) = state.cursor {
@@ -878,10 +1207,6 @@ fn paint(hdc: HDC) {
 
             // 3. 只呈现变化区域；屏幕其余部分本来就是对的。
             BitBlt(hdc, dx, dy, dw, dh, state.back.dc(), dx, dy, SRCCOPY);
-        }
-        state.painted_once = true;
-        state.last_frame = frame;
-    });
 }
 
 /// 正圆：把鼠标终点约束成"以锚点为角、边长取较大拖距"的正方形对角，并夹在选区内。
@@ -1513,6 +1838,43 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             DestroyWindow(hwnd);
             0
         }
+        // Alt 走 SYSKEYDOWN/UP：用来切换对齐辅助线（其余 Alt 组合不处理）。
+        WM_SYSKEYDOWN => {
+            if wp as u16 == VK_MENU {
+                let changed = STATE.with(|cell| {
+                    let mut guard = cell.borrow_mut();
+                    if let Some(state) = guard.as_mut() {
+                        if !state.alt_down {
+                            state.alt_down = true;
+                            return true;
+                        }
+                    }
+                    false
+                });
+                if changed {
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                }
+            }
+            0
+        }
+        WM_SYSKEYUP => {
+            if wp as u16 == VK_MENU {
+                let changed = STATE.with(|cell| {
+                    let mut guard = cell.borrow_mut();
+                    if let Some(state) = guard.as_mut() {
+                        if state.alt_down {
+                            state.alt_down = false;
+                            return true;
+                        }
+                    }
+                    false
+                });
+                if changed {
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                }
+            }
+            0
+        }
         WM_KEYDOWN => {
             let key = wp as u16;
             if GetKeyState(VK_CONTROL as i32) < 0 && key == 0x53 {
@@ -1977,12 +2339,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 
 
 /// 抓屏 → 建三张 DIB 段（原图/压暗/后备）→ 覆盖层窗口 → 选区。
-pub fn select(
-    width: i32,
-    height: i32,
-    manual_dir: PathBuf,
-    quick_dir: PathBuf,
-) -> Option<OverlayOutcome> {
+pub fn select(width: i32, height: i32, options: OverlayOptions) -> Option<OverlayOutcome> {
     let class_name: Vec<u16> = "LightweightToolsetScreenshotOverlay\0"
         .encode_utf16()
         .collect();
@@ -2018,12 +2375,16 @@ pub fn select(
 
             let dimmed = Surface::new(width, height)?;
             BitBlt(dimmed.dc(), 0, 0, width, height, original.dc(), 0, 0, SRCCOPY);
-            let mut black = Surface::new(1, 1)?;
-            black.set_pixel(0, 0, 0);
+            let mut dim_base = Surface::new(1, 1)?;
+            dim_base.set_pixel(
+                (options.dim_color & 0xFF) as u8,
+                ((options.dim_color >> 8) & 0xFF) as u8,
+                ((options.dim_color >> 16) & 0xFF) as u8,
+            );
             let blend = BLENDFUNCTION {
                 BlendOp: 0,
                 BlendFlags: 0,
-                SourceConstantAlpha: DIM_ALPHA,
+                SourceConstantAlpha: options.dim_alpha,
                 AlphaFormat: 0,
             };
             AlphaBlend(
@@ -2032,7 +2393,7 @@ pub fn select(
                 0,
                 width,
                 height,
-                black.dc(),
+                dim_base.dc(),
                 0,
                 0,
                 1,
@@ -2060,7 +2421,28 @@ pub fn select(
                 windows_sys::w!("Segoe UI") as *const u16,
             );
             let pen = CreatePen(PS_SOLID, 3, rgb(0x30, 0x7d, 0xef));
-            let grid_pen = CreatePen(PS_SOLID, 1, rgb(0x66, 0x66, 0x66));
+            let grid_pen = CreatePen(PS_SOLID, 1, options.grid_color);
+            // 自定义虚线段长（随线宽缩放），避免系统 PS_DASH 的粗段看起来像“色块+白条”。
+            let guide_width = options.guides_width.clamp(1, 5);
+            let guide_dash: [u32; 2] = [
+                (guide_width as u32) * 4,
+                (guide_width as u32) * 4,
+            ];
+            let guide_brush = LOGBRUSH {
+                lbStyle: BS_SOLID,
+                lbColor: options.guides_color,
+                lbHatch: 0,
+            };
+            let guide_pen = ExtCreatePen(
+                (PS_GEOMETRIC | PS_USERSTYLE | PS_ENDCAP_FLAT | PS_JOIN_MITER) as u32,
+                guide_width as u32,
+                &guide_brush,
+                2,
+                guide_dash.as_ptr(),
+            );
+            let cursor_guide_width = options.cursor_guide_width.clamp(1, 5);
+            let cursor_guide_pen =
+                CreatePen(PS_SOLID, cursor_guide_width, options.cursor_guide_color);
             let cross_pen = CreatePen(PS_SOLID, 2, rgb(0x30, 0x7d, 0xef));
             let white_pen = CreatePen(PS_SOLID, 1, rgb(0xff, 0xff, 0xff));
             let panel_brush = CreateSolidBrush(rgb(0x00, 0x00, 0x00));
@@ -2099,6 +2481,8 @@ pub fn select(
                     font,
                     pen,
                     grid_pen,
+                    guide_pen,
+                    cursor_guide_pen,
                     cross_pen,
                     white_pen,
                     panel_brush,
@@ -2119,8 +2503,15 @@ pub fn select(
                     delete_mode: false,
                     saved: false,
                     copy_only: false,
-                    manual_dir,
-                    quick_dir,
+                    manual_dir: options.manual_dir,
+                    quick_dir: options.quick_dir,
+                    file_template: options.file_template,
+                    grid: options.grid,
+                    guides_mode: options.guides_mode,
+                    guide_width,
+                    cursor_guide_width,
+                    guide_bands: Vec::new(),
+                    alt_down: false,
                     ime_context: ime_context as isize,
                     doc: Document::new(),
                     draft_points: Vec::new(),

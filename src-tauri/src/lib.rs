@@ -113,6 +113,16 @@ struct SettingsPatch {
     screenshot_manual_save_dir: Option<String>,
     screenshot_quick_save_dir: Option<String>,
     screenshot_palette: Option<Vec<String>>,
+    screenshot_file_template: Option<String>,
+    screenshot_dim_color: Option<String>,
+    screenshot_dim_opacity: Option<u8>,
+    screenshot_magnifier_grid: Option<bool>,
+    screenshot_magnifier_grid_color: Option<String>,
+    screenshot_guides_mode: Option<String>,
+    screenshot_guides_color: Option<String>,
+    screenshot_cursor_guide_color: Option<String>,
+    screenshot_guides_width: Option<u8>,
+    screenshot_cursor_guide_width: Option<u8>,
 }
 
 fn cold_start_ms(state: &AppState) -> Result<u128, String> {
@@ -1009,14 +1019,40 @@ fn open_storage_path(
     Ok(())
 }
 
-#[tauri::command]
-fn get_default_screenshot_dir(state: State<'_, AppState>) -> String {
-    screenshot::default_save_dir(&state).display().to_string()
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenshotDefaults {
+    save_dir: String,
+    palette: Vec<String>,
+    file_template: String,
+    dim_color: String,
+    dim_opacity: u8,
+    magnifier_grid: bool,
+    magnifier_grid_color: String,
+    guides_mode: String,
+    guides_color: String,
+    cursor_guide_color: String,
+    guides_width: u8,
+    cursor_guide_width: u8,
 }
 
+/// 截图工具页「恢复默认」需要的全部内置默认值。
 #[tauri::command]
-fn get_default_screenshot_palette() -> Vec<String> {
-    screenshot::default_palette_hex()
+fn get_screenshot_defaults(state: State<'_, AppState>) -> ScreenshotDefaults {
+    ScreenshotDefaults {
+        save_dir: screenshot::default_save_dir(&state).display().to_string(),
+        palette: screenshot::default_palette_hex(),
+        file_template: screenshot::default_file_template(),
+        dim_color: "#000000".to_owned(),
+        dim_opacity: screenshot::DEFAULT_DIM_OPACITY,
+        magnifier_grid: true,
+        magnifier_grid_color: "#666666".to_owned(),
+        guides_mode: "alt".to_owned(),
+        guides_color: "#30B4FF".to_owned(),
+        cursor_guide_color: "#808080".to_owned(),
+        guides_width: 1,
+        cursor_guide_width: 1,
+    }
 }
 
 #[tauri::command]
@@ -1086,6 +1122,53 @@ fn update_app_settings(
             next.push(candidate);
         }
         settings.screenshot_palette = next;
+    }
+    if let Some(template) = patch.screenshot_file_template {
+        // 空模板等于恢复默认，避免保存出空文件名。
+        let trimmed = template.trim();
+        settings.screenshot_file_template = if trimmed.is_empty() {
+            screenshot::default_file_template()
+        } else {
+            trimmed.to_owned()
+        };
+    }
+    if let Some(color) = patch.screenshot_dim_color {
+        if screenshot::is_valid_hex(&color) {
+            settings.screenshot_dim_color = color.to_uppercase();
+        }
+    }
+    if let Some(opacity) = patch.screenshot_dim_opacity {
+        settings.screenshot_dim_opacity = opacity.min(100);
+    }
+    if let Some(grid) = patch.screenshot_magnifier_grid {
+        settings.screenshot_magnifier_grid = grid;
+    }
+    if let Some(color) = patch.screenshot_magnifier_grid_color {
+        if screenshot::is_valid_hex(&color) {
+            settings.screenshot_magnifier_grid_color = color.to_uppercase();
+        }
+    }
+    if let Some(mode) = patch.screenshot_guides_mode {
+        // 只接受三态里的值，其余保持原设置。
+        if matches!(mode.as_str(), "always" | "alt" | "off") {
+            settings.screenshot_guides_mode = mode;
+        }
+    }
+    if let Some(color) = patch.screenshot_guides_color {
+        if screenshot::is_valid_hex(&color) {
+            settings.screenshot_guides_color = color.to_uppercase();
+        }
+    }
+    if let Some(color) = patch.screenshot_cursor_guide_color {
+        if screenshot::is_valid_hex(&color) {
+            settings.screenshot_cursor_guide_color = color.to_uppercase();
+        }
+    }
+    if let Some(width) = patch.screenshot_guides_width {
+        settings.screenshot_guides_width = width.clamp(1, 5);
+    }
+    if let Some(width) = patch.screenshot_cursor_guide_width {
+        settings.screenshot_cursor_guide_width = width.clamp(1, 5);
     }
     if let Some(window_title) = patch.window_title {
         let title = window_title.trim();
@@ -1475,8 +1558,7 @@ pub fn run() {
             clipboard_open_management,
             get_default_storage_path,
             open_storage_path,
-            get_default_screenshot_dir,
-            get_default_screenshot_palette,
+            get_screenshot_defaults,
             open_screenshot_dir,
             update_app_settings
         ])

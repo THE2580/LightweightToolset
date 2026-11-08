@@ -354,6 +354,16 @@ type AppSettings = {
   screenshotManualSaveDir: string;
   screenshotQuickSaveDir: string;
   screenshotPalette: string[];
+  screenshotFileTemplate: string;
+  screenshotDimColor: string;
+  screenshotDimOpacity: number;
+  screenshotMagnifierGrid: boolean;
+  screenshotMagnifierGridColor: string;
+  screenshotGuidesMode: string;
+  screenshotGuidesColor: string;
+  screenshotCursorGuideColor: string;
+  screenshotGuidesWidth: number;
+  screenshotCursorGuideWidth: number;
 };
 
 type SettingsPatch = Partial<Omit<AppSettings, "tools" | "autoStart">>;
@@ -1140,7 +1150,7 @@ function App() {
               />
             </div>
           ) : activeTool ? (
-            <div className="page-enter" key={activeTool.id}><ToolPage onOpenSettingsTab={openSettingsTab} settings={settings} tool={activeTool} updateSettings={updateSettings} /></div>
+            <div className="page-enter" key={activeTool.id}><ToolPage appHotkeys={snapshot?.appHotkeys ?? []} onOpenSettingsTab={openSettingsTab} settings={settings} setSnapshot={setSnapshot} tool={activeTool} tools={tools} updateSettings={updateSettings} /></div>
           ) : null}
         </main>
       </div>
@@ -1737,14 +1747,17 @@ function formatLogTime(timestampMs: number) {
   return new Date(timestampMs).toLocaleTimeString("zh-CN", { hour12: false });
 }
 
-function ToolPage({ onOpenSettingsTab, settings, tool, updateSettings }: {
+function ToolPage({ appHotkeys, onOpenSettingsTab, settings, setSnapshot, tool, tools, updateSettings }: {
+  appHotkeys: Tool[];
   onOpenSettingsTab: (tab: SettingsTab) => void;
   settings?: AppSettings;
+  setSnapshot: React.Dispatch<React.SetStateAction<AppSnapshot | null>>;
   tool: Tool;
+  tools: Tool[];
   updateSettings: (patch: SettingsPatch) => Promise<void>;
 }) {
   if (tool.id === "screenshot") {
-    return <ScreenshotToolPage onOpenSettingsTab={onOpenSettingsTab} settings={settings} tool={tool} updateSettings={updateSettings} />;
+    return <ScreenshotToolPage appHotkeys={appHotkeys} settings={settings} setSnapshot={setSnapshot} tool={tool} tools={tools} updateSettings={updateSettings} />;
   }
   if (tool.id === "clipboard") {
     return <ClipboardToolPage onOpenSettingsTab={onOpenSettingsTab} tool={tool} />;
@@ -1778,46 +1791,186 @@ function ToolPage({ onOpenSettingsTab, settings, tool, updateSettings }: {
 }
 
 
-function ScreenshotToolPage({ onOpenSettingsTab, settings, tool, updateSettings }: {
-  onOpenSettingsTab: (tab: SettingsTab) => void;
+
+
+type ScreenshotDefaults = {
+  saveDir: string;
+  palette: string[];
+  fileTemplate: string;
+  dimColor: string;
+  dimOpacity: number;
+  magnifierGrid: boolean;
+  magnifierGridColor: string;
+  guidesMode: string;
+  guidesColor: string;
+  cursorGuideColor: string;
+  guidesWidth: number;
+  cursorGuideWidth: number;
+};
+
+type ScreenshotTab = "capture" | "pin" | "save" | "annotate" | "hotkey";
+
+
+function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, updateSettings }: {
+  appHotkeys: Tool[];
   settings?: AppSettings;
+  setSnapshot: React.Dispatch<React.SetStateAction<AppSnapshot | null>>;
   tool: Tool;
+  tools: Tool[];
   updateSettings: (patch: SettingsPatch) => Promise<void>;
 }) {
-  const [defaultDir, setDefaultDir] = useState("");
-  const [defaultPalette, setDefaultPalette] = useState<string[]>([]);
+  const [activeTab, setActiveTab] = useState<ScreenshotTab>("capture");
+  const [defaults, setDefaults] = useState<ScreenshotDefaults | null>(null);
+  const [templateDraft, setTemplateDraft] = useState(settings?.screenshotFileTemplate ?? "");
+  const [editingHotkey, setEditingHotkey] = useState(false);
+  const [hotkeyDraft, setHotkeyDraft] = useState<CaptureHotkeyDraft>({ display: "", value: "" });
+  const [notice, setNotice] = useState<HotkeyNotice | null>(null);
+  const [noticeClosing, setNoticeClosing] = useState(false);
+
   const manualDir = settings?.screenshotManualSaveDir ?? "";
   const quickDir = settings?.screenshotQuickSaveDir ?? "";
   const palette = settings?.screenshotPalette ?? [];
+  const template = settings?.screenshotFileTemplate ?? "";
+  const dimColor = settings?.screenshotDimColor ?? "#000000";
+  const dimOpacity = settings?.screenshotDimOpacity ?? 45;
+  const grid = settings?.screenshotMagnifierGrid ?? true;
+  const gridColor = settings?.screenshotMagnifierGridColor ?? "#666666";
+  const guidesMode = settings?.screenshotGuidesMode ?? "alt";
+  const guidesColor = settings?.screenshotGuidesColor ?? "#30B4FF";
+  const cursorGuideColor = settings?.screenshotCursorGuideColor ?? "#808080";
+  const guidesWidth = settings?.screenshotGuidesWidth ?? 1;
+  const cursorGuideWidth = settings?.screenshotCursorGuideWidth ?? 1;
+  const currentHotkey = tools.find((item) => item.id === "screenshot")?.hotkey ?? tool.hotkey;
+  const otherHotkeys = [
+    ...appHotkeys.filter((item) => item.supportsHotkey).map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey })),
+    ...tools
+      .filter((item) => item.supportsHotkey && item.id !== "screenshot")
+      .map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey })),
+  ];
 
   useEffect(() => {
-    void invoke<string>("get_default_screenshot_dir")
-      .then(setDefaultDir)
-      .catch(() => setDefaultDir(""));
-    void invoke<string[]>("get_default_screenshot_palette")
-      .then(setDefaultPalette)
-      .catch(() => setDefaultPalette([]));
+    void invoke<ScreenshotDefaults>("get_screenshot_defaults")
+      .then(setDefaults)
+      .catch(() => setDefaults(null));
   }, []);
+
+  useEffect(() => setTemplateDraft(template), [template]);
+
+  function showNotice(nextNotice: HotkeyNotice) {
+    setNoticeClosing(false);
+    setNotice(nextNotice);
+  }
+
+  function closeNotice() {
+    setNoticeClosing(true);
+    window.setTimeout(() => {
+      setNotice(null);
+      setNoticeClosing(false);
+    }, 180);
+  }
 
   async function changeDir(kind: "manual" | "quick") {
     const current = kind === "manual" ? manualDir : quickDir;
     const selected = await open({
-      defaultPath: current || defaultDir || undefined,
+      defaultPath: current || defaults?.saveDir || undefined,
       directory: true,
       multiple: false,
       title: kind === "manual" ? "选择手动保存目录" : "选择快捷保存目录",
     });
     if (typeof selected === "string") {
-      void updateSettings(
-        kind === "manual" ? { screenshotManualSaveDir: selected } : { screenshotQuickSaveDir: selected },
-      );
+      void updateSettings(kind === "manual" ? { screenshotManualSaveDir: selected } : { screenshotQuickSaveDir: selected });
     }
+  }
+
+  function commitTemplate() {
+    const next = templateDraft.trim();
+    if (next === template) {
+      return;
+    }
+    void updateSettings({ screenshotFileTemplate: next || defaults?.fileTemplate || "" });
   }
 
   function updateColor(index: number, value: string) {
     const next = [...palette];
     next[index] = value.toUpperCase();
     void updateSettings({ screenshotPalette: next });
+  }
+
+  async function startHotkeyEditing() {
+    setEditingHotkey(true);
+    setHotkeyDraft({ display: "", value: "" });
+    try {
+      await invoke("suspend_tool_hotkeys");
+    } catch (reason) {
+      showNotice({ phase: "error", title: "快捷键监听失败", message: String(reason) });
+    }
+  }
+
+  async function stopHotkeyEditing() {
+    setEditingHotkey(false);
+    setHotkeyDraft({ display: "", value: "" });
+    try {
+      await invoke("resume_tool_hotkeys");
+    } catch {
+      // 恢复失败由后端日志记录，界面保持可用。
+    }
+  }
+
+  function captureHotkey(event: React.KeyboardEvent<HTMLElement>) {
+    event.preventDefault();
+    const key = normalizeKeyboardKey(event.key);
+    if (!key) {
+      return;
+    }
+    const display = [
+      event.ctrlKey ? "CTRL" : "",
+      event.altKey ? "ALT" : "",
+      event.shiftKey ? "SHIFT" : "",
+      event.metaKey ? "WIN" : "",
+      key,
+    ].filter(Boolean).join("+");
+    setHotkeyDraft({ display, value: display.replace(/\bWIN\b/g, "SUPER") });
+  }
+
+  async function saveHotkey() {
+    const normalized = normalizeHotkeyDraft(hotkeyDraft.value);
+    if (!normalized) {
+      showNotice({ phase: "error", title: "快捷键未填写", message: "请先点击输入框并按下一个快捷键组合。", detail: { kind: "plain-error" } });
+      return;
+    }
+    const validationError = validateHotkeyDraft(normalized);
+    if (validationError) {
+      showNotice({ phase: "error", title: "快捷键格式不正确", message: validationError, detail: { kind: "plain-error" } });
+      return;
+    }
+    const conflict = otherHotkeys.find((item) => normalizeHotkeyDraft(item.hotkey) === normalized);
+    if (conflict) {
+      showNotice({
+        phase: "error",
+        title: "快捷键冲突",
+        message: `快捷键 ${formatHotkeyForDisplay(normalized)} 已被 ${conflict.name} 使用。`,
+        detail: { kind: "conflict", hotkey: normalized, toolName: conflict.name },
+      });
+      return;
+    }
+    try {
+      const nextSnapshot = await invoke<AppSnapshot>("set_tool_hotkey", { toolId: "screenshot", hotkey: normalized });
+      setSnapshot(nextSnapshot);
+      await stopHotkeyEditing();
+      showNotice({ phase: "success", title: "快捷键已更新", message: `截图快捷键已设为 ${formatHotkeyForDisplay(normalized)}。` });
+    } catch (reason) {
+      showNotice({ phase: "error", title: "快捷键保存失败", message: String(reason), detail: { kind: "plain-error" } });
+    }
+  }
+
+  async function clearHotkey() {
+    try {
+      const nextSnapshot = await invoke<AppSnapshot>("clear_tool_hotkey", { toolId: "screenshot" });
+      setSnapshot(nextSnapshot);
+      showNotice({ phase: "success", title: "快捷键已停用", message: "截图不再使用快捷键，可从托盘或主窗口进入。" });
+    } catch (reason) {
+      showNotice({ phase: "error", title: "快捷键停用失败", message: String(reason), detail: { kind: "plain-error" } });
+    }
   }
 
   function renderDirRow(kind: "manual" | "quick") {
@@ -1827,7 +1980,7 @@ function ScreenshotToolPage({ onOpenSettingsTab, settings, tool, updateSettings 
         <div>
           <h2>{kind === "manual" ? "手动保存目录" : "快捷保存目录"}</h2>
           <p>{kind === "manual" ? "点覆盖层「保存」按钮时，目录选择器默认打开这里" : "在覆盖层内按 Ctrl+S 直接保存到这里"}</p>
-          <p>{defaultDir ? `默认目录：${defaultDir}` : "留空时使用默认截图目录"}</p>
+          <p>{defaults?.saveDir ? `默认目录：${defaults.saveDir}` : "留空时使用默认截图目录"}</p>
         </div>
         <div className="settings-inline wide">
           <input className="settings-input mono" placeholder="默认截图目录" readOnly value={value} />
@@ -1849,7 +2002,7 @@ function ScreenshotToolPage({ onOpenSettingsTab, settings, tool, updateSettings 
   }
 
   return (
-    <section className="tool-page">
+    <section className="tool-page screenshot-page">
       <header className="screenshot-header">
         <div className="screenshot-heading">
           <span className="screenshot-title-icon"><Crop size={18} /></span>
@@ -1859,45 +2012,367 @@ function ScreenshotToolPage({ onOpenSettingsTab, settings, tool, updateSettings 
           </div>
         </div>
       </header>
-      <div className="screenshot-toolbar">
-        <span>
-          快捷键
-          {tool.supportsHotkey ? <kbd>{tool.hotkey || "未配置"}</kbd> : <span className="hotkey-disabled">无需快捷键</span>}
-          <button aria-label="前往快捷键设置" className="screenshot-hotkey-link" onClick={() => onOpenSettingsTab("hotkey")} title="前往快捷键设置" type="button"><Settings size={13} /></button>
-        </span>
+
+      <div className="settings-tabs" role="tablist" aria-label="截图设置分类">
+        <SettingsTabButton active={activeTab === "capture"} icon={<Crop size={14} />} label="截图" onClick={() => setActiveTab("capture")} />
+        <SettingsTabButton active={activeTab === "pin"} icon={<Pin size={14} />} label="贴图" onClick={() => setActiveTab("pin")} />
+        <SettingsTabButton active={activeTab === "save"} icon={<FolderOpen size={14} />} label="保存" onClick={() => setActiveTab("save")} />
+        <SettingsTabButton active={activeTab === "annotate"} icon={<Pencil size={14} />} label="标注" onClick={() => setActiveTab("annotate")} />
+        <SettingsTabButton active={activeTab === "hotkey"} icon={<Keyboard size={14} />} label="快捷键" onClick={() => setActiveTab("hotkey")} />
       </div>
-      <div className="tool-page-settings">
-        {renderDirRow("manual")}
-        {renderDirRow("quick")}
-        <div className="settings-row stack">
-          <div>
-            <h2>标注颜色</h2>
-            <p>覆盖层工具栏的 8 个色块，点色块即可改色</p>
-          </div>
-          <div className="screenshot-palette">
-            {palette.map((color, index) => (
-              <label className="screenshot-swatch" key={index} style={{ background: color }} title={color}>
+
+      <section className="settings-panel">
+        {activeTab === "capture" ? (
+          <div className="settings-section page-enter">
+            <div className="settings-row">
+              <div>
+                <h2>未选区域颜色</h2>
+                <p>选区之外压暗层的颜色与不透明度</p>
+              </div>
+              <div className="screenshot-color-row">
                 <input
-                  aria-label={`第 ${index + 1} 个标注颜色`}
-                  onChange={(event) => updateColor(index, event.currentTarget.value)}
+                  aria-label="未选区域颜色"
+                  className="screenshot-color-input"
+                  onChange={(event) => void updateSettings({ screenshotDimColor: event.currentTarget.value.toUpperCase() })}
                   type="color"
-                  value={color}
+                  value={dimColor}
                 />
-              </label>
-            ))}
-            <button
-              className="secondary-action"
-              disabled={defaultPalette.length !== palette.length}
-              onClick={() => void updateSettings({ screenshotPalette: defaultPalette })}
-              type="button"
-            >
-              恢复默认
-            </button>
+                <input
+                  aria-label="未选区域不透明度"
+                  className="screenshot-range"
+                  max={100}
+                  min={0}
+                  onChange={(event) => void updateSettings({ screenshotDimOpacity: Number(event.currentTarget.value) })}
+                  type="range"
+                  value={dimOpacity}
+                />
+                <span className="screenshot-range-value">{dimOpacity}%</span>
+                {defaults ? (
+                  <button
+                    aria-label="恢复默认遮罩"
+                    className="icon-action"
+                    disabled={dimColor.toUpperCase() === defaults.dimColor && dimOpacity === defaults.dimOpacity}
+                    onClick={() => void updateSettings({ screenshotDimColor: defaults.dimColor, screenshotDimOpacity: defaults.dimOpacity })}
+                    type="button"
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h2>放大镜网格线</h2>
+                <p>选区阶段放大镜里的分格线</p>
+              </div>
+              <div className="screenshot-color-row">
+                <button
+                  aria-pressed={grid}
+                  className={`switch ${grid ? "on" : ""}`}
+                  onClick={() => void updateSettings({ screenshotMagnifierGrid: !grid })}
+                  type="button"
+                >
+                  <span />
+                </button>
+                {grid ? (
+                  <input
+                    aria-label="放大镜网格线颜色"
+                    className="screenshot-color-input"
+                    onChange={(event) => void updateSettings({ screenshotMagnifierGridColor: event.currentTarget.value.toUpperCase() })}
+                    type="color"
+                    value={gridColor}
+                  />
+                ) : null}
+                {defaults ? (
+                  <button
+                    aria-label="恢复默认网格线"
+                    className="icon-action"
+                    disabled={grid === defaults.magnifierGrid && gridColor.toUpperCase() === defaults.magnifierGridColor}
+                    onClick={() => void updateSettings({ screenshotMagnifierGrid: defaults.magnifierGrid, screenshotMagnifierGridColor: defaults.magnifierGridColor })}
+                    type="button"
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h2>显示辅助线</h2>
+                <p>灰色实线十字跟随光标；蓝色虚线为屏幕中心十字与选区边线/中心延长线</p>
+              </div>
+              <div className="screenshot-color-row">
+                <select
+                  aria-label="显示辅助线"
+                  className="settings-select"
+                  onChange={(event) => void updateSettings({ screenshotGuidesMode: event.currentTarget.value })}
+                  value={guidesMode}
+                >
+                  <option value="always">始终显示</option>
+                  <option value="alt">按 Alt 显示</option>
+                  <option value="off">不显示</option>
+                </select>
+                {defaults ? (
+                  <button
+                    aria-label="恢复默认辅助线模式"
+                    className="icon-action"
+                    disabled={guidesMode === defaults.guidesMode}
+                    onClick={() => void updateSettings({ screenshotGuidesMode: defaults.guidesMode })}
+                    type="button"
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            {guidesMode !== "off" ? (
+              <>
+            <div className="settings-row sub">
+              <div>
+                <h2>辅助线颜色</h2>
+                <p>屏幕中心十字、选区边线与中心十字的颜色（虚线）</p>
+              </div>
+              <div className="screenshot-color-row">
+                <input
+                  aria-label="辅助线颜色"
+                  className="screenshot-color-input"
+                  onChange={(event) => void updateSettings({ screenshotGuidesColor: event.currentTarget.value.toUpperCase() })}
+                  type="color"
+                  value={guidesColor}
+                />
+                {defaults ? (
+                  <button
+                    aria-label="恢复默认辅助线颜色"
+                    className="icon-action"
+                    disabled={guidesColor.toUpperCase() === defaults.guidesColor}
+                    onClick={() => void updateSettings({ screenshotGuidesColor: defaults.guidesColor })}
+                    type="button"
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="settings-row sub">
+              <div>
+                <h2>光标十字颜色</h2>
+                <p>跟随鼠标的实线十字颜色</p>
+              </div>
+              <div className="screenshot-color-row">
+                <input
+                  aria-label="光标十字颜色"
+                  className="screenshot-color-input"
+                  onChange={(event) => void updateSettings({ screenshotCursorGuideColor: event.currentTarget.value.toUpperCase() })}
+                  type="color"
+                  value={cursorGuideColor}
+                />
+                {defaults ? (
+                  <button
+                    aria-label="恢复默认光标十字颜色"
+                    className="icon-action"
+                    disabled={cursorGuideColor.toUpperCase() === defaults.cursorGuideColor}
+                    onClick={() => void updateSettings({ screenshotCursorGuideColor: defaults.cursorGuideColor })}
+                    type="button"
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="settings-row sub">
+              <div>
+                <h2>辅助线宽度</h2>
+                <p>屏幕中心十字、选区边线与中心十字的粗细</p>
+              </div>
+              <div className="screenshot-color-row">
+                <select
+                  aria-label="辅助线宽度"
+                  className="settings-select"
+                  onChange={(event) => void updateSettings({ screenshotGuidesWidth: Number(event.currentTarget.value) })}
+                  value={guidesWidth}
+                >
+                  {[1, 2, 3, 4, 5].map((width) => <option key={width} value={width}>{width} px</option>)}
+                </select>
+                {defaults ? (
+                  <button
+                    aria-label="恢复默认辅助线宽度"
+                    className="icon-action"
+                    disabled={guidesWidth === defaults.guidesWidth}
+                    onClick={() => void updateSettings({ screenshotGuidesWidth: defaults.guidesWidth })}
+                    type="button"
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="settings-row sub">
+              <div>
+                <h2>光标十字宽度</h2>
+                <p>跟随鼠标的实线十字粗细</p>
+              </div>
+              <div className="screenshot-color-row">
+                <select
+                  aria-label="光标十字宽度"
+                  className="settings-select"
+                  onChange={(event) => void updateSettings({ screenshotCursorGuideWidth: Number(event.currentTarget.value) })}
+                  value={cursorGuideWidth}
+                >
+                  {[1, 2, 3, 4, 5].map((width) => <option key={width} value={width}>{width} px</option>)}
+                </select>
+                {defaults ? (
+                  <button
+                    aria-label="恢复默认光标十字宽度"
+                    className="icon-action"
+                    disabled={cursorGuideWidth === defaults.cursorGuideWidth}
+                    onClick={() => void updateSettings({ screenshotCursorGuideWidth: defaults.cursorGuideWidth })}
+                    type="button"
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+              </>
+            ) : null}
           </div>
-        </div>
-      </div>
+        ) : null}
+
+        {activeTab === "pin" ? (
+          <div className="settings-section page-enter">
+            <div className="settings-row">
+              <div>
+                <h2>贴图</h2>
+                <p>贴图窗口、贴图历史与贴图快捷键还在开发中，完成后会出现在这里。</p>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab === "save" ? (
+          <div className="settings-section page-enter">
+            {renderDirRow("manual")}
+            {renderDirRow("quick")}
+            <div className="settings-row stack">
+              <div>
+                <h2>文件名模板</h2>
+                <p>可用占位符：$yyyy$ 年、$MM$ 月、$dd$ 日、$HH$ 时、$mm$ 分、$ss$ 秒；扩展名固定 .png</p>
+                <p className="screenshot-template-preview">示例：{renderTemplatePreview(templateDraft || defaults?.fileTemplate || "")}</p>
+              </div>
+              <div className="settings-inline wide">
+                <input
+                  className="settings-input mono"
+                  onBlur={commitTemplate}
+                  onChange={(event) => setTemplateDraft(event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.currentTarget.blur();
+                    }
+                  }}
+                  placeholder="Screenshot_$yyyy$-$MM$-$dd$_$HH$-$mm$-$ss$"
+                  value={templateDraft}
+                />
+                {defaults ? (
+                  <button
+                    aria-label="恢复默认文件名模板"
+                    className="icon-action"
+                    disabled={template === defaults.fileTemplate}
+                    onClick={() => void updateSettings({ screenshotFileTemplate: defaults.fileTemplate })}
+                    type="button"
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab === "annotate" ? (
+          <div className="settings-section page-enter">
+            <div className="settings-row stack">
+              <div>
+                <h2>预设颜色</h2>
+                <p>覆盖层工具栏的 8 个色块，点色块即可改色</p>
+              </div>
+              <div className="screenshot-palette">
+                {palette.map((color, index) => (
+                  <label className="screenshot-swatch" key={index} style={{ background: color }} title={color}>
+                    <input
+                      aria-label={`第 ${index + 1} 个标注颜色`}
+                      onChange={(event) => updateColor(index, event.currentTarget.value)}
+                      type="color"
+                      value={color}
+                    />
+                  </label>
+                ))}
+                <button
+                  className="secondary-action"
+                  disabled={!defaults || defaults.palette.length !== palette.length}
+                  onClick={() => defaults && void updateSettings({ screenshotPalette: defaults.palette })}
+                  type="button"
+                >
+                  恢复默认
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab === "hotkey" ? (
+          <div className="settings-section page-enter">
+            <div className="settings-row hotkey-row">
+              <div>
+                <h2>截图快捷键</h2>
+                <p>按下后进入截图；录制时会临时暂停全局热键。</p>
+              </div>
+              <div className="hotkey-controls">
+                {editingHotkey ? (
+                  <>
+                    <button
+                      autoFocus
+                      className={`hotkey-capture ${hotkeyDraft.display ? "" : "empty"}`}
+                      onBlur={() => void stopHotkeyEditing()}
+                      onKeyDown={captureHotkey}
+                      type="button"
+                    >
+                      {hotkeyDraft.display || "按下快捷键"}
+                    </button>
+                    <button className="primary-action icon-text-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void saveHotkey()} type="button"><Check size={12} />保存</button>
+                    <button className="secondary-action" onMouseDown={(event) => event.preventDefault()} onClick={() => void stopHotkeyEditing()} type="button">取消</button>
+                  </>
+                ) : (
+                  <>
+                    {currentHotkey ? <kbd className="hotkey-preview">{formatHotkeyForDisplay(currentHotkey)}</kbd> : <span className="hotkey-disabled">未设置</span>}
+                    <button aria-label="编辑截图快捷键" className="secondary-action hotkey-icon-action" title="编辑快捷键" onClick={() => void startHotkeyEditing()} type="button"><Pencil size={14} /></button>
+                    {currentHotkey ? <button aria-label="停用截图快捷键" className="secondary-action hotkey-icon-action danger-action" title="停用快捷键" onClick={() => void clearHotkey()} type="button"><Trash2 size={14} /></button> : null}
+                  </>
+                )}
+              </div>
+            </div>
+            <p className="settings-note">停用后只能从托盘或主窗口进入截图；新快捷键不能与其它工具的快捷键冲突。</p>
+          </div>
+        ) : null}
+      </section>
+
+      {notice ? <HotkeyNoticeDialog closing={noticeClosing} notice={notice} onClose={closeNotice} /> : null}
     </section>
   );
+}
+
+/// 文件名模板预览：与 Rust 端 `render_file_name` 的占位符保持一致。
+function renderTemplatePreview(template: string) {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const source = template.trim() || "Screenshot_$yyyy$-$MM$-$dd$_$HH$-$mm$-$ss$";
+  const rendered = source
+    .split("$yyyy$").join(String(now.getFullYear()))
+    .split("$MM$").join(pad(now.getMonth() + 1))
+    .split("$dd$").join(pad(now.getDate()))
+    .split("$HH$").join(pad(now.getHours()))
+    .split("$mm$").join(pad(now.getMinutes()))
+    .split("$ss$").join(pad(now.getSeconds()));
+  return rendered.toLowerCase().endsWith(".png") ? rendered : `${rendered}.png`;
 }
 
 function SettingsView({
@@ -2109,8 +2584,9 @@ function HotkeySettings({
   const appItems = appHotkeys
     .filter((item) => item.supportsHotkey)
     .map((item) => ({ ...item, group: "app" as const, displayName: item.name }));
+  // 截图工具的快捷键已迁到它自己的工具页「快捷键」标签，不再出现在全局设置里。
   const toolItems = tools
-    .filter((tool) => tool.supportsHotkey)
+    .filter((tool) => tool.supportsHotkey && tool.id !== "screenshot")
     .map((tool) => ({ ...tool, group: "tool" as const, displayName: hotkeyFeatureName(tool) }));
   const hotkeyItems: HotkeyItem[] = [...appItems, ...toolItems];
   const groups: Array<{ id: string; title: string; description: string; items: HotkeyItem[] }> = [
