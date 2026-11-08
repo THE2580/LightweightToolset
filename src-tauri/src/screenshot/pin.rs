@@ -751,7 +751,7 @@ unsafe fn write_drag_file(state: &PinState) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
-/// 调试期临时日志（仅 debug 构建），排查完删除。
+/// 只为开发版留的拖放诊断日志：写 `%TEMP%\lwt-supdrag.log`，正式构建不编译。
 fn dbg_log(message: &str) {
     if !cfg!(debug_assertions) {
         return;
@@ -767,17 +767,356 @@ fn dbg_log(message: &str) {
     }
 }
 
-/// 按住 Ctrl 拖动贴图：把这张图作为文件拖给其它程序（超级拖放）。
+/// 超级拖放的数据对象：同时提供「图片位图」和「PNG 文件」两种格式。
 ///
-/// `SHDoDragDrop` 要的是 `IDataObject`，所以先用 `BindToHandler(BHID_DataObject)`
-/// 从 shell 项数组里取出数据对象，再交给系统拖放。
+/// 只给文件时，很多网页上传区（只吃位图）会拒收，表现就是「拖了没反应」；
+/// PixPin 也是位图 + 文件双格式，这里对齐。
+#[windows::core::implement(windows::Win32::System::Com::IDataObject)]
+struct PinDataObject {
+    /// 自顶向下 BGRA。
+    pixels: Vec<u8>,
+    width: i32,
+    height: i32,
+    /// 临时 PNG 的宽字符路径（含结尾 0）。
+    file: Vec<u16>,
+}
+
+/// IDragSourceHelper 通过 SetData 塞进来的拖动图像（cfFormat, tymed, HGLOBAL）。
+/// 放在静态里，拖放结束后好统一释放，不然每次拖放都会漏一块位图内存。
+static DRAG_IMAGE_MEDIUM: Mutex<Option<(u16, u32, isize)>> = Mutex::new(None);
+
+const CF_DIB: u16 = 8;
+const CF_HDROP: u16 = 15;
+
+fn hglobal_from_bytes(bytes: &[u8]) -> Option<windows::Win32::Foundation::HGLOBAL> {
+    unsafe {
+        let handle = windows_sys::Win32::System::Memory::GlobalAlloc(
+            windows_sys::Win32::System::Memory::GMEM_MOVEABLE,
+            bytes.len(),
+        );
+        if handle.is_null() {
+            return None;
+        }
+        let pointer = windows_sys::Win32::System::Memory::GlobalLock(handle);
+        if pointer.is_null() {
+            return None;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer as *mut u8, bytes.len());
+        windows_sys::Win32::System::Memory::GlobalUnlock(handle);
+        Some(windows::Win32::Foundation::HGLOBAL(handle))
+    }
+}
+
+unsafe fn medium_from_bytes(
+    bytes: &[u8],
+) -> windows::core::Result<windows::Win32::System::Com::STGMEDIUM> {
+    use windows::Win32::System::Com::{STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL};
+    let Some(handle) = hglobal_from_bytes(bytes) else {
+        return Err(windows::Win32::Foundation::E_OUTOFMEMORY.into());
+    };
+    Ok(STGMEDIUM {
+        tymed: TYMED_HGLOBAL.0 as u32,
+        u: STGMEDIUM_0 { hGlobal: handle },
+        pUnkForRelease: std::mem::ManuallyDrop::new(None),
+    })
+}
+
+impl PinDataObject {
+    /// CF_DIB：BITMAPINFOHEADER + 自下而上的 32 位像素。
+    fn dib_bytes(&self) -> Vec<u8> {
+        use std::mem::size_of;
+        let header_size = size_of::<windows_sys::Win32::Graphics::Gdi::BITMAPINFOHEADER>();
+        let width = self.width.max(0) as u32;
+        let height = self.height.max(0) as u32;
+        let image_size = width * height * 4;
+        let mut bytes = vec![0u8; header_size + image_size as usize];
+        let header = windows_sys::Win32::Graphics::Gdi::BITMAPINFOHEADER {
+            biSize: header_size as u32,
+            biWidth: width as i32,
+            // 正高度 = 自下而上，CF_DIB 的约定。
+            biHeight: height as i32,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: windows_sys::Win32::Graphics::Gdi::BI_RGB,
+            biSizeImage: image_size,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        };
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                &header as *const _ as *const u8,
+                bytes.as_mut_ptr(),
+                header_size,
+            );
+        }
+        let body = flip_rows(&self.pixels, self.width, self.height);
+        bytes[header_size..].copy_from_slice(&body);
+        bytes
+    }
+
+    /// CF_HDROP：DROPFILES 头 + 双 0 结尾的宽字符路径。
+    fn dropfiles_bytes(&self) -> Vec<u8> {
+        #[repr(C)]
+        struct DropFiles {
+            p_files: u32,
+            pt_x: i32,
+            pt_y: i32,
+            f_nc: i32,
+            f_wide: i32,
+        }
+        let header_size = std::mem::size_of::<DropFiles>();
+        let mut bytes = vec![0u8; header_size + (self.file.len() + 1) * 2];
+        let header = DropFiles {
+            p_files: header_size as u32,
+            pt_x: 0,
+            pt_y: 0,
+            f_nc: 0,
+            f_wide: 1,
+        };
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                &header as *const _ as *const u8,
+                bytes.as_mut_ptr(),
+                header_size,
+            );
+        }
+        for (index, unit) in self.file.iter().enumerate() {
+            let offset = header_size + index * 2;
+            bytes[offset..offset + 2].copy_from_slice(&unit.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn supports(format: u16) -> bool {
+        format == CF_DIB || format == CF_HDROP
+    }
+
+    fn formats() -> Vec<windows::Win32::System::Com::FORMATETC> {
+        use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
+        [CF_DIB, CF_HDROP]
+            .into_iter()
+            .map(|format| FORMATETC {
+                cfFormat: format,
+                ptd: std::ptr::null_mut(),
+                dwAspect: DVASPECT_CONTENT.0 as u32,
+                lindex: -1,
+                tymed: TYMED_HGLOBAL.0 as u32,
+            })
+            .collect()
+    }
+}
+
+impl windows::Win32::System::Com::IDataObject_Impl for PinDataObject_Impl {
+    fn GetData(
+        &self,
+        format: *const windows::Win32::System::Com::FORMATETC,
+    ) -> windows::core::Result<windows::Win32::System::Com::STGMEDIUM> {
+        use windows::Win32::System::Com::DVASPECT_CONTENT;
+        let Some(format) = (unsafe { format.as_ref() }) else {
+            return Err(windows::Win32::Foundation::E_INVALIDARG.into());
+        };
+        let extra = DRAG_IMAGE_MEDIUM
+            .lock()
+            .ok()
+            .and_then(|slot| *slot)
+            .is_some_and(|(cf, _, _)| cf == format.cfFormat);
+        if format.dwAspect != DVASPECT_CONTENT.0 as u32
+            || (!PinDataObject::supports(format.cfFormat) && !extra)
+        {
+            // DV_E_FORMATETC
+            return Err(windows::core::HRESULT(0x8004_0064u32 as i32).into());
+        }
+        if let Ok(mut slot) = DRAG_IMAGE_MEDIUM.lock() {
+            if let Some((cf, tymed, handle)) = *slot {
+                if cf == format.cfFormat {
+                    *slot = None;
+                    return Ok(windows::Win32::System::Com::STGMEDIUM {
+                        tymed,
+                        u: windows::Win32::System::Com::STGMEDIUM_0 {
+                            hGlobal: windows::Win32::Foundation::HGLOBAL(handle as *mut c_void),
+                        },
+                        pUnkForRelease: std::mem::ManuallyDrop::new(None),
+                    });
+                }
+            }
+        }
+        let bytes = if format.cfFormat == CF_DIB {
+            self.dib_bytes()
+        } else {
+            self.dropfiles_bytes()
+        };
+        unsafe { medium_from_bytes(&bytes) }
+    }
+
+    fn GetDataHere(
+        &self,
+        _format: *const windows::Win32::System::Com::FORMATETC,
+        _medium: *mut windows::Win32::System::Com::STGMEDIUM,
+    ) -> windows::core::Result<()> {
+        Err(windows::Win32::Foundation::E_NOTIMPL.into())
+    }
+
+    fn QueryGetData(
+        &self,
+        format: *const windows::Win32::System::Com::FORMATETC,
+    ) -> windows::core::HRESULT {
+        use windows::Win32::System::Com::DVASPECT_CONTENT;
+        let Some(format) = (unsafe { format.as_ref() }) else {
+            return windows::Win32::Foundation::E_INVALIDARG;
+        };
+        let extra = DRAG_IMAGE_MEDIUM
+            .lock()
+            .ok()
+            .and_then(|slot| *slot)
+            .is_some_and(|(cf, _, _)| cf == format.cfFormat);
+        if format.dwAspect == DVASPECT_CONTENT.0 as u32
+            && (PinDataObject::supports(format.cfFormat) || extra)
+        {
+            windows::Win32::Foundation::S_OK
+        } else {
+            windows::core::HRESULT(0x8004_0064u32 as i32)
+        }
+    }
+
+    fn GetCanonicalFormatEtc(
+        &self,
+        _in_format: *const windows::Win32::System::Com::FORMATETC,
+        out_format: *mut windows::Win32::System::Com::FORMATETC,
+    ) -> windows::core::HRESULT {
+        if let Some(out) = unsafe { out_format.as_mut() } {
+            out.ptd = std::ptr::null_mut();
+        }
+        // DATA_S_SAMEFORMATETC
+        windows::core::HRESULT(0x0004_0130)
+    }
+
+    fn SetData(
+        &self,
+        format: *const windows::Win32::System::Com::FORMATETC,
+        medium: *const windows::Win32::System::Com::STGMEDIUM,
+        release: windows::core::BOOL,
+    ) -> windows::core::Result<()> {
+        // IDragSourceHelper 会把拖动图像以私有格式写回数据对象；
+        // 不接收的话 InitializeFromBitmap 直接返回 E_NOTIMPL。
+        let Some(format) = (unsafe { format.as_ref() }) else {
+            return Err(windows::Win32::Foundation::E_INVALIDARG.into());
+        };
+        let Some(medium) = (unsafe { medium.as_ref() }) else {
+            return Err(windows::Win32::Foundation::E_INVALIDARG.into());
+        };
+        if release.as_bool() {
+            let handle = unsafe { medium.u.hGlobal.0 } as isize;
+            if let Ok(mut slot) = DRAG_IMAGE_MEDIUM.lock() {
+                *slot = Some((format.cfFormat, medium.tymed, handle));
+            }
+            Ok(())
+        } else {
+            Err(windows::Win32::Foundation::E_NOTIMPL.into())
+        }
+    }
+
+    fn EnumFormatEtc(
+        &self,
+        direction: u32,
+    ) -> windows::core::Result<windows::Win32::System::Com::IEnumFORMATETC> {
+        use windows::Win32::System::Com::DATADIR_GET;
+        if direction != DATADIR_GET.0 as u32 {
+            return Err(windows::Win32::Foundation::E_NOTIMPL.into());
+        }
+        let mut formats = PinDataObject::formats();
+        if let Ok(slot) = DRAG_IMAGE_MEDIUM.lock() {
+            if let Some((cf, _, _)) = *slot {
+                formats.push(windows::Win32::System::Com::FORMATETC {
+                    cfFormat: cf,
+                    ptd: std::ptr::null_mut(),
+                    dwAspect: windows::Win32::System::Com::DVASPECT_CONTENT.0 as u32,
+                    lindex: -1,
+                    tymed: windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+                });
+            }
+        }
+        unsafe { windows::Win32::UI::Shell::SHCreateStdEnumFmtEtc(&formats) }
+    }
+
+    fn DAdvise(
+        &self,
+        _format: *const windows::Win32::System::Com::FORMATETC,
+        _flags: u32,
+        _sink: windows::core::Ref<'_, windows::Win32::System::Com::IAdviseSink>,
+    ) -> windows::core::Result<u32> {
+        Err(windows::Win32::Foundation::E_NOTIMPL.into())
+    }
+
+    fn DUnadvise(&self, _connection: u32) -> windows::core::Result<()> {
+        Err(windows::Win32::Foundation::E_NOTIMPL.into())
+    }
+
+    fn EnumDAdvise(&self) -> windows::core::Result<windows::Win32::System::Com::IEnumSTATDATA> {
+        Err(windows::Win32::Foundation::E_NOTIMPL.into())
+    }
+}
+
+/// 给数据对象设置拖动时跟随光标的图像（就是这张贴图本身）。
+unsafe fn set_drag_image(
+    data: &windows::Win32::System::Com::IDataObject,
+    state: &PinState,
+) -> windows::core::Result<()> {
+    use windows::Win32::Foundation::{COLORREF, POINT, SIZE};
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::{IDragSourceHelper, CLSID_DragDropHelper, SHDRAGIMAGE};
+    let width = state.surface.width;
+    let height = state.surface.height;
+    let mut info: windows_sys::Win32::Graphics::Gdi::BITMAPINFO = std::mem::zeroed();
+    info.bmiHeader.biSize =
+        std::mem::size_of::<windows_sys::Win32::Graphics::Gdi::BITMAPINFOHEADER>() as u32;
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = windows_sys::Win32::Graphics::Gdi::BI_RGB;
+    let mut bits: *mut c_void = std::ptr::null_mut();
+    let bitmap = windows_sys::Win32::Graphics::Gdi::CreateDIBSection(
+        std::ptr::null_mut(),
+        &info,
+        windows_sys::Win32::Graphics::Gdi::DIB_RGB_COLORS,
+        &mut bits,
+        std::ptr::null_mut(),
+        0,
+    );
+    if bitmap.is_null() || bits.is_null() {
+        return Err(windows::Win32::Foundation::E_FAIL.into());
+    }
+    std::ptr::copy_nonoverlapping(
+        state.surface.pixels().as_ptr(),
+        bits as *mut u8,
+        (width * height * 4) as usize,
+    );
+    let helper: IDragSourceHelper =
+        CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER)?;
+    let image = SHDRAGIMAGE {
+        sizeDragImage: SIZE { cx: width, cy: height },
+        ptOffset: POINT {
+            x: width / 2,
+            y: height / 2,
+        },
+        hbmpDragImage: windows::Win32::Graphics::Gdi::HBITMAP(bitmap),
+        crColorKey: COLORREF(0x00FF_00FF),
+    };
+    let result = helper.InitializeFromBitmap(&image, data);
+    // Helper 会复制位图，调用后可以立刻释放。
+    let _ = windows_sys::Win32::Graphics::Gdi::DeleteObject(bitmap as *mut c_void);
+    result
+}
+
+/// 按住 Ctrl 拖动贴图：把这张图拖给其它程序（超级拖放）。
+///
+/// 数据对象自己实现，同时给 CF_DIB（位图）与 CF_HDROP（临时 PNG 文件），
+/// 再用 `IDragSourceHelper` 把跟随光标的图像设成贴图本身。
 unsafe fn super_drag(hwnd: HWND, state: &PinState) {
     use std::os::windows::ffi::OsStrExt;
-    use windows::core::{Interface, PCWSTR};
-    use windows::Win32::System::Com::IDataObject;
-    use windows::Win32::UI::Shell::{
-        ILCreateFromPathW, IShellItemArray, SHCreateShellItemArrayFromIDLists, BHID_DataObject,
-    };
+    use windows::core::Interface;
 
     dbg_log("super_drag.begin");
     let Some(path) = write_drag_file(state) else {
@@ -785,34 +1124,22 @@ unsafe fn super_drag(hwnd: HWND, state: &PinState) {
         return;
     };
     dbg_log(&format!("super_drag.file={}", path.display()));
-    let wide: Vec<u16> = path
+    let file: Vec<u16> = path
         .as_os_str()
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
-    let pidl = ILCreateFromPathW(PCWSTR(wide.as_ptr()));
-    if pidl.is_null() {
-        dbg_log("super_drag.pidl_null");
-        return;
+    let data: windows::Win32::System::Com::IDataObject = PinDataObject {
+        pixels: state.surface.pixels().to_vec(),
+        width: state.surface.width,
+        height: state.surface.height,
+        file,
     }
-    let ids = [pidl as *const _];
-    let array: IShellItemArray = match SHCreateShellItemArrayFromIDLists(&ids) {
-        Ok(array) => array,
-        Err(error) => {
-            dbg_log(&format!("super_drag.array_failed {error:?}"));
-            CoTaskMemFree(pidl as *const c_void);
-            return;
-        }
-    };
-    let data: IDataObject = match array.BindToHandler(None, &BHID_DataObject) {
-        Ok(data) => data,
-        Err(error) => {
-            dbg_log(&format!("super_drag.data_object_failed {error:?}"));
-            CoTaskMemFree(pidl as *const c_void);
-            return;
-        }
-    };
-    dbg_log("super_drag.data_object_ok");
+    .into();
+    match set_drag_image(&data, state) {
+        Ok(()) => dbg_log("super_drag.drag_image_ok"),
+        Err(error) => dbg_log(&format!("super_drag.drag_image_failed {error:?}")),
+    }
     let mut effect = 0u32;
     let drag_hr = SHDoDragDrop(
         hwnd,
@@ -825,9 +1152,14 @@ unsafe fn super_drag(hwnd: HWND, state: &PinState) {
         "super_drag.drop hr=0x{:08X} effect=0x{:X}",
         drag_hr, effect
     ));
-    drop(data);
-    drop(array);
-    CoTaskMemFree(pidl as *const c_void);
+    // 拖动图像那块 HGLOBAL 由 helper 交给我们，拖放结束后释放。
+    if let Ok(mut slot) = DRAG_IMAGE_MEDIUM.lock() {
+        if let Some((_, _, handle)) = slot.take() {
+            if handle != 0 {
+                windows_sys::Win32::Foundation::GlobalFree(handle as *mut c_void);
+            }
+        }
+    }
 }
 
 unsafe fn run_double_click(hwnd: HWND) {
