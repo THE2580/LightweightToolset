@@ -4,6 +4,7 @@
 # Current Focus
 - `cd1052a`：贴图窗口/历史/快捷键组/「贴图」标签。
 - `9c72761`：修上下颠倒、缩放改左上角固定、压延迟、PixPin 同款三态阴影、右键菜单（图像处理/复制/另存为/阴影/锁定/关闭）。
+- `7fc6049`：右键菜单改 owner-draw 紧凑版式（左右留白收紧、雅黑字体、置灰项不可高亮），用户验收通过。
 - 开发版已按固定流程重启（`%TEMP%\lwt-dev`），Vite `:1420` 在跑；开发版设置已恢复：`screenshot=CTRL+ALT+A`、`pin_restore=CTRL+ALT+R`、`pin_passthrough` 空、`screenshotPinConfirmClose=false`、`screenshotPinLock=none`、`screenshotPinDoubleClick=none`、`screenshotPinHistory=20`。
 
 # Remaining
@@ -22,6 +23,7 @@
   - 阴影三态截图确认：出现淡蓝泛光 / 稳定失焦灰 / 点击后焦点淡蓝；
   - 右键菜单结构正确（文本选择与标注置灰），`WM_COMMAND` 11/12/14/40/20/50 实测：右旋 400×296→296×400 且左上角不动、重置回 400×296、阴影开关 1→0→1、复制图像进剪贴板 400×296、菜单关闭销毁窗口；
   - 关闭全部与恢复上一次关闭均正常（恢复曾用 `CTRL+ALT+J` 验证，因本机 `CTRL+ALT+R` 被其它软件占用）。
+- 菜单紧凑版截图确认：主菜单与「图像处理」二级菜单左右留白收紧、勾选与箭头贴近边缘、灰项正确置灰；`WM_COMMAND` 11/14/40/50 在 owner-draw 版下仍正常（旋转 400×296→296×400、重置、阴影开关、关闭）。
 - **未测**：图像另存为的系统对话框、双击动作=复制、锁定勾选菜单项、贴图拖动后阴影跟随（拖动逻辑已调用 `shadow_sync`，未单独截图）。
 
 # Resume Here
