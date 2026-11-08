@@ -1093,6 +1093,12 @@ unsafe fn set_drag_image(
         bits as *mut u8,
         (width * height * 4) as usize,
     );
+    // 截屏 DIB 的 alpha 字节是 0；拖动图像按 alpha 渲染，全 0 会导致缩略图完全透明、看不见。
+    // 拖动图像不需要透明，统一置为不透明。
+    let target = std::slice::from_raw_parts_mut(bits as *mut u8, (width * height * 4) as usize);
+    for pixel in target.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
     let helper: IDragSourceHelper =
         CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER)?;
     let image = SHDRAGIMAGE {
