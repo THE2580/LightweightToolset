@@ -82,3 +82,12 @@
 - 原因：`SHDRAGIMAGE.hbmpDragImage` 用的是截屏 DIB 直拷，alpha 字节全为 0；
   系统按 alpha 合成拖动图像 → 整张完全透明。
 - 修法：拷进拖动位图后把每个像素的 alpha 置 255；拖动图像不需要透明。
+
+## 贴图超级拖放：系统 DragImage 不显示（2026-11-08）
+
+- 现象：`IDragSourceHelper::InitializeFromBitmap` 成功（SetData 收到了 DragImageBits），
+  但拖动时始终没有缩略图；日志显示 OLE **从不调用** `GetData(DragImageBits)`。
+- 结论：不要依赖系统 DragImage。改为自己建一个 `WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOPMOST|WS_EX_NOACTIVATE`
+  的跟随窗口，`IDropSource::GiveFeedback` 里按光标位置移动它，拖放结束销毁。
+- 同时把 `SHDoDragDrop` 换成自实现 `IDropSource` + `DoDragDrop`，控制 `QueryContinueDrag`
+  （Esc 取消 / 松开左键放下）。
