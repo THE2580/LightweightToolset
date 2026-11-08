@@ -12,7 +12,7 @@
 # Verification
 - `cargo test --lib screenshot::` 17/17（含 3 个 resize 翻转单测）、`cargo build`、`npm run build` 通过
 - 用户已逐项验收：标签页、配置项、辅助线三态/颜色/宽度/虚线、无残留、层级、选区翻转
-- 最近提交：`c812e41`（本批：工具页标签 + 配置项 + 辅助线重构 + 选区翻转）、`2183a2c`、`4c88fe1`
+- 最近提交：`727dff0`（本批：工具页标签 + 配置项 + 辅助线重构 + 选区翻转）、`2183a2c`、`4c88fe1`
 
 # Resume Here
 1. 提交后从 `progress.md` 的「贴图阶段」开始 S3，先复述需求等放行。
