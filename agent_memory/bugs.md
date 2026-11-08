@@ -75,3 +75,10 @@
 - 关键细节：`InitializeFromBitmap` 会通过 `IDataObject::SetData` 把 `DragImageBits` 写回，
   `SetData` 返回 `E_NOTIMPL` 时整个调用会失败（`InitializeFromBitmap` 直接返回 `E_NOTIMPL`）。
   必须存下这块 HGLOBAL，并在 `GetData`/`QueryGetData`/`EnumFormatEtc` 里透出，拖放结束后释放。
+
+## 贴图超级拖放：缩略图看不见（2026-11-08）
+
+- 现象：拖放数据正常被接收，但拖动过程中没有跟随光标的缩略图。
+- 原因：`SHDRAGIMAGE.hbmpDragImage` 用的是截屏 DIB 直拷，alpha 字节全为 0；
+  系统按 alpha 合成拖动图像 → 整张完全透明。
+- 修法：拷进拖动位图后把每个像素的 alpha 置 255；拖动图像不需要透明。
