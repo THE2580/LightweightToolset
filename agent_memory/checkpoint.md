@@ -1,21 +1,24 @@
 # Goal
-复刻 PixPin 截图工具（LightweightToolset 新工具），当前阶段：截图工具的设置/辅助线批次已提交 → 下一步 S3 贴图。
+复刻 PixPin 截图工具（LightweightToolset 新工具）。S3 贴图已实现并提交 `cd1052a`，等用户验收。
 
 # Current Focus
-上一批（工具页标签 + 近期配置项 + 辅助线重构 + 选区翻转 + 设置层级）已验收并提交 `727dff0`，记忆补记 `cc66594`。工作树干净（只剩既有的 `window_pinner.rs`、`window_service.rs`、`.codex/`）。开发版与 Vite 正在运行。
+本批交付贴图闭环：贴图窗口（置顶/拖动/缩放/滚轮/锁定/穿透/关闭确认/双击/投影）、覆盖层「贴图」按钮（去掉字母与数字单键）、贴图历史与保留数量、「贴图」标签五项设置、贴图快捷键组（贴图/恢复上次关闭/关闭所有/隐藏显示/鼠标穿透）。
+
+开发版已按固定流程重启并从 `%TEMP%\lwt-dev` 运行；Vite `:1420` 在跑；开发版设置已恢复测试前的值（`screenshotPinLock=none`、`DoubleClick=none`、`History=20`、`pin_restore=CTRL+ALT+R`、`pin_passthrough` 空）。
 
 # Remaining
-1. S3 贴图：贴图窗口（置顶、拖动/缩放/滚轮）→ 贴图历史（`<存储>/screenshot/` 下 `.meta` + 索引）→ 填「贴图」标签
-2. 贴图阶段设置项：锁定类型、双击动作、关闭确认、窗口阴影、历史数量、贴图快捷键组（恢复上次关闭/关闭所有/隐藏显示/鼠标穿透）
-3. **待办（本工具完成后）**：其他有快捷键的工具逐个迁到各自工具页的「快捷键」标签
-4. 不做：截图查看、动态截图（GIF）、UI 检测、多语言、主题/托盘图标自定义等（详见 `progress.md` 的「不做」清单）
+1. 用户验收本批；重点手测：双击动作=复制、关闭前确认弹窗、阴影关闭、无覆盖层时按贴图钉「最近一次截图」。
+2. 贴图历史浏览界面（当前只有「恢复上一次」+ 保留数量，没有列表）。
+3. **待办（本工具完成后）**：其他有快捷键的工具逐个迁到各自工具页的「快捷键」标签。
+4. 不做：截图查看、GIF、UI 检测、多语言、主题/托盘图标自定义等（见 `progress.md`）。
 
 # Verification
-- `cargo test --lib screenshot::` 17/17；`cargo build`、`npm run build` 通过
-- 用户已逐项验收：标签页、配置项、辅助线三态/颜色/宽度/虚线/无残留/跟手、选区翻转、设置层级
-- 最近提交：`727dff0`（本批 feat）、`cc66594`（docs 补记）、`2183a2c`
+- `npm run build`、`cargo check`、`cargo test --lib screenshot::` 23/23 通过；全量串行 38 passed / 3 failed（`window_pinner` 沙箱写 `%TEMP%` 失败，既有问题）。
+- 端到端注入验证通过：贴图位置尺寸与选区一致、不抢焦点、拖动/滚轮/锁定/双击关闭/隐藏显示/穿透/关闭全部/恢复上一次/历史清理。
+- 本机 `CTRL+ALT+R` 被其他软件占用（注册失败），验证时曾临时换成 `CTRL+ALT+J`，现已改回。
 
 # Resume Here
-1. 环境：Vite `:1420` 与开发版 `%TEMP%\lwt-dev` 应在运行；重启流程：`npm run dev` → `cargo build` → 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%\lwt-dev` → `Start-Process -Verb RunAs` → 核对进程路径。
-2. 向用户复述 S3 贴图范围并等放行，再动手；每完成一块按固定动作重启开发版给用户验收。
+1. 环境：Vite `:1420` 与开发版 `%TEMP%\lwt-dev` 应在运行；重启流程：`npm run dev` → `cargo build` → 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%\lwt-dev` → 提权 `Start-Process powershell.exe -ArgumentList '-File',<脚本> -Verb RunAs -WindowStyle Hidden` → 核对进程路径与页面加载。
+2. 向用户汇报验收要点，等反馈；下一块是贴图历史浏览界面，开工前照例先复述等放行。
 3. 提交时排除 `window_service.rs`、`window_pinner.rs`、`.codex/`。
+4. 注意：开发版 `main_window` 快捷键已被改回默认 `CTRL+ALT+M`（原值 `CTRL+ALT+P` 与贴图默认键冲突）；`screenshot` 保持 `CTRL+ALT+A`，该键在本机常被安装版占用，测试时若无效先查注册状态。
