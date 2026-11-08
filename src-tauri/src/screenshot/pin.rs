@@ -11,17 +11,21 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::SystemInformation::GetTickCount;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+use windows_sys::Win32::UI::Controls::Dialogs::{
+    GetSaveFileNameW, OFN_EXPLORER, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::dib::Surface;
 
 /// 一张贴图的原图：`top_down` 用于编码 PNG，`bottom_up` 用于建 DIB 段。
+#[derive(Clone)]
 pub(crate) struct PinImage {
     pub(crate) width: i32,
     pub(crate) height: i32,
@@ -93,10 +97,34 @@ impl Default for PinOptions {
     }
 }
 
-const CLASS_SHADOW: &str = "LightweightToolsetPinShadow\0";
-const CLASS_FLAT: &str = "LightweightToolsetPinFlat\0";
+/// 贴图窗口类：阴影由独立的分层窗口绘制，不再用系统 CS_DROPSHADOW。
+const CLASS_PIN: &str = "LightweightToolsetPin";
 const WM_PIN_COMMAND: u32 = WM_APP + 1;
 const TIMER_ZOOM: usize = 1;
+const TIMER_GLOW: usize = 2;
+/// 阴影外扩宽度（像素）。阴影由独立的分层窗口绘制，不占贴图窗口的客户区。
+const SHADOW_MARGIN: i32 = 16;
+/// 首次出现时的泛光时长（毫秒）。
+const GLOW_MS: u32 = 520;
+const SHADOW_BLUE: (u8, u8, u8) = (0x4F, 0xA8, 0xFF);
+const SHADOW_GRAY: (u8, u8, u8) = (0x8A, 0x8A, 0x8A);
+const SHADOW_CLASS: &str = "LightweightToolsetPinShadowFrame\0";
+
+// 右键菜单命令 id。
+const MENU_SELECT_ALL_TEXT: usize = 1;
+const MENU_TEXT_SELECTABLE: usize = 2;
+const MENU_ROTATE_LEFT: usize = 10;
+const MENU_ROTATE_RIGHT: usize = 11;
+const MENU_FLIP_H: usize = 12;
+const MENU_FLIP_V: usize = 13;
+const MENU_RESET_PROCESS: usize = 14;
+const MENU_COPY_IMAGE: usize = 20;
+const MENU_SAVE_AS: usize = 21;
+const MENU_ANNOTATE: usize = 30;
+const MENU_HIDE_ANNOTATION: usize = 31;
+const MENU_SHADOW: usize = 40;
+const MENU_LOCK: usize = 41;
+const MENU_CLOSE: usize = 50;
 const ZOOM_MIN: f32 = 0.1;
 const ZOOM_MAX: f32 = 8.0;
 const EDGE: i32 = 6;
@@ -138,12 +166,28 @@ struct Drag {
 struct PinState {
     surface: Surface,
     image: Arc<PinImage>,
+    /// 未经旋转/翻转的原始图，「重置所有处理」用。
+    original: Arc<PinImage>,
     zoom: f32,
     lock: PinLock,
     confirm: bool,
     double_click: DoubleClick,
     drag: Option<Drag>,
     zoom_until: u32,
+    /// 阴影：PixPin 同款三态（出现泛光 / 焦点淡蓝 / 失焦灰）。
+    shadow: Option<PinShadow>,
+    shadow_enabled: bool,
+    focused: bool,
+    glow_until: u32,
+    /// 最近一次绘制的阴影参数，避免拖动时无谓重建位图。
+    shadow_key: (i32, i32, bool, i32),
+}
+
+/// 贴在贴图窗口正下方的一层分层阴影窗口。
+struct PinShadow {
+    hwnd: HWND,
+    surface: Option<Surface>,
+    size: (i32, i32),
 }
 
 /// 距离四边小于 `EDGE` 时返回缩放位掩码，否则返回 0（可拖动区域）。
@@ -225,8 +269,8 @@ fn host() -> Option<&'static mpsc::Sender<PinCommand>> {
         .spawn(move || unsafe {
             HOST_THREAD.store(GetCurrentThreadId() as usize, Ordering::SeqCst);
             let _ = ready_tx.send(GetCurrentThreadId() as usize);
-            register_class(CLASS_SHADOW, CS_DROPSHADOW);
-            register_class(CLASS_FLAT, 0);
+            register_class(CLASS_PIN);
+            register_shadow_class();
 
             let mut msg: MSG = std::mem::zeroed();
             loop {
@@ -252,11 +296,11 @@ fn host() -> Option<&'static mpsc::Sender<PinCommand>> {
     HOST_SENDER.get()
 }
 
-unsafe fn register_class(name: &str, style: u32) {
+unsafe fn register_class(name: &str) {
     // 类名要活到 RegisterClassW 返回之后再释放，这里由 owned 持有。
     let owned = widen(name);
     let wc = WNDCLASSW {
-        style: style | CS_DBLCLKS,
+        style: CS_DBLCLKS,
         lpfnWndProc: Some(wndproc),
         cbClsExtra: 0,
         cbWndExtra: 0,
@@ -300,6 +344,14 @@ unsafe fn drain(rx: &mpsc::Receiver<PinCommand>) {
                 HIDDEN.store(if hide { 1 } else { 0 }, Ordering::SeqCst);
                 each_pin(|hwnd| {
                     ShowWindow(hwnd, if hide { SW_HIDE } else { SW_SHOW });
+                    if let Some(state) = state_of(hwnd) {
+                        if let Some(shadow) = (*state).shadow.as_ref() {
+                            ShowWindow(
+                                shadow.hwnd,
+                                if hide { SW_HIDE } else { SW_SHOWNOACTIVATE },
+                            );
+                        }
+                    }
                 });
             }
             PinCommand::TogglePassthrough => {
@@ -329,7 +381,7 @@ unsafe fn set_passthrough(hwnd: HWND, on: bool) {
 }
 
 unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
-    let class = widen(if options.shadow { CLASS_SHADOW } else { CLASS_FLAT });
+    let class = widen(CLASS_PIN);
     let title = widen("LightweightToolset Pin");
     let hinst = GetModuleHandleW(std::ptr::null());
     let hwnd = CreateWindowExW(
@@ -358,9 +410,11 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
             return;
         }
     };
-    surface.pixels_mut().copy_from_slice(&image.bottom_up);
+    // Surface 是负高度的自顶向下 DIB，行序与 top_down 一致；拷 bottom_up 会上下颠倒。
+    surface.pixels_mut().copy_from_slice(&image.top_down);
     let state = Box::new(PinState {
         surface,
+        original: Arc::clone(&image),
         image,
         zoom: 1.0,
         lock: options.lock,
@@ -368,6 +422,11 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
         double_click: options.double_click,
         drag: None,
         zoom_until: 0,
+        shadow: None,
+        shadow_enabled: options.shadow,
+        focused: false,
+        glow_until: GetTickCount() + GLOW_MS,
+        shadow_key: (0, 0, false, -1),
     });
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
     if let Ok(mut pins) = PINS.lock() {
@@ -383,6 +442,13 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
     }
     PIN_HWND.store(hwnd as isize, Ordering::SeqCst);
     UpdateWindow(hwnd);
+    // 阴影在贴图窗口之后建，才能稳定压在它下方；同时启动出现泛光。
+    if let Some(state) = state_of(hwnd) {
+        shadow_sync(hwnd, &mut *state);
+        if (*state).shadow.is_some() {
+            SetTimer(hwnd, TIMER_GLOW, 40, None);
+        }
+    }
 }
 
 unsafe fn state_of(hwnd: HWND) -> Option<*mut PinState> {
@@ -398,6 +464,202 @@ unsafe fn window_rect(hwnd: HWND) -> RECT {
     let mut rect: RECT = std::mem::zeroed();
     GetWindowRect(hwnd, &mut rect);
     rect
+}
+
+unsafe extern "system" fn shadow_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    DefWindowProcW(hwnd, msg, wp, lp)
+}
+
+unsafe fn register_shadow_class() {
+    let owned = widen(SHADOW_CLASS);
+    let wc = WNDCLASSW {
+        style: 0,
+        lpfnWndProc: Some(shadow_proc),
+        cbClsExtra: 0,
+        cbWndExtra: 0,
+        hInstance: GetModuleHandleW(std::ptr::null()),
+        hIcon: std::ptr::null_mut(),
+        hCursor: std::ptr::null_mut(),
+        hbrBackground: std::ptr::null_mut(),
+        lpszMenuName: std::ptr::null(),
+        lpszClassName: owned.as_ptr(),
+    };
+    RegisterClassW(&wc);
+}
+
+unsafe fn shadow_destroy(state: &mut PinState) {
+    if let Some(shadow) = state.shadow.take() {
+        if !shadow.hwnd.is_null() {
+            DestroyWindow(shadow.hwnd);
+        }
+    }
+    state.shadow_key = (0, 0, false, -1);
+}
+
+/// 首次出现时的泛光强度：1.0 起步逐渐收回到稳定值。
+fn glow_strength(remaining_ms: u32) -> f32 {
+    let t = (remaining_ms as f32 / GLOW_MS as f32).clamp(0.0, 1.0);
+    // 起手有一记更亮的闪光，随后平滑落下。
+    1.0 + 1.1 * t * t
+}
+
+/// 把阴影参数（尺寸/颜色/泛光）画进分层窗口；参数没变时只移动窗口，不重画。
+unsafe fn shadow_sync(hwnd: HWND, state: &mut PinState) {
+    if !state.shadow_enabled {
+        shadow_destroy(state);
+        return;
+    }
+    let rect = window_rect(hwnd);
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let now = GetTickCount();
+    let glowing = now < state.glow_until;
+    let blue = state.focused || glowing;
+    let strength = if glowing {
+        glow_strength(state.glow_until - now)
+    } else {
+        1.0
+    };
+    if state.shadow.is_none() {
+        let class = widen(SHADOW_CLASS);
+        let hinst = GetModuleHandleW(std::ptr::null());
+        let shadow_hwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            class.as_ptr(),
+            std::ptr::null(),
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            hinst,
+            std::ptr::null_mut(),
+        );
+        if shadow_hwnd.is_null() {
+            return;
+        }
+        state.shadow = Some(PinShadow {
+            hwnd: shadow_hwnd,
+            surface: None,
+            size: (0, 0),
+        });
+        state.shadow_key = (0, 0, false, -1);
+        ShowWindow(shadow_hwnd, SW_SHOWNOACTIVATE);
+    }
+    let Some(shadow) = state.shadow.as_mut() else {
+        return;
+    };
+    let outer_x = rect.left - SHADOW_MARGIN;
+    let outer_y = rect.top - SHADOW_MARGIN;
+    let outer_w = width + SHADOW_MARGIN * 2;
+    let outer_h = height + SHADOW_MARGIN * 2;
+    // 阴影窗口压在贴图窗口正下方，贴图窗口本身保持最上层。
+    SetWindowPos(
+        shadow.hwnd,
+        hwnd,
+        outer_x,
+        outer_y,
+        outer_w,
+        outer_h,
+        SWP_NOACTIVATE,
+    );
+    let key = (width, height, blue, (strength * 100.0) as i32);
+    if state.shadow_key == key {
+        return;
+    }
+    state.shadow_key = key;
+    render_shadow(shadow, width, height, outer_x, outer_y, blue, strength);
+}
+
+unsafe fn render_shadow(
+    shadow: &mut PinShadow,
+    image_w: i32,
+    image_h: i32,
+    dst_x: i32,
+    dst_y: i32,
+    blue: bool,
+    strength: f32,
+) {
+    let w = image_w + SHADOW_MARGIN * 2;
+    let h = image_h + SHADOW_MARGIN * 2;
+    if shadow.surface.is_none() || shadow.size != (w, h) {
+        shadow.surface = Surface::new(w, h);
+        shadow.size = (w, h);
+    }
+    let Some(surface) = shadow.surface.as_mut() else {
+        return;
+    };
+    let m = SHADOW_MARGIN;
+    let color = if blue { SHADOW_BLUE } else { SHADOW_GRAY };
+    {
+        let bytes = surface.pixels_mut();
+        bytes.fill(0);
+        // 距离 0..=m 的透明度表，平方衰减更接近柔和投影。
+        let mut alpha = [0u8; (SHADOW_MARGIN as usize) + 1];
+        for (d, value) in alpha.iter_mut().enumerate() {
+            let t = 1.0 - d as f32 / m as f32;
+            *value = (t * t * 165.0 * strength).min(255.0) as u8;
+        }
+        for y in 0..h {
+            let dy = if y < m {
+                m - y
+            } else if y >= m + image_h {
+                y - (m + image_h) + 1
+            } else {
+                0
+            };
+            for x in 0..w {
+                let dx = if x < m {
+                    m - x
+                } else if x >= m + image_w {
+                    x - (m + image_w) + 1
+                } else {
+                    0
+                };
+                let d = dx.max(dy).min(m) as usize;
+                let a = alpha[d];
+                if d == 0 || a == 0 {
+                    continue;
+                }
+                let idx = ((y * w + x) * 4) as usize;
+                // UpdateLayeredWindow 要预乘 alpha 的 BGRA。
+                bytes[idx] = (color.2 as u16 * a as u16 / 255) as u8;
+                bytes[idx + 1] = (color.1 as u16 * a as u16 / 255) as u8;
+                bytes[idx + 2] = (color.0 as u16 * a as u16 / 255) as u8;
+                bytes[idx + 3] = a;
+            }
+        }
+    }
+    let screen = GetDC(std::ptr::null_mut());
+    if screen.is_null() {
+        return;
+    }
+    let dst = POINT { x: dst_x, y: dst_y };
+    let src = POINT { x: 0, y: 0 };
+    let size = SIZE { cx: w, cy: h };
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: 255,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+    UpdateLayeredWindow(
+        shadow.hwnd,
+        screen,
+        &dst,
+        &size,
+        surface.dc(),
+        &src,
+        0,
+        &blend,
+        ULW_ALPHA,
+    );
+    ReleaseDC(std::ptr::null_mut(), screen);
 }
 
 /// 关闭前确认（设置项），返回是否继续关闭。
@@ -504,6 +766,7 @@ unsafe fn update_drag(hwnd: HWND, state: &mut PinState) {
             SWP_NOACTIVATE,
         );
     }
+    shadow_sync(hwnd, state);
 }
 
 unsafe fn apply_zoom(hwnd: HWND, state: &mut PinState, delta: i32) {
@@ -515,24 +778,24 @@ unsafe fn apply_zoom(hwnd: HWND, state: &mut PinState, delta: i32) {
         return;
     }
     let rect = window_rect(hwnd);
-    let center_x = (rect.left + rect.right) / 2;
-    let center_y = (rect.top + rect.bottom) / 2;
     let width = ((state.image.width as f32 * zoom).round() as i32).max(MIN_SIDE);
     let height = ((state.image.height as f32 * zoom).round() as i32).max(MIN_SIDE);
     state.zoom = zoom;
     // 缩放后短暂显示百分比，之后自动消失。
     state.zoom_until = GetTickCount() + 900;
     SetTimer(hwnd, TIMER_ZOOM, 80, None);
+    // 左上角固定顶点：位置不动，只向右下方伸缩。
     SetWindowPos(
         hwnd,
         HWND_TOPMOST,
-        center_x - width / 2,
-        center_y - height / 2,
+        rect.left,
+        rect.top,
         width,
         height,
         SWP_NOACTIVATE,
     );
     InvalidateRect(hwnd, std::ptr::null(), 0);
+    shadow_sync(hwnd, state);
 }
 
 unsafe fn paint(hwnd: HWND, state: &PinState) {
@@ -582,6 +845,215 @@ unsafe fn paint(hwnd: HWND, state: &PinState) {
     EndPaint(hwnd, &ps);
 }
 
+#[derive(Clone, Copy)]
+enum Process {
+    RotateLeft,
+    RotateRight,
+    FlipHorizontal,
+    FlipVertical,
+}
+
+/// 旋转/翻转：按目标像素反查源像素，重新生成两种行序的像素。
+fn processed(image: &PinImage, kind: Process) -> PinImage {
+    let (ow, oh) = (image.width, image.height);
+    let (nw, nh) = match kind {
+        Process::RotateLeft | Process::RotateRight => (oh, ow),
+        _ => (ow, oh),
+    };
+    let mut top_down = vec![0u8; (nw * nh * 4) as usize];
+    for ny in 0..nh {
+        for nx in 0..nw {
+            let (sx, sy) = match kind {
+                Process::RotateRight => (ny, oh - 1 - nx),
+                Process::RotateLeft => (ow - 1 - ny, nx),
+                Process::FlipHorizontal => (ow - 1 - nx, ny),
+                Process::FlipVertical => (nx, oh - 1 - ny),
+            };
+            let src = ((sy * ow + sx) * 4) as usize;
+            let dst = ((ny * nw + nx) * 4) as usize;
+            top_down[dst..dst + 4].copy_from_slice(&image.top_down[src..src + 4]);
+        }
+    }
+    let stride = (nw * 4) as usize;
+    let mut bottom_up = vec![0u8; top_down.len()];
+    for row in 0..nh as usize {
+        let src = (nh as usize - 1 - row) * stride;
+        bottom_up[row * stride..(row + 1) * stride].copy_from_slice(&top_down[src..src + stride]);
+    }
+    PinImage {
+        width: nw,
+        height: nh,
+        top_down,
+        bottom_up,
+    }
+}
+
+/// 换掉贴图内容（旋转/翻转/重置）：重建绘制用的 DIB，窗口左上角不动，宽高跟着换。
+unsafe fn install_image(hwnd: HWND, state: &mut PinState, next: PinImage) {
+    let rect = window_rect(hwnd);
+    let zoom = state.zoom;
+    let width = ((next.width as f32 * zoom).round() as i32).max(MIN_SIDE);
+    let height = ((next.height as f32 * zoom).round() as i32).max(MIN_SIDE);
+    if let Some(mut surface) = Surface::new(next.width, next.height) {
+        surface.pixels_mut().copy_from_slice(&next.top_down);
+        state.surface = surface;
+    }
+    state.image = Arc::new(next);
+    SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        rect.left,
+        rect.top,
+        width,
+        height,
+        SWP_NOACTIVATE,
+    );
+    InvalidateRect(hwnd, std::ptr::null(), 0);
+    shadow_sync(hwnd, state);
+}
+
+unsafe fn append_item(menu: HMENU, id: usize, text: &str, grayed: bool, checked: bool) {
+    let mut flags = MF_STRING;
+    if grayed {
+        flags |= MF_GRAYED;
+    }
+    if checked {
+        flags |= MF_CHECKED;
+    }
+    let wide = widen(text);
+    AppendMenuW(menu, flags, id, wide.as_ptr());
+}
+
+/// 贴图的右键菜单：文本选择与标注先占位（置灰），其余项可用。
+unsafe fn show_menu(hwnd: HWND, state: &PinState) {
+    let menu = CreatePopupMenu();
+    let process = CreatePopupMenu();
+    if menu.is_null() || process.is_null() {
+        return;
+    }
+    append_item(process, MENU_ROTATE_LEFT, "向左旋转", false, false);
+    append_item(process, MENU_ROTATE_RIGHT, "向右旋转", false, false);
+    append_item(process, MENU_FLIP_H, "水平翻转", false, false);
+    append_item(process, MENU_FLIP_V, "垂直翻转", false, false);
+    AppendMenuW(process, MF_SEPARATOR, 0, std::ptr::null());
+    append_item(process, MENU_RESET_PROCESS, "重置所有处理", false, false);
+
+    append_item(menu, MENU_SELECT_ALL_TEXT, "选择所有文本", true, false);
+    append_item(menu, MENU_TEXT_SELECTABLE, "文本可选择", true, false);
+    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+    let process_text = widen("图像处理");
+    AppendMenuW(menu, MF_POPUP, process as usize, process_text.as_ptr());
+    append_item(menu, MENU_COPY_IMAGE, "复制图像", false, false);
+    append_item(menu, MENU_SAVE_AS, "图像另存为…", false, false);
+    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+    append_item(menu, MENU_ANNOTATE, "标注", true, false);
+    append_item(menu, MENU_HIDE_ANNOTATION, "隐藏标注", true, false);
+    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+    append_item(menu, MENU_SHADOW, "窗口阴影", false, state.shadow_enabled);
+    append_item(menu, MENU_LOCK, "锁定", false, state.lock != PinLock::None);
+    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+    append_item(menu, MENU_CLOSE, "关闭", false, false);
+
+    let mut point: POINT = std::mem::zeroed();
+    GetCursorPos(&mut point);
+    // 不用 TPM_RETURNCMD：命令统一走 WM_COMMAND，右键菜单与外部投递的行为一致。
+    TrackPopupMenuEx(
+        menu,
+        TPM_RIGHTBUTTON,
+        point.x,
+        point.y,
+        hwnd,
+        std::ptr::null_mut(),
+    );
+    // DestroyMenu 会连带回收用 MF_POPUP 挂上的子菜单。
+    DestroyMenu(menu);
+}
+
+/// 「图像另存为…」：系统保存对话框，默认按贴图名字模板生成文件名。
+unsafe fn save_as(hwnd: HWND, state: &PinState) {
+    let default_name = super::save::render_file_name("Pin_$yyyy$-$MM$-$dd$_$HH$-$mm$-$ss$");
+    let mut buffer = [0u16; 520];
+    for (index, unit) in default_name.encode_utf16().take(510).enumerate() {
+        buffer[index] = unit;
+    }
+    let filter: Vec<u16> = "PNG 图片 (*.png)\0*.png\0所有文件 (*.*)\0*.*\0\0"
+        .encode_utf16()
+        .collect();
+    let extension: Vec<u16> = "png\0".encode_utf16().collect();
+    let title: Vec<u16> = "贴图另存为".encode_utf16().collect();
+    let mut dialog: OPENFILENAMEW = std::mem::zeroed();
+    dialog.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+    dialog.hwndOwner = hwnd;
+    dialog.lpstrFilter = filter.as_ptr();
+    dialog.nFilterIndex = 1;
+    dialog.lpstrFile = buffer.as_mut_ptr();
+    dialog.nMaxFile = buffer.len() as u32;
+    dialog.lpstrDefExt = extension.as_ptr();
+    dialog.lpstrTitle = title.as_ptr();
+    dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+    if GetSaveFileNameW(&mut dialog) == 0 {
+        return;
+    }
+    let length = buffer.iter().position(|value| *value == 0).unwrap_or(0);
+    let path = String::from_utf16_lossy(&buffer[..length]);
+    if let Ok(png) = super::save::encode_png(
+        &state.image.top_down,
+        state.image.width as u32,
+        state.image.height as u32,
+    ) {
+        let _ = std::fs::write(path, png);
+    }
+}
+
+unsafe fn handle_menu(hwnd: HWND, state: &mut PinState, command: usize) {
+    match command {
+        MENU_ROTATE_LEFT => {
+            let next = processed(&state.image, Process::RotateLeft);
+            install_image(hwnd, state, next);
+        }
+        MENU_ROTATE_RIGHT => {
+            let next = processed(&state.image, Process::RotateRight);
+            install_image(hwnd, state, next);
+        }
+        MENU_FLIP_H => {
+            let next = processed(&state.image, Process::FlipHorizontal);
+            install_image(hwnd, state, next);
+        }
+        MENU_FLIP_V => {
+            let next = processed(&state.image, Process::FlipVertical);
+            install_image(hwnd, state, next);
+        }
+        MENU_RESET_PROCESS => {
+            let next = (*state.original).clone();
+            install_image(hwnd, state, next);
+        }
+        MENU_COPY_IMAGE => copy_to_clipboard(state),
+        MENU_SAVE_AS => save_as(hwnd, state),
+        MENU_SHADOW => {
+            state.shadow_enabled = !state.shadow_enabled;
+            state.shadow_key = (0, 0, false, -1);
+            if state.shadow_enabled {
+                state.glow_until = GetTickCount() + GLOW_MS;
+                SetTimer(hwnd, TIMER_GLOW, 40, None);
+            }
+            shadow_sync(hwnd, state);
+        }
+        MENU_LOCK => {
+            state.lock = if state.lock == PinLock::None {
+                PinLock::All
+            } else {
+                PinLock::None
+            };
+        }
+        MENU_CLOSE => {
+            if confirm_close(hwnd, state) {
+                DestroyWindow(hwnd);
+            }
+        }
+        _ => {}
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_ERASEBKGND => 1,
@@ -618,9 +1090,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_RBUTTONUP => {
             if let Some(state) = state_of(hwnd) {
-                if confirm_close(hwnd, &*state) {
-                    DestroyWindow(hwnd);
-                }
+                (*state).drag = None;
+                ReleaseCapture();
+                show_menu(hwnd, &*state);
+            }
+            0
+        }
+        WM_COMMAND => {
+            // 右键菜单项：低 16 位是命令 id。
+            if let Some(state) = state_of(hwnd) {
+                handle_menu(hwnd, &mut *state, (wp & 0xFFFF) as usize);
             }
             0
         }
@@ -680,6 +1159,26 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             0
         }
+        WM_TIMER if wp == TIMER_GLOW => {
+            if let Some(state) = state_of(hwnd) {
+                if GetTickCount() >= (*state).glow_until {
+                    KillTimer(hwnd, TIMER_GLOW);
+                }
+                shadow_sync(hwnd, &mut *state);
+            }
+            0
+        }
+        WM_ACTIVATE => {
+            if let Some(state) = state_of(hwnd) {
+                let active = (wp & 0xFFFF) as u32 != WA_INACTIVE;
+                if (*state).focused != active {
+                    (*state).focused = active;
+                    // 焦点态决定阴影颜色：焦点淡蓝、失焦灰。
+                    shadow_sync(hwnd, &mut *state);
+                }
+            }
+            0
+        }
         WM_KEYDOWN => {
             if wp as u16 == VK_ESCAPE {
                 if let Some(state) = state_of(hwnd) {
@@ -703,6 +1202,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_NCDESTROY => {
             let state = state_of(hwnd);
             if let Some(state) = state {
+                shadow_destroy(&mut *state);
                 // 记下关闭前的样子，供「恢复上次关闭的贴图」使用。
                 let rect = window_rect(hwnd);
                 if let Ok(mut last) = LAST_CLOSED.lock() {
@@ -721,6 +1221,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
     }
+}
+
+/// 一次贴图窗口创建指令是否成功投递。
+pub(crate) fn warm_up() {
+    // 预热：提前起贴图线程并注册窗口类，按下贴图时不用再等线程启动。
+    let _ = host();
 }
 
 /// 建一个贴图窗口；`rect` 是屏幕坐标下的初始位置与大小。

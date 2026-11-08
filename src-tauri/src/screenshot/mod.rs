@@ -213,6 +213,8 @@ pub fn capture_from_hotkey(app: &AppHandle) {
 fn run(app: &AppHandle) -> Result<String, String> {
     let (options, palette, pin_options, pin_history) = capture_config(app);
     annotation::set_palette(palette);
+    // 提前把贴图线程与窗口类准备好，贴图只走建窗口这一步。
+    pin::warm_up();
     let quick_dir = options.quick_dir.clone();
     let template = options.file_template.clone();
     let (vx, vy, width, height) = capture::virtual_rect()?;
@@ -237,10 +239,7 @@ fn run(app: &AppHandle) -> Result<String, String> {
     }
 
     if outcome.pin {
-        // 贴图不落截图目录，只进贴图历史（保留数量可配）。
-        if let Some(state) = app.try_state::<crate::AppState>() {
-            pin::record_history(&data_dir(&state), &image, pin_history);
-        }
+        // 先把窗口贴出来，历史落盘放到后台，避免写盘拖慢首次呈现。
         let rect = windows_sys::Win32::Foundation::RECT {
             left: selection.x,
             top: selection.y,
@@ -248,6 +247,12 @@ fn run(app: &AppHandle) -> Result<String, String> {
             bottom: selection.y + selection.height,
         };
         pin::create(Arc::clone(&image), rect, pin_options);
+        if let Some(state) = app.try_state::<crate::AppState>() {
+            let dir = data_dir(&state);
+            std::thread::spawn(move || {
+                let _ = pin::record_history(&dir, &image, pin_history);
+            });
+        }
         return Ok(format!(
             "screenshot.pinned size={}x{}",
             selection.width, selection.height
