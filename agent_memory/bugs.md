@@ -49,3 +49,11 @@
 - 2026-11-08：工具页设置项要跟着工具走，不要塞进全局设置；「截图查看」已取消，不要再加回来。
 - 2026-11-08：`SHBrowseForFolderW` 想指定初始目录必须给 `BROWSEINFOW.lpfn` 回调，在 `BFFM_INITIALIZED` 里 `SendMessageW(hwnd, BFFM_SETSELECTIONW, 1, 字符串指针)`；`lParam` 只带指针，字符串要在调用期间保持存活。
 - 2026-11-08：开发版测试前必须确认 Vite 1420 返回 200 且进程来自 `%TEMP%\lwt-dev`，否则会出现“页面空白还盲测热键”的假象。
+
+## 贴图/COM：手写 vtable 释放接口会崩溃（2026-11-08）
+
+- 现象：`SHCreateShellItemArrayFromIDLists` 拿到 `IShellItemArray*` 后，用自写函数按
+  `vtable[2]` 调 `Release`，进程必定在超级拖放结束时报 `0xc0000005`（事件日志 offset 固定）。
+- 修法：改用 `windows::core::Interface::from_raw` 构造类型化接口再 `drop`，由生成代码释放。
+- 教训：windows-sys 只有原始指针，跨 FFI 的对象生命周期交给 `windows` crate 的类型化包装，
+  不要自己算 vtable 槽位。

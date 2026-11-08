@@ -5,6 +5,8 @@
 - `cd1052a`：贴图窗口/历史/快捷键组/「贴图」标签。
 - `9c72761`：修上下颠倒、缩放改左上角固定、压延迟、PixPin 同款三态阴影、右键菜单（图像处理/复制/另存为/阴影/锁定/关闭）。
 - `7fc6049`：右键菜单改 owner-draw 紧凑版式（左右留白收紧、雅黑字体、置灰项不可高亮），用户验收通过。
+- `394291c`：去掉自绘子菜单箭头（系统会画，重叠成两个箭头）。
+- `67044c6`：贴图内存压缩（DIB 作唯一像素源、bottom_up 按需、LAST_CLOSED 上限 3）+ 超级拖放（Ctrl+拖动把图以临时 PNG 拖给其它程序）。
 - 开发版已按固定流程重启（`%TEMP%\lwt-dev`），Vite `:1420` 在跑；开发版设置已恢复：`screenshot=CTRL+ALT+A`、`pin_restore=CTRL+ALT+R`、`pin_passthrough` 空、`screenshotPinConfirmClose=false`、`screenshotPinLock=none`、`screenshotPinDoubleClick=none`、`screenshotPinHistory=20`。
 
 # Remaining

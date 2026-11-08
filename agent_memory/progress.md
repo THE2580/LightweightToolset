@@ -65,6 +65,12 @@
      - 右键菜单（`WM_COMMAND` 派发）：选择所有文本（灰）、文本可选择（灰）、图像处理 ▸ 向左旋转/向右旋转/水平翻转/垂直翻转/重置所有处理、复制图像、图像另存为…（`GetSaveFileNameW`）、标注（灰）、隐藏标注（灰）、窗口阴影（勾选）、锁定（勾选）、关闭；右键不再直接关窗。
      - 旋转/翻转后窗口左上角不动、宽高互换；「重置所有处理」回到 `PinState.original`。
    - **右键菜单紧凑版（2026-11-08，提交 `7fc6049`）**：菜单改为 owner-draw（`WM_MEASUREITEM`/`WM_DRAWITEM`），勾选列 14、左内边距 3、右内边距 4、箭头列 9，整体左右留白明显收紧；字体固定 `Microsoft YaHei UI` 12px 并按 DPI 缩放（原先落到 stock 字体，中文回退成宋体）；置灰项改用 `MF_DISABLED`（owner-draw 下 `MF_GRAYED` 仍会被高亮）；分隔线也是 owner-draw 的不可点项（id 0）。条目数据由 `MenuStore` 持有到 `DestroyMenu` 之后。子菜单箭头**不要自绘**——owner-draw 的弹出项系统仍会画箭头，自绘会变成两个箭头（`394291c` 修）。
+   - **内存压缩 + 超级拖放（2026-11-08，提交 `67044c6`）**：
+     - `PinImage` 只保留 `top_down`；`flip_rows()` 按需生成 CF_DIB 需要的自下而上副本（覆盖层复制、贴图「复制图像」）。
+     - 贴图窗口的 DIB 段成为唯一像素源：绘制、PNG 编码（另存为/复制图像）、旋转翻转都从 `state.surface.pixels()` 取，第二份整图副本删掉。
+     - `LAST_CLOSED` 队列上限 20 → 3，只共享 `original` 的 `Arc`，不复制像素。
+     - 超级拖放：按住 Ctrl 拖动贴图 → 写临时 PNG（`%TEMP%\LightweightToolset\pin-drag`，保留最近 20 个）→ `ILCreateFromPathW` + `SHCreateShellItemArrayFromIDLists` + `SHDoDragDrop` 交给别的程序；窗口不动，拖放取消也不关窗（`escape_guard` 400ms）。贴图线程启动时 `CoInitializeEx`（STA）。
+     - 坑：手写 vtable 调 `IShellItemArray::Release` 会 0xc0000005 崩溃，改用 `windows::core::Interface::from_raw` + `Drop`。
    - **待办（用户已确认推迟）**：
      - **贴图标注**：右键「标注」进入标注模式，出现只含贴图相关项的标注工具栏（参照截图工具栏样式），工具栏跟随贴图窗口移动，最右端对勾按钮结束标注退出；「隐藏标注」同步实现。
      - **贴图文本选择**：右键「选择所有文本」「文本可选择」两项（含 OCR 文本）。
