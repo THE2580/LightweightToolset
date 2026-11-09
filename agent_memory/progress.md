@@ -1,5 +1,6 @@
 # 当前阶段
 
+- **开发暂停（2026-11-09）**：贴图标注工具栏本批已提交 `d32b36f`（`feat: reuse screenshot annotation toolbar for pin`）并经用户验收；开发版进程与 Vite `:1420` 均已关闭，只剩安装版在跑。下次开工按 `checkpoint.md` 的 Resume Here 重启环境。
 - **`v0.6.4` 已发布**（tag `v0.6.4` → `fa580e8`，Release 已上传安装包）。本版交付：「快捷键提示」专用图标（键盘 + 提示气泡），修复侧栏兜底扳手与页头不一致。
 - 开发版默认值（仅数据目录全新时）：静默启动开、主窗口置顶开、开发者模式开（锁定）、全部工具关闭、自启关（锁定）、存储路径不可改。
 - 约束文档已整理：`AGENTS.md` 新增「开发版与正式版（差异与注意事项）」整节，默认值差异以表格固定；发布流程含「更新 README 与仓库简介」固定动作。
@@ -92,6 +93,12 @@
      - 已完成：`toolbar.rs` 增加 `Mode{Screenshot,Pin}`，主栏宽度按按钮数动态算，`Action::Done` 图标与提示（「完成标注 (Esc)」）；`overlay.rs` 调用点全部显式传 `Mode::Screenshot`，截图行为不变。
      - 已完成（临时实现，待替换）：贴图标注模式的状态位 `annotating/annotations_hidden/doc/draft`、菜单「标注/隐藏标注」解禁、矩形/箭头草稿按缩放换算、`paint_composite` 在图像分辨率上叠标注再缩放上屏、`build_draft` 两点形状要用 `cursor` 传终点（否则矩形零尺寸）。
      - **待替换**：pin 里的 `PinAction`/`pin_toolbar_rect`/`pin_toolbar_hit`/`draw_pin_toolbar` 这套迷你工具栏整体删掉，改为调用 `toolbar::layout(..., Mode::Pin)` + `toolbar::draw(dc, &ToolbarState{mode: Pin, selection: 图像客户区矩形, screen: 客户区大小, ...})` + 按 `layout.buttons/styles/menus` 命中；`PinState` 需要补 `picks/style_open/line_menu_open/arrow_menu_open/delete_mode`。
+   - **贴图标注工具栏：复用原生工具栏 + 伴生小窗（2026-11-09，用户验收通过，未提交）**：
+     - 临时迷你工具栏已删除，改走 `toolbar::layout/draw/hit` 的 `Mode::Pin`，尾巴只留对勾 `Action::Done`；动作分发与 `overlay.rs` 一致（组切换、形状、颜色、填充、线型/箭头下拉、撤销重做、删除模式、完成）。
+     - **用户否决「画在贴图窗口内」**：主栏宽 627px，贴图窗口比它窄时被裁切（320×240 只剩前 6 个按钮、看不见对勾）。用户选定**贴图窗口外的独立伴生小窗**（与 PixPin 一致）。
+     - 小窗：新窗口类 `LightweightToolsetPinToolbar`，`WS_EX_LAYERED|TOOLWINDOW|TOPMOST|NOACTIVATE`；哨兵色抠透明 + `UpdateLayeredWindow`；主栏贴贴图下沿 8px，二级栏与下拉菜单在其下方生长；下方放不下整体翻到贴图上方；宽度按 `2×内容宽 − 主栏宽`（二级栏约 808px，窗口约 1017px）。
+     - 标注坐标按 `client / zoom` 换算；合成图按图像分辨率缓存（`annot_dirty`），悬停只重贴；`WM_WINDOWPOSCHANGED` 让小窗跟随拖动/缩放；Esc 标注时只退出标注；无工具时拖动仍移动窗口。
+     - 实测：900×600 与 320×240 贴图工具栏均完整、绘制正常、对勾退出后标注留存；贴屏幕底部的贴图工具栏翻到上方。**用户已验收通过**（含右键菜单「标注/隐藏标注」解禁：`MenuEntry::item` 第二个参数是 `grayed`，原先错传 `true`）。
    - **待办（用户已确认推迟）**：
      - **贴图标注**：右键「标注」进入标注模式，出现只含贴图相关项的标注工具栏（参照截图工具栏样式），工具栏跟随贴图窗口移动，最右端对勾按钮结束标注退出；「隐藏标注」同步实现。
      - **贴图文本选择**：右键「选择所有文本」「文本可选择」两项（含 OCR 文本）。

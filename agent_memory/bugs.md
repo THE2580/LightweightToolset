@@ -92,6 +92,24 @@
 - 同时把 `SHDoDragDrop` 换成自实现 `IDropSource` + `DoDragDrop`，控制 `QueryContinueDrag`
   （Esc 取消 / 松开左键放下）。
 
+## 贴图标注工具栏不能画在贴图窗口内（2026-11-09）
+
+- 现象：把截图那套工具栏按 `Mode::Pin` 直接画进贴图窗口，主栏宽 627px；
+  贴图窗口就是图本身，图比 627px 窄时右半边被裁掉（320×240 只能看到前 6 个按钮，对勾不可见）。
+- 结论：用户选定「贴图窗口外的独立伴生小窗」（与 PixPin 一致）。实现要点：
+  - 窗口类 `LightweightToolsetPinToolbar`，`WS_EX_LAYERED|TOOLWINDOW|TOPMOST|NOACTIVATE`；
+  - 分层窗口直接用 `UpdateLayeredWindow` 呈现，不用 `WM_PAINT`；圆角与留白靠「哨兵色抠透明」：
+    先把 DIB 填成哨兵 `B=3,G=2,R=1`，`toolbar::draw` 后仍等于哨兵即 alpha=0，其余 alpha=255；
+  - 宽度不能只取主栏：二级栏（线型+线宽+填充+形状+8 色）约 808px 且与主栏左对齐居中，
+    所以窗口宽必须满足 `W >= 2×内容宽 − 主栏宽`（实测 1017px）；
+  - 定位：主栏贴贴图下沿 +8px，二级栏/下拉向下生长（主栏不跳位）；下方放不下整体翻到贴图上方；
+  - 跟随：贴图窗口 `WM_WINDOWPOSCHANGED` 时重算位置与内容。
+- 调试坑：合成输入脚本里 `SetCursorPos` 后紧接着 `mouse_event` 会偶发点击仍落在旧位置，
+  等待要 ≥200ms；否则会误判成「点击没生效」。
+- 补充（2026-11-09）：右键菜单「标注/隐藏标注」一直是灰的，原因是 `MenuEntry::item(text, grayed, checked)`
+  的第二个参数仍传了 `true`（参数顺序是「置灰、勾选」，不是「可用、勾选」）。改为
+  `item("标注", false, state.annotating)`、`item("隐藏标注", false, state.annotations_hidden)`。
+
 ## 事故：贴图超级拖放时崩溃，连带接收方（DSH）进程结束（2026-11-08）
 
 - 版本：`778e0a4`（把拖拽图像重新交给系统 `IDragSourceHelper` 的那一版）。
