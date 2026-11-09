@@ -1,5 +1,5 @@
 # Goal
-复刻 PixPin 截图工具（LightweightToolset 新工具）。贴图标注工具栏与批 A（绘制正确性、工具栏交互）已验收并提交（`d32b36f`、`27c669d`）；下一步批 B 性能优化，之后是文字/序号马赛克、文本选择与历史浏览。
+复刻 PixPin 截图工具（LightweightToolset 新工具）。贴图标注工具栏、批 A（绘制正确性/工具栏交互）、批 B（性能）均已验收并提交（`d32b36f`、`27c669d`、`4785eea`）。下一步是贴图标注的文字/序号/马赛克，再是文本选择与历史浏览。
 
 # Current Focus
 
@@ -15,7 +15,10 @@
   - 支持 `Ctrl+Z` / `Ctrl+Y` 撤销/重做标注（标注模式下拦截，不关闭窗口）。
   - 实测：`menu_after_tool=0`、`menu_no_tool=1`、滚轮后贴图矩形不变、铅笔提示条可见、undo 后线条消失 / redo 恢复、折线两点 + 右键只出一段。
 
-- **批 B：贴图标注性能（未开始）**：内存略增 + 操作掉帧，需先测量（工具栏小窗每次移动都重绘、标注合成整图重贴、每次重绘新建位图）。
+- **批 B：贴图标注性能（2026-11-09，已优化，已验收，提交 `4785eea`）**：
+  - 测量（debug 构建，1200×800 贴图）：优化前 `paint` 平均 7.06ms / 最大 9.65ms，工具栏重绘平均 9.51ms / 最大 12.89ms（两者叠加接近 16.7ms 帧预算 → 掉帧）。
+  - 改动：①工具栏位图缓存复用（不再每次新建 DIB）、哨兵处理改 u32 批量；②只有「悬停目标变化」才重绘工具栏（同一按钮内移动不重绘）；③标注分两层缓存——已落图标注 `items_surface` 只在内容变化时重画，草稿合成 `composite` 复用；④绘制时只刷新「旧草稿 ∪ 新草稿」脏区并按脏区换算 StretchBlt 源矩形，不再整窗重贴；⑤退出标注释放标注相关位图。
+  - 优化后：`paint` 平均 **2.67ms**（最大 8.78，为首次整图合成）、工具栏重绘平均 **3.05ms**（且次数由 20 降到 14）。内存（1200×800 贴图）：创建贴图 +11.5MB、进标注 +4.3MB、画完第 1 个矩形 +3.6MB 后保持不变、退出标注 −4.1MB。
 
 - **贴图标注工具栏（2026-11-09，已验收，未提交）**：
   - `pin.rs` 删掉临时迷你工具栏（`PinAction`/`pin_toolbar_*`/`draw_pin_toolbar`），改为 `toolbar::layout/draw/hit` + `Mode::Pin`，动作分发照抄 `overlay.rs`。
@@ -44,9 +47,10 @@
 
 # Resume Here
 
-0. 当前 HEAD `d32b36f`（`feat: reuse screenshot annotation toolbar for pin`）；工作树只剩既有的 `window_pinner.rs`、`window_service.rs`、`.codex/`，不要提交。
-1. **开发已暂停（2026-11-09）**：开发版进程与 Vite `:1420` 均已关闭（只剩安装版 `D:\轻量化工具集` 在跑）。下次开工按固定流程重启：`npm run dev`（Vite 1420）→ `cargo build` → 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%\lwt-dev` → 提权启动 → 核对进程路径与页面加载。
-2. 下一步补贴图标注的文字/序号/马赛克：`toolbar` 的 `Action::Tool(Shape::Text/Serial)` 已能切工具，缺的是贴图内的文字内联编辑（覆盖层那套 `start_text_edit`/IME 逻辑在 `overlay.rs`，需要按贴图窗口改造）。
-3. 之后：文本选择（「选择所有文本」「文本可选择」+ OCR）与贴图历史浏览；`MENU_HIDE_ANNOTATION` 已验证可切换。
-4. 注入测试注意：安装版与开发版热键冲突，临时改开发版热键用 `%TEMP%\lwt-hk-patch.js unique|restore`，测完必须 restore 并重启；系统输入注入里 `SetCursorPos` 后要等 ≥200ms 再 `mouse_event`。
-5. 提交时排除 `window_service.rs`、`window_pinner.rs`、`.codex/`；提交前 `npm run build` + `cargo check` + `cargo test --lib screenshot:: -- --test-threads=1`。
+0. **开发暂停（2026-11-09 晚，用户关机）**：开发版进程与 Vite 均已关闭，只剩安装版（`D:\轻量化工具集`）在跑。
+1. 当前 HEAD `4785eea`（`perf: make pin annotation repaint incremental`）；工作树只剩既有的 `window_pinner.rs`、`window_service.rs`、`.codex/`，不要提交。
+2. 下次开工按固定流程重启环境：`npm run dev`（Vite 1420）→ `cargo build` → 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%\lwt-dev` → 提权启动 → 核对进程路径与页面加载。
+3. 下一步补贴图标注的文字/序号/马赛克：`toolbar` 的 `Action::Tool(Shape::Text/Serial)` 已能切工具，缺的是贴图内的文字内联编辑（覆盖层那套 `start_text_edit`/IME 逻辑在 `overlay.rs`，需要按贴图窗口改造）。
+4. 之后：文本选择（「选择所有文本」「文本可选择」+ OCR）与贴图历史浏览；`MENU_HIDE_ANNOTATION` 已验证可切换。
+5. 注入测试注意：安装版与开发版热键冲突，临时改开发版热键用 `%TEMP%\lwt-hk-patch.js unique|restore`，测完必须 restore 并重启；输入注入里 `SetCursorPos` 后要等 ≥200ms 再 `mouse_event`；截图脚本 `%TEMP%\lwt-shot2.ps1` 已 DPI 感知且不改窗口尺寸（旧的 `lwt-screen.ps1` 会把窗口改成 1500×1050，别再用）。
+6. 提交时排除 `window_service.rs`、`window_pinner.rs`、`.codex/`；提交前 `npm run build` + `cargo check` + `cargo test --lib screenshot:: -- --test-threads=1`。
