@@ -161,12 +161,22 @@ pub fn layout(
     let width = content + PAD * 2;
     let height = button;
 
-    let mut x = sel.x + (sel.width - width) / 2;
-    x = x.clamp(4, (screen.0 - width - 4).max(4));
-    let mut y = sel.y + sel.height + 10;
-    if y + height > screen.1 - 4 {
-        y = (sel.y - 10 - height).max(4);
-    }
+    // 截图：贴选区下沿，放不下翻到选区上方；贴图：主栏固定在工具栏窗口顶部，
+    // 二级栏与下拉菜单往下长（窗口高度已按此预留）。
+    let (x, y) = match mode {
+        Mode::Screenshot => {
+            let x = (sel.x + (sel.width - width) / 2).clamp(4, (screen.0 - width - 4).max(4));
+            let mut y = sel.y + sel.height + 10;
+            if y + height > screen.1 - 4 {
+                y = (sel.y - 10 - height).max(4);
+            }
+            (x, y)
+        }
+        Mode::Pin => (
+            ((screen.0 - width) / 2).clamp(4, (screen.0 - width - 4).max(4)),
+            4,
+        ),
+    };
 
     let top = y;
     let mut buttons: Vec<(Action, RECT)> = Vec::new();
@@ -234,10 +244,18 @@ pub fn layout(
         let is_pixels = matches!(tool, Some(Shape::Mosaic | Shape::Blur));
         let line_pick = picks.lines;
         let row_h = TB_BTN;
-        let mut ry = y + height + 4;
-        if ry + row_h + 16 > screen.1 - 4 {
-            ry = (y - 4 - row_h - 16).max(4);
-        }
+        // 贴图的二级栏固定挂在主栏下方（窗口高度已预留）；截图仍在下沿，放不下翻上去。
+        let ry = match mode {
+            Mode::Pin => y + height + 4,
+            Mode::Screenshot => {
+                let mut ry = y + height + 4;
+                if ry + row_h + 16 > screen.1 - 4 {
+                    ry = (y - 4 - row_h - 16).max(4);
+                }
+                ry
+            }
+        };
+        let menu_top = |index: i32| -> i32 { ry + row_h + index * 32 };
         let stop = ry;
         let mut style_buttons: Vec<(Action, RECT)> = Vec::new();
         let mut style_separators: Vec<(i32, i32, i32)> = Vec::new();
@@ -325,15 +343,15 @@ pub fn layout(
         layout.style_separators = style_separators;
         if line_menu_open {
             if let Some(anchor) = line_btn {
-                let menu_y = ry + row_h;
                 for style in 0..2u8 {
+                    let item_top = menu_top(style as i32);
                     layout.menus.push((
                         Action::LineStylePick(style),
                         RECT {
                             left: anchor.left,
-                            top: menu_y + style as i32 * 32,
+                            top: item_top,
                             right: anchor.right,
-                            bottom: menu_y + style as i32 * 32 + 30,
+                            bottom: item_top + 30,
                         },
                     ));
                 }
@@ -341,15 +359,16 @@ pub fn layout(
         }
         if line_pick == Shape::Arrow && arrow_menu_open {
             if let Some(anchor) = arrow_btn {
-                let menu_y = ry + row_h;
                 for style in 1..3u8 {
+                    let index = style as i32 - 1;
+                    let item_top = menu_top(index);
                     layout.menus.push((
                         Action::ArrowPick(style),
                         RECT {
                             left: anchor.left,
-                            top: menu_y + (style as i32 - 1) * 32,
+                            top: item_top,
                             right: anchor.right,
-                            bottom: menu_y + (style as i32 - 1) * 32 + 30,
+                            bottom: item_top + 30,
                         },
                     ));
                 }

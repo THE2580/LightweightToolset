@@ -20,16 +20,18 @@ use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Controls::Dialogs::{
     GetSaveFileNameW, OFN_EXPLORER, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
-use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED};
+use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_ESCAPE,
+    GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, VK_CONTROL, VK_ESCAPE,
+    TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows_sys::Win32::System::Ole::{OleInitialize, OleUninitialize, DROPEFFECT_COPY};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::annotation::{self, Shape};
 use super::dib::Surface;
+use super::toolbar;
 
 /// 一张贴图的像素（自顶向下 BGRA）。底部朝上的版本按需生成，不再常驻内存。
 #[derive(Clone)]
@@ -205,6 +207,19 @@ struct PinState {
     annotations_hidden: bool,
     doc: annotation::Document,
     draft: Vec<(i32, i32)>,
+    /// 工具栏：分组记住上次选的形状，二级栏与下拉的开合状态。
+    picks: toolbar::Picks,
+    style_open: bool,
+    line_menu_open: bool,
+    arrow_menu_open: bool,
+    delete_mode: bool,
+    /// 客户区坐标下的光标位置，工具栏悬停高亮用。
+    cursor: Option<(i32, i32)>,
+    /// 标注合成缓存（图像分辨率）与其失效标记。
+    composite: Option<Surface>,
+    annot_dirty: bool,
+    /// 贴在贴图窗口外侧的标注工具栏小窗。
+    toolbar: Option<HWND>,
 }
 
 /// 贴在贴图窗口正下方的一层分层阴影窗口。
@@ -299,6 +314,7 @@ fn host() -> Option<&'static mpsc::Sender<PinCommand>> {
             register_class(CLASS_PIN);
             register_shadow_class();
             register_ghost_class();
+            register_toolbar_class();
 
             let mut msg: MSG = std::mem::zeroed();
             loop {
@@ -460,6 +476,15 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
         annotations_hidden: false,
         doc: annotation::Document::new(),
         draft: Vec::new(),
+        picks: toolbar::Picks::default(),
+        style_open: false,
+        line_menu_open: false,
+        arrow_menu_open: false,
+        delete_mode: false,
+        cursor: None,
+        composite: None,
+        annot_dirty: true,
+        toolbar: None,
     });
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
     if let Ok(mut pins) = PINS.lock() {
@@ -1294,200 +1319,519 @@ unsafe fn ghost_destroy() {
 }
 
 // ---------------------------------------------------------------------------
-// 贴图标注：进入标注模式后在贴图上画一层精简工具栏，并支持矩形/箭头。
+// 贴图标注：复用截图那套原生工具栏（`toolbar.rs` 的 `Mode::Pin`），
+// 尾巴只留一个对勾「完成」，点它退出标注模式；标注画在贴图图像坐标上。
+//
+// 工具栏是贴在贴图窗口外侧的伴生小窗（与 PixPin 一致）：贴图本身可能比
+// 工具栏窄，画在窗口内会被裁掉。小窗分层、置顶、不抢焦点，随贴图移动与
+// 缩放重新贴到它下沿外侧，屏幕下方放不下就翻到上方。
 // ---------------------------------------------------------------------------
 
-/// 标注工具栏的动作。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PinAction {
-    Tool(Shape),
-    Color(usize),
-    Undo,
-    Done,
-}
+const TOOLBAR_CLASS: &str = "LightweightToolsetPinToolbar";
+/// 工具栏窗口宽度：主栏 627px + 左右各 4px 余量。
+const TB_WIDTH: i32 = 635;
+const TB_ROW: i32 = 49;
+const TB_GAP: i32 = 4;
+/// 下拉菜单向上展开所需留白（两条 30px 菜单项 + 间隔）。
+const TB_MENU: i32 = 66;
+/// 工具栏与贴图窗口之间的间距。
+const TB_MARGIN: i32 = 8;
 
-const PIN_TB_BUTTON: i32 = 30;
-const PIN_TB_GAP: i32 = 4;
-const PIN_TB_PAD: i32 = 6;
-const PIN_TB_COLORS: usize = 4;
-
-/// 工具栏按钮顺序：矩形、箭头、颜色 ×4、撤销、完成。
-fn pin_toolbar_actions() -> Vec<PinAction> {
-    let mut actions = vec![PinAction::Tool(Shape::Rect), PinAction::Tool(Shape::Arrow)];
-    for index in 0..PIN_TB_COLORS {
-        actions.push(PinAction::Color(index));
+/// 工具栏窗口客户区高度：顶部留白 + 主栏（+ 二级栏 + 下拉菜单）。
+fn toolbar_height(state: &PinState) -> i32 {
+    let mut height = TB_GAP + TB_ROW;
+    if state.doc.tool().is_some() && state.style_open {
+        height += TB_GAP + TB_ROW;
+        if state.line_menu_open || state.arrow_menu_open {
+            height += TB_GAP + TB_MENU;
+        }
     }
-    actions.push(PinAction::Undo);
-    actions.push(PinAction::Done);
-    actions
+    height
 }
 
-/// 工具栏矩形（客户区坐标）：贴在左上角内侧 8px。
-fn pin_toolbar_rect(state: &PinState) -> RECT {
-    let count = pin_toolbar_actions().len() as i32;
-    let width = PIN_TB_PAD * 2 + count * PIN_TB_BUTTON + (count - 1) * PIN_TB_GAP;
-    let height = PIN_TB_PAD * 2 + PIN_TB_BUTTON;
-    RECT {
-        left: 8,
-        top: 8,
-        right: 8 + width,
-        bottom: 8 + height,
+/// 工具栏布局（坐标相对工具栏窗口自身）。
+fn tb_layout(state: &PinState, size: (i32, i32)) -> toolbar::Layout {
+    toolbar::layout(
+        super::overlay::Selection {
+            x: 0,
+            y: 0,
+            width: size.0,
+            height: size.1,
+        },
+        size,
+        state.doc.tool(),
+        state.style_open,
+        &state.picks,
+        state.line_menu_open,
+        state.arrow_menu_open,
+        toolbar::Mode::Pin,
+    )
+}
+
+/// 工具栏状态（与截图覆盖层同源，只是 mode 换成 Pin）。
+fn tb_state(state: &PinState, size: (i32, i32)) -> toolbar::ToolbarState {
+    toolbar::ToolbarState {
+        mode: toolbar::Mode::Pin,
+        selection: super::overlay::Selection {
+            x: 0,
+            y: 0,
+            width: size.0,
+            height: size.1,
+        },
+        screen: size,
+        cursor: state.cursor,
+        tool: state.doc.tool(),
+        picks: state.picks,
+        style_open: state.style_open,
+        color_index: state.doc.color_index(),
+        width: state.doc.width(),
+        fill: state.doc.fill(),
+        strength: state.doc.strength(state.doc.tool() != Some(Shape::Blur)),
+        opacity: state.doc.opacity(),
+        font_size: state.doc.font_size(),
+        serial_size: state.doc.serial_size(),
+        line_style: state.doc.line_style(matches!(
+            state.doc.tool(),
+            Some(Shape::Rect | Shape::Ellipse | Shape::Circle)
+        )),
+        arrow_style: state.doc.arrow_style(),
+        line_menu_open: state.line_menu_open,
+        arrow_menu_open: state.arrow_menu_open,
+        delete_mode: state.delete_mode,
     }
 }
 
-/// 命中工具栏按钮。
-fn pin_toolbar_hit(state: &PinState, x: i32, y: i32) -> Option<PinAction> {
-    let rect = pin_toolbar_rect(state);
-    if x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom {
+/// 工具栏窗口挂着的贴图窗口。
+unsafe fn toolbar_pin(hwnd: HWND) -> Option<HWND> {
+    let pin = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as HWND;
+    if pin.is_null() {
+        None
+    } else {
+        Some(pin)
+    }
+}
+
+unsafe fn toolbar_create(pin: HWND) -> Option<HWND> {
+    let class = widen(TOOLBAR_CLASS);
+    let hwnd = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        class.as_ptr(),
+        std::ptr::null(),
+        WS_POPUP,
+        0,
+        0,
+        1,
+        1,
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        GetModuleHandleW(std::ptr::null()),
+        std::ptr::null_mut(),
+    );
+    if hwnd.is_null() {
         return None;
     }
-    let actions = pin_toolbar_actions();
-    let mut left = rect.left + PIN_TB_PAD;
-    for action in actions {
-        let right = left + PIN_TB_BUTTON;
-        if x >= left && x < right {
-            return Some(action);
-        }
-        left = right + PIN_TB_GAP;
-    }
-    None
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, pin as isize);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    Some(hwnd)
 }
 
-/// 画标注工具栏（叠在贴图内容上层）。
-unsafe fn draw_pin_toolbar(dc: HDC, state: &PinState) {
-    let rect = pin_toolbar_rect(state);
-    let brush = CreateSolidBrush(0x00FF_FFFF);
-    let pen = CreatePen(PS_SOLID, 1, 0x00C8_C8C8);
-    let old_brush = SelectObject(dc, brush);
-    let old_pen = SelectObject(dc, pen);
-    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, 8, 8);
-    SelectObject(dc, old_pen);
-    SelectObject(dc, old_brush);
-    DeleteObject(pen);
-    DeleteObject(brush);
-
-    let palette = annotation::palette();
-    let mut left = rect.left + PIN_TB_PAD;
-    let top = rect.top + PIN_TB_PAD;
-    for action in pin_toolbar_actions() {
-        let button = RECT {
-            left,
-            top,
-            right: left + PIN_TB_BUTTON,
-            bottom: top + PIN_TB_BUTTON,
-        };
-        let active = match action {
-            PinAction::Tool(shape) => state.doc.tool() == Some(shape),
-            PinAction::Color(index) => state.doc.color_index() == index,
-            _ => false,
-        };
-        if active {
-            let bg = CreateSolidBrush(0x00FF_E6_B8);
-            let old = SelectObject(dc, bg);
-            RoundRect(dc, button.left, button.top, button.right, button.bottom, 6, 6);
-            SelectObject(dc, old);
-            DeleteObject(bg);
-        }
-        let cx = (button.left + button.right) / 2;
-        let cy = (button.top + button.bottom) / 2;
-        match action {
-            PinAction::Tool(Shape::Rect) => {
-                let pen = CreatePen(PS_SOLID, 2, 0x0020_2020);
-                let old_pen = SelectObject(dc, pen);
-                let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-                Rectangle(dc, cx - 8, cy - 6, cx + 8, cy + 6);
-                SelectObject(dc, old_brush);
-                SelectObject(dc, old_pen);
-                DeleteObject(pen);
-            }
-            PinAction::Tool(_) => {
-                let pen = CreatePen(PS_SOLID, 2, 0x0020_2020);
-                let old_pen = SelectObject(dc, pen);
-                MoveToEx(dc, cx - 8, cy + 6, std::ptr::null_mut());
-                LineTo(dc, cx + 6, cy - 6);
-                MoveToEx(dc, cx + 6, cy - 6, std::ptr::null_mut());
-                LineTo(dc, cx + 1, cy - 5);
-                MoveToEx(dc, cx + 6, cy - 6, std::ptr::null_mut());
-                LineTo(dc, cx + 5, cy - 1);
-                SelectObject(dc, old_pen);
-                DeleteObject(pen);
-            }
-            PinAction::Color(index) => {
-                let color = palette[index.min(palette.len() - 1)];
-                let swatch = CreateSolidBrush(color);
-                let old = SelectObject(dc, swatch);
-                RoundRect(dc, cx - 9, cy - 9, cx + 9, cy + 9, 4, 4);
-                SelectObject(dc, old);
-                DeleteObject(swatch);
-            }
-            PinAction::Undo => {
-                let pen = CreatePen(PS_SOLID, 2, 0x0020_2020);
-                let old_pen = SelectObject(dc, pen);
-                let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-                Arc(dc, cx - 9, cy - 8, cx + 9, cy + 8, cx + 9, cy - 8, cx - 9, cy + 2);
-                SelectObject(dc, old_brush);
-                SelectObject(dc, old_pen);
-                DeleteObject(pen);
-            }
-            PinAction::Done => {
-                let pen = CreatePen(PS_SOLID, 3, 0x0020_8020);
-                let old_pen = SelectObject(dc, pen);
-                MoveToEx(dc, cx - 8, cy, std::ptr::null_mut());
-                LineTo(dc, cx - 2, cy + 6);
-                LineTo(dc, cx + 9, cy - 7);
-                SelectObject(dc, old_pen);
-                DeleteObject(pen);
-            }
-        }
-        left += PIN_TB_BUTTON + PIN_TB_GAP;
+fn toolbar_destroy(state: &mut PinState) {
+    if let Some(hwnd) = state.toolbar.take() {
+        unsafe { DestroyWindow(hwnd) };
     }
+}
+
+/// 重画并重新定位工具栏窗口：尺寸随二级栏/下拉菜单变化，位置随贴图窗口。
+unsafe fn toolbar_refresh(pin: HWND, state: &mut PinState) {
+    if !state.annotating {
+        toolbar_destroy(state);
+        return;
+    }
+    let hwnd = match state.toolbar {
+        Some(hwnd) => hwnd,
+        None => {
+            let Some(created) = toolbar_create(pin) else {
+                return;
+            };
+            state.toolbar = Some(created);
+            created
+        }
+    };
+    let height = toolbar_height(state);
+    // 二级栏比主栏宽（线型 + 线宽 + 填充 + 形状 + 8 色）。主栏在窗口内水平居中，
+    // 所以窗口宽度要满足 x + 二级栏宽 <= 窗口宽，即 W >= 2 * 内容宽 - 主栏宽。
+    let probe = tb_layout(&*state, (TB_WIDTH * 2, height));
+    let (_, _, bounds_w, bounds_h) = probe.bounds();
+    let row_w = bounds_w - 4;
+    let main_w = probe.width;
+    let width = (2 * row_w - main_w + 8).max(main_w + 8);
+    let height = height.max(bounds_h + 4);
+    let Some(mut surface) = Surface::new(width, height) else {
+        return;
+    };
+    // 哨兵色：GDI 没画到的像素保持哨兵值，据此抠成完全透明（圆角与留白）。
+    for pixel in surface.pixels_mut().chunks_exact_mut(4) {
+        pixel[0] = 3;
+        pixel[1] = 2;
+        pixel[2] = 1;
+        pixel[3] = 0;
+    }
+    let bar = tb_state(&*state, (width, height));
+    toolbar::draw(surface.dc(), &bar);
+    for pixel in surface.pixels_mut().chunks_exact_mut(4) {
+        if pixel[0] == 3 && pixel[1] == 2 && pixel[2] == 1 {
+            pixel[0] = 0;
+            pixel[1] = 0;
+            pixel[2] = 0;
+            pixel[3] = 0;
+        } else {
+            pixel[3] = 255;
+        }
+    }
+    // 位置：主栏贴在贴图下沿外侧，二级栏/下拉菜单向下生长（主栏不跳位）；
+    // 下方放不下就整体翻到贴图上方。
+    let pin_rect = window_rect(pin);
+    let mut area: RECT = std::mem::zeroed();
+    SystemParametersInfoW(
+        SPI_GETWORKAREA,
+        0,
+        &mut area as *mut RECT as *mut c_void,
+        0,
+    );
+    let mut x = pin_rect.left + ((pin_rect.right - pin_rect.left) - width) / 2;
+    x = x.clamp(area.left + 4, (area.right - width - 4).max(area.left + 4));
+    let mut y = pin_rect.bottom + TB_MARGIN;
+    if y + height > area.bottom - 4 {
+        y = pin_rect.top - TB_MARGIN - height;
+    }
+    y = y.clamp(area.top + 4, (area.bottom - height - 4).max(area.top + 4));
+    let screen = GetDC(std::ptr::null_mut());
+    let destination = POINT { x, y };
+    let source = POINT { x: 0, y: 0 };
+    let size = SIZE {
+        cx: width,
+        cy: height,
+    };
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: 255,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+    UpdateLayeredWindow(
+        hwnd,
+        screen,
+        &destination,
+        &size,
+        surface.dc(),
+        &source,
+        0,
+        &blend,
+        ULW_ALPHA,
+    );
+    ReleaseDC(std::ptr::null_mut(), screen);
+}
+
+unsafe extern "system" fn toolbar_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        // 分层窗口由 UpdateLayeredWindow 呈现，不走 WM_PAINT。
+        WM_PAINT => 0,
+        WM_MOUSEMOVE => {
+            if let Some(pin) = toolbar_pin(hwnd) {
+                if let Some(state) = state_of(pin) {
+                    let x = (lp & 0xFFFF) as i16 as i32;
+                    let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
+                    if (*state).cursor != Some((x, y)) {
+                        (*state).cursor = Some((x, y));
+                        toolbar_refresh(pin, &mut *state);
+                    }
+                    let mut track = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    TrackMouseEvent(&mut track);
+                }
+            }
+            0
+        }
+        WM_MOUSELEAVE => {
+            if let Some(pin) = toolbar_pin(hwnd) {
+                if let Some(state) = state_of(pin) {
+                    if (*state).cursor.is_some() {
+                        (*state).cursor = None;
+                        toolbar_refresh(pin, &mut *state);
+                    }
+                }
+            }
+            0
+        }
+        WM_LBUTTONDOWN => {
+            if let Some(pin) = toolbar_pin(hwnd) {
+                if let Some(state) = state_of(pin) {
+                    let x = (lp & 0xFFFF) as i16 as i32;
+                    let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
+                    let mut client: RECT = std::mem::zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let layout = tb_layout(&*state, (client.right, client.bottom));
+                    let hit = toolbar::hit(&layout, x, y);
+                    if let Some(action) = hit {
+                        apply_toolbar_action(&mut *state, action);
+                        toolbar_refresh(pin, &mut *state);
+                        InvalidateRect(pin, std::ptr::null(), 0);
+                    } else if (*state).line_menu_open || (*state).arrow_menu_open {
+                        // 菜单外的点击只负责收起下拉。
+                        (*state).line_menu_open = false;
+                        (*state).arrow_menu_open = false;
+                        toolbar_refresh(pin, &mut *state);
+                    }
+                }
+            }
+            0
+        }
+        WM_MOUSEWHEEL => {
+            // 滚轮落在二级栏的数值项上就调数值；其它位置不处理（贴图缩放归贴图窗口）。
+            if let Some(pin) = toolbar_pin(hwnd) {
+                if let Some(state) = state_of(pin) {
+                    let delta = ((wp >> 16) & 0xFFFF) as u16 as i16 as i32;
+                    let mut point: POINT = std::mem::zeroed();
+                    GetCursorPos(&mut point);
+                    ScreenToClient(hwnd, &mut point);
+                    let mut client: RECT = std::mem::zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let layout = tb_layout(&*state, (client.right, client.bottom));
+                    let step = if delta > 0 { 1 } else { -1 };
+                    let mut adjusted = false;
+                    if let Some(styles) = &layout.styles {
+                        for (action, rect) in styles {
+                            if point.x < rect.left
+                                || point.x > rect.right
+                                || point.y < rect.top
+                                || point.y > rect.bottom
+                            {
+                                continue;
+                            }
+                            match action {
+                                toolbar::Action::Width => (*state).doc.adjust_width(step),
+                                toolbar::Action::SerialSize => {
+                                    (*state).doc.adjust_serial_size(step)
+                                }
+                                toolbar::Action::FontSize => (*state).doc.adjust_font_size(step),
+                                toolbar::Action::Opacity => (*state).doc.adjust_opacity(step),
+                                toolbar::Action::Strength => {
+                                    let mosaic = (*state).doc.tool() != Some(Shape::Blur);
+                                    (*state).doc.adjust_strength(mosaic, step);
+                                }
+                                _ => continue,
+                            }
+                            adjusted = true;
+                            break;
+                        }
+                    }
+                    if adjusted {
+                        touch_annot(&mut *state);
+                        toolbar_refresh(pin, &mut *state);
+                        InvalidateRect(pin, std::ptr::null(), 0);
+                    }
+                }
+            }
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
+unsafe fn register_toolbar_class() {
+    let owned = widen(TOOLBAR_CLASS);
+    let wc = WNDCLASSW {
+        style: 0,
+        lpfnWndProc: Some(toolbar_proc),
+        cbClsExtra: 0,
+        cbWndExtra: 0,
+        hInstance: GetModuleHandleW(std::ptr::null()),
+        hIcon: std::ptr::null_mut(),
+        hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
+        hbrBackground: std::ptr::null_mut(),
+        lpszMenuName: std::ptr::null(),
+        lpszClassName: owned.as_ptr(),
+    };
+    RegisterClassW(&wc);
+}
+
+/// 标注内容变了：合成缓存作废，下一帧重画。
+fn touch_annot(state: &mut PinState) {
+    state.annot_dirty = true;
+}
+
+/// 退出标注模式：标注保留在图上，只收起重绘状态与工具栏。
+fn exit_annotating(state: &mut PinState) {
+    state.annotating = false;
+    state.doc.clear_tool();
+    state.draft.clear();
+    state.style_open = false;
+    state.line_menu_open = false;
+    state.arrow_menu_open = false;
+    state.delete_mode = false;
+    state.cursor = None;
+    toolbar_destroy(state);
+}
+
+/// 工具栏动作分发：与截图覆盖层（`overlay.rs`）一致，只是尾巴换成「完成」。
+fn apply_toolbar_action(state: &mut PinState, action: toolbar::Action) {
+    use toolbar::Action;
+
+    // 菜单外的点击先收起下拉，避免菜单留在屏幕上。
+    if !matches!(
+        action,
+        Action::LineStyle | Action::ArrowType | Action::LineStylePick(_) | Action::ArrowPick(_)
+    ) {
+        state.line_menu_open = false;
+        state.arrow_menu_open = false;
+    }
+
+    match action {
+        Action::Group(group) => {
+            state.delete_mode = false;
+            let same = state.doc.tool().and_then(toolbar::group_of) == Some(group);
+            if same && state.style_open {
+                state.doc.clear_tool();
+                state.style_open = false;
+                state.line_menu_open = false;
+                state.arrow_menu_open = false;
+            } else {
+                let shape = state.picks.current(group);
+                state.doc.set_tool(shape);
+                state.style_open = true;
+            }
+            state.draft.clear();
+        }
+        Action::Pick(group, shape) => {
+            state.delete_mode = false;
+            state.picks.set(group, shape);
+            state.doc.set_tool(shape);
+            state.style_open = true;
+            state.line_menu_open = false;
+            state.arrow_menu_open = false;
+            state.draft.clear();
+        }
+        Action::Tool(shape) => {
+            state.delete_mode = false;
+            state.doc.toggle_tool(shape);
+            state.style_open = state.doc.tool() == Some(shape);
+            state.line_menu_open = false;
+            state.arrow_menu_open = false;
+            state.draft.clear();
+        }
+        Action::Color(index) => state.doc.set_color(index),
+        // 这几项是「滚轮调值」的显示项，点击本身不改数值。
+        Action::Width | Action::Strength | Action::Opacity | Action::FontSize
+        | Action::SerialSize => {}
+        Action::Fill => state.doc.toggle_fill(),
+        Action::LineStyle => {
+            state.line_menu_open = !state.line_menu_open;
+            state.arrow_menu_open = false;
+        }
+        Action::ArrowType => {
+            state.arrow_menu_open = !state.arrow_menu_open;
+            state.line_menu_open = false;
+        }
+        Action::LineStylePick(style) => {
+            let shapes = matches!(
+                state.doc.tool(),
+                Some(Shape::Rect | Shape::Ellipse | Shape::Circle)
+            );
+            state.doc.set_line_style(shapes, style);
+            state.line_menu_open = false;
+        }
+        Action::ArrowPick(style) => {
+            state.doc.set_arrow_style(style);
+            state.arrow_menu_open = false;
+        }
+        Action::PixelMode(shape) => {
+            state.picks.set(toolbar::Group::Pixels, shape);
+            state.doc.set_tool(shape);
+            state.style_open = true;
+        }
+        Action::Undo => {
+            state.doc.undo();
+        }
+        Action::Redo => {
+            state.doc.redo();
+        }
+        Action::Delete => state.delete_mode = !state.delete_mode,
+        // 贴图模式尾巴只有「完成」：结束标注模式。
+        Action::Done => exit_annotating(state),
+        // 截图专用的尾巴在贴图模式不会出现，留空以免将来漏分支。
+        Action::Save | Action::Copy | Action::Pin | Action::Cancel => {}
+    }
+    dbg_log(&format!(
+        "tb.action tool={} style_open={}",
+        state.doc.tool().is_some(),
+        state.style_open
+    ));
+    touch_annot(state);
 }
 
 /// 标注叠加后的合成图：把标注画进图像分辨率的一份副本，再整体缩放上屏。
-unsafe fn paint_composite(hwnd: HWND, dc: HDC, state: &PinState) {
+unsafe fn paint_composite(hwnd: HWND, dc: HDC, state: &mut PinState) {
     let width = state.surface.width;
     let height = state.surface.height;
-    let Some(mut composite) = super::dib::Surface::new(width, height) else {
+    // 合成图按图像分辨率缓存，只有标注内容变了才重建；鼠标移动只重贴一次。
+    let stale = state.annot_dirty
+        || state
+            .composite
+            .as_ref()
+            .map(|c| (c.width, c.height) != (width, height))
+            .unwrap_or(true);
+    if stale {
+        let Some(mut composite) = super::dib::Surface::new(width, height) else {
+            return;
+        };
+        BitBlt(
+            composite.dc(),
+            0,
+            0,
+            width,
+            height,
+            state.surface.dc(),
+            0,
+            0,
+            SRCCOPY,
+        );
+        let draft = if state.draft.len() >= 2 {
+            annotation::build_draft(
+                state.doc.tool().unwrap_or(Shape::Rect),
+                &state.draft[..1],
+                state.draft.last().copied(),
+                (0, 0),
+                state.doc.color(),
+                state.doc.width(),
+                state.doc.fill(),
+                state.doc.line_style(true),
+                state.doc.arrow_style(),
+                state.doc.strength(false),
+                state.doc.opacity(),
+            )
+        } else {
+            None
+        };
+        if !state.annotations_hidden {
+            annotation::draw(
+                &mut composite,
+                &state.doc.items,
+                state.doc.selected,
+                0,
+                0,
+                draft.as_ref(),
+            );
+        }
+        state.composite = Some(composite);
+        state.annot_dirty = false;
+    }
+    let Some(composite) = state.composite.as_ref() else {
         return;
     };
-    BitBlt(
-        composite.dc(),
-        0,
-        0,
-        width,
-        height,
-        state.surface.dc(),
-        0,
-        0,
-        SRCCOPY,
-    );
-    let draft = if state.draft.len() >= 2 {
-        annotation::build_draft(
-            state.doc.tool().unwrap_or(Shape::Rect),
-            &state.draft[..1],
-            state.draft.last().copied(),
-            (0, 0),
-            state.doc.color(),
-            state.doc.width(),
-            state.doc.fill(),
-            state.doc.line_style(true),
-            state.doc.arrow_style(),
-            state.doc.strength(false),
-            state.doc.opacity(),
-        )
-    } else {
-        None
-    };
-    if !state.annotations_hidden {
-        annotation::draw(
-            &mut composite,
-            &state.doc.items,
-            state.doc.selected,
-            0,
-            0,
-            draft.as_ref(),
-        );
-    }
     let mut client: RECT = std::mem::zeroed();
     GetClientRect(hwnd, &mut client);
     SetStretchBltMode(dc, HALFTONE);
@@ -1694,7 +2038,7 @@ unsafe fn apply_zoom(hwnd: HWND, state: &mut PinState, delta: i32) {
     shadow_sync(hwnd, state);
 }
 
-unsafe fn paint(hwnd: HWND, state: &PinState) {
+unsafe fn paint(hwnd: HWND, state: &mut PinState) {
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
     let dc = BeginPaint(hwnd, &mut ps);
     let has_annotations = state.annotating || (!state.doc.items.is_empty() && !state.annotations_hidden);
@@ -1718,9 +2062,6 @@ unsafe fn paint(hwnd: HWND, state: &PinState) {
             state.surface.height,
             SRCCOPY,
         );
-    }
-    if state.annotating {
-        draw_pin_toolbar(dc, state);
     }
     if GetTickCount() < state.zoom_until {
         // 缩放提示：半透明黑底 + 1px 白框 + 白字，格式「缩放：150%」。
@@ -1829,6 +2170,8 @@ unsafe fn install_image(hwnd: HWND, state: &mut PinState, next: PinImage) {
         surface.pixels_mut().copy_from_slice(&next.top_down);
         state.surface = surface;
     }
+    // 图像换了（旋转/翻转/重置），标注合成缓存必须重做。
+    state.annot_dirty = true;
     SetWindowPos(
         hwnd,
         HWND_TOPMOST,
@@ -2170,13 +2513,13 @@ unsafe fn show_menu(hwnd: HWND, state: &PinState) {
         &mut store,
         menu,
         MENU_ANNOTATE,
-        MenuEntry::item("标注", true, false),
+        MenuEntry::item("标注", false, state.annotating),
     );
     append_entry(
         &mut store,
         menu,
         MENU_HIDE_ANNOTATION,
-        MenuEntry::item("隐藏标注", true, false),
+        MenuEntry::item("隐藏标注", false, state.annotations_hidden),
     );
     append_entry(&mut store, menu, 0, MenuEntry::separator());
     append_entry(
@@ -2276,15 +2619,19 @@ unsafe fn handle_menu(hwnd: HWND, state: &mut PinState, command: usize) {
         MENU_COPY_IMAGE => copy_to_clipboard(state),
         MENU_SAVE_AS => save_as(hwnd, state),
         MENU_ANNOTATE => {
-            state.annotating = !state.annotating;
-            state.draft.clear();
-            if !state.annotating {
-                state.doc.clear_tool();
+            if state.annotating {
+                exit_annotating(state);
+            } else {
+                state.annotating = true;
+                state.cursor = None;
             }
+            touch_annot(state);
+            toolbar_refresh(hwnd, state);
             InvalidateRect(hwnd, std::ptr::null(), 0);
         }
         MENU_HIDE_ANNOTATION => {
             state.annotations_hidden = !state.annotations_hidden;
+            touch_annot(state);
             InvalidateRect(hwnd, std::ptr::null(), 0);
         }
         MENU_SHADOW => {
@@ -2317,38 +2664,55 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             if let Some(state) = state_of(hwnd) {
-                paint(hwnd, &*state);
+                paint(hwnd, &mut *state);
             }
             0
         }
-        WM_LBUTTONDOWN => {
+        WM_WINDOWPOSCHANGED => {
+            // 拖动/缩放/缩放倍率变化都走这里：工具栏小窗跟着贴图窗口重新贴合。
             if let Some(state) = state_of(hwnd) {
                 if (*state).annotating {
-                    let x = (lp & 0xFFFF) as i16 as i32;
-                    let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
-                    if let Some(action) = pin_toolbar_hit(&*state, x, y) {
-                        match action {
-                            PinAction::Tool(shape) => (*state).doc.toggle_tool(shape),
-                            PinAction::Color(index) => (*state).doc.set_color(index),
-                            PinAction::Undo => {
-                                (*state).doc.undo();
-                            }
-                            PinAction::Done => {
-                                (*state).annotating = false;
-                                (*state).doc.clear_tool();
-                                (*state).draft.clear();
-                            }
-                        }
-                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                    toolbar_refresh(hwnd, &mut *state);
+                }
+            }
+            DefWindowProcW(hwnd, msg, wp, lp)
+        }
+        WM_LBUTTONDOWN => {
+            if let Some(state) = state_of(hwnd) {
+                let x = (lp & 0xFFFF) as i16 as i32;
+                let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
+                if (*state).annotating {
+                    // 工具栏在独立小窗里，这里的点击都落在画布上。
+                    if (*state).line_menu_open || (*state).arrow_menu_open {
+                        // 菜单外的这一下只负责收起菜单。
+                        (*state).line_menu_open = false;
+                        (*state).arrow_menu_open = false;
+                        touch_annot(&mut *state);
+                        toolbar_refresh(hwnd, &mut *state);
                         return 0;
                     }
                     let zoom = (*state).zoom.max(0.01);
                     let point = (
-                        ((lp & 0xFFFF) as i16 as i32 as f32 / zoom) as i32,
-                        (((lp >> 16) & 0xFFFF) as i16 as i32 as f32 / zoom) as i32,
+                        (x as f32 / zoom) as i32,
+                        (y as f32 / zoom) as i32,
                     );
+                    if (*state).delete_mode {
+                        // 删除模式下点哪条删哪条。
+                        if let Some(index) = (*state).doc.hit_test(point.0, point.1) {
+                            (*state).doc.delete_at(index);
+                            touch_annot(&mut *state);
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                        }
+                        return 0;
+                    }
+                    let Some(tool) = (*state).doc.tool() else {
+                        // 没选工具时拖动仍然移动窗口。
+                        begin_drag(hwnd, &mut *state, lp);
+                        return 0;
+                    };
+                    let _ = tool;
                     (*state).draft = vec![point];
-                    dbg_log(&format!("annot.down point={point:?}"));
+                    touch_annot(&mut *state);
                     SetCapture(hwnd);
                     return 0;
                 }
@@ -2365,17 +2729,28 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_MOUSEMOVE => {
             if let Some(state) = state_of(hwnd) {
+                let x = (lp & 0xFFFF) as i16 as i32;
+                let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
                 if !(*state).draft.is_empty() {
                     let zoom = (*state).zoom.max(0.01);
-                    let point = (
-                        ((lp & 0xFFFF) as i16 as i32 as f32 / zoom) as i32,
-                        (((lp >> 16) & 0xFFFF) as i16 as i32 as f32 / zoom) as i32,
-                    );
+                    let point = ((x as f32 / zoom) as i32, (y as f32 / zoom) as i32);
                     if (*state).draft.len() == 1 {
                         (*state).draft.push(point);
+                    } else if (*state)
+                        .doc
+                        .tool()
+                        .map(|tool| tool.is_path_shape())
+                        .unwrap_or(false)
+                    {
+                        // 铅笔/荧光笔是路径型：累积点，与覆盖层行为一致。
+                        let last = *(*state).draft.last().unwrap();
+                        if (point.0 - last.0).abs() + (point.1 - last.1).abs() >= 2 {
+                            (*state).draft.push(point);
+                        }
                     } else if let Some(last) = (*state).draft.last_mut() {
                         *last = point;
                     }
+                    touch_annot(&mut *state);
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                 } else if (*state).drag.is_some() {
                     update_drag(hwnd, &mut *state);
@@ -2410,6 +2785,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         }
                     }
                     state_ref.draft.clear();
+                    touch_annot(state_ref);
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                 }
                 (*state).drag = None;
@@ -2439,6 +2815,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_MEASUREITEM => measure_menu_item(hwnd, lp),
         WM_DRAWITEM => draw_menu_item(hwnd, lp),
         WM_MOUSEWHEEL => {
+            // 滚轮在贴图上始终是缩放；数值项调节由工具栏小窗自己处理。
             if let Some(state) = state_of(hwnd) {
                 let delta = ((wp >> 16) & 0xFFFF) as u16 as i16 as i32;
                 apply_zoom(hwnd, &mut *state, delta);
@@ -2517,7 +2894,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_KEYDOWN => {
             if wp as u16 == VK_ESCAPE {
                 if let Some(state) = state_of(hwnd) {
-                    if GetTickCount() >= (*state).escape_guard && confirm_close(hwnd, &*state) {
+                    if (*state).annotating {
+                        // 标注时 Esc 只退出标注模式，不关窗口。
+                        exit_annotating(&mut *state);
+                        touch_annot(&mut *state);
+                        toolbar_destroy(&mut *state);
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                    } else if GetTickCount() >= (*state).escape_guard && confirm_close(hwnd, &*state)
+                    {
                         DestroyWindow(hwnd);
                     }
                 }
@@ -2538,6 +2922,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let state = state_of(hwnd);
             if let Some(state) = state {
                 shadow_destroy(&mut *state);
+                toolbar_destroy(&mut *state);
                 // 记下关闭前的样子，供「恢复上次关闭的贴图」使用。
                 // 只共享 original 的 Arc（不复制像素），队列上限压到 3 份。
                 let rect = window_rect(hwnd);
