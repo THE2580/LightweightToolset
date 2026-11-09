@@ -5,11 +5,11 @@
 - 本批新增：贴图上下颠倒修复、滚轮缩放改左上角固定、压贴图出现延迟（线程预热 + 历史后台落盘）、PixPin 同款三态阴影（出现淡蓝泛光/焦点淡蓝/失焦灰，独立分层窗口）、右键菜单（图像处理五项、复制图像、图像另存为、窗口阴影、锁定、关闭；标注与文本选择置灰）。
 - 「截图查看」已取消，不做。
 - 进行中：贴图标注。`toolbar.rs` 已支持 `Mode::Pin` + `Action::Done`（主栏固定窗口顶部、二级栏与下拉向下生长）；pin 端改为**贴图窗口外的独立伴生小窗**（`LightweightToolsetPinToolbar`）承载工具栏，主栏贴贴图下沿、放不下翻上方；右键菜单「标注/隐藏标注」已解禁。**用户已验收，已提交 `d32b36f`**；贴图文字/序号/马赛克、文本选择、历史浏览未做。
-- 本批改动已全部提交，工作树无待提交内容。
+- 本批改动已全部提交（工具栏 `d32b36f`、批 A `27c669d`），工作树无待提交内容。
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`d32b36f`**（`feat: reuse screenshot annotation toolbar for pin`，未推送）；工作树只剩既有三项。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`27c669d`**（`fix: correct pin annotation drafts and toolbar interactions`，未推送），工作树只剩既有三项。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
