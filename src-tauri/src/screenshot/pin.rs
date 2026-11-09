@@ -219,11 +219,20 @@ struct PinState {
     delete_mode: bool,
     /// 客户区坐标下的光标位置，工具栏悬停高亮用。
     cursor: Option<(i32, i32)>,
-    /// 标注合成缓存（图像分辨率）与其失效标记。
+    /// 已落图标注的缓存位图（图像分辨率），只在标注内容变化时重画。
+    items_surface: Option<Surface>,
+    /// 草稿合成缓存（图像分辨率），拖动时复用。
     composite: Option<Surface>,
+    /// 已落图标注需要重画（composite 不再代表当前标注）。
     annot_dirty: bool,
+    /// 上一帧草稿在客户区占的区域，用于只刷新「旧草稿 ∪ 新草稿」。
+    draft_rect: Option<RECT>,
     /// 贴在贴图窗口外侧的标注工具栏小窗。
     toolbar: Option<HWND>,
+    /// 工具栏位图缓存（分层窗口重绘时复用，避免每次分配）。
+    toolbar_surface: Option<Surface>,
+    /// 当前悬停的工具栏动作：不变时不重绘。
+    toolbar_hover: Option<toolbar::Action>,
 }
 
 /// 贴在贴图窗口正下方的一层分层阴影窗口。
@@ -487,9 +496,13 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
         arrow_menu_open: false,
         delete_mode: false,
         cursor: None,
+        items_surface: None,
         composite: None,
         annot_dirty: true,
+        draft_rect: None,
         toolbar: None,
+        toolbar_surface: None,
+        toolbar_hover: None,
     });
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
     if let Ok(mut pins) = PINS.lock() {
@@ -1476,26 +1489,44 @@ unsafe fn toolbar_refresh(pin: HWND, state: &mut PinState) {
     let main_w = probe.width;
     let width = (2 * row_w - main_w + 8).max(main_w + 8);
     let height = height.max(bounds_h + 4);
-    let Some(mut surface) = Surface::new(width, height) else {
-        return;
-    };
-    // 哨兵色：GDI 没画到的像素保持哨兵值，据此抠成完全透明（圆角与留白）。
-    for pixel in surface.pixels_mut().chunks_exact_mut(4) {
-        pixel[0] = 3;
-        pixel[1] = 2;
-        pixel[2] = 1;
-        pixel[3] = 0;
+    // 位图缓存复用：尺寸不变就不再分配，避免每次悬停都新建一块 DIB。
+    let reuse = state
+        .toolbar_surface
+        .as_ref()
+        .map(|surface| surface.width == width && surface.height == height)
+        .unwrap_or(false);
+    if !reuse {
+        match Surface::new(width, height) {
+            Some(surface) => state.toolbar_surface = Some(surface),
+            None => return,
+        }
     }
+    // 先取工具栏状态（只读借用），再动位图缓存，避免借用冲突。
     let bar = tb_state(&*state, (width, height));
-    toolbar::draw(surface.dc(), &bar);
-    for pixel in surface.pixels_mut().chunks_exact_mut(4) {
-        if pixel[0] == 3 && pixel[1] == 2 && pixel[2] == 1 {
-            pixel[0] = 0;
-            pixel[1] = 0;
-            pixel[2] = 0;
-            pixel[3] = 0;
-        } else {
-            pixel[3] = 255;
+    let surface = state.toolbar_surface.as_mut().unwrap();
+    let dc = surface.dc();
+    const SENTINEL: u32 = 0x0001_0203;
+    {
+        let bytes = surface.pixels_mut();
+        let words = unsafe {
+            std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut u32, bytes.len() / 4)
+        };
+        for word in words.iter_mut() {
+            *word = SENTINEL;
+        }
+    }
+    toolbar::draw(dc, &bar);
+    {
+        let bytes = surface.pixels_mut();
+        let words = unsafe {
+            std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut u32, bytes.len() / 4)
+        };
+        for word in words.iter_mut() {
+            if *word == SENTINEL {
+                *word = 0;
+            } else {
+                *word |= 0xFF00_0000;
+            }
         }
     }
     // 位置：主栏贴在贴图下沿外侧，二级栏/下拉菜单向下生长（主栏不跳位）；
@@ -1551,8 +1582,15 @@ unsafe extern "system" fn toolbar_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 if let Some(state) = state_of(pin) {
                     let x = (lp & 0xFFFF) as i16 as i32;
                     let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
-                    if (*state).cursor != Some((x, y)) {
-                        (*state).cursor = Some((x, y));
+                    // 只有悬停目标变了才重绘：提示与高亮都按按钮锚定，
+                    // 同一按钮内移动光标不需要重新渲染整条工具栏。
+                    let mut client: RECT = std::mem::zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let layout = tb_layout(&*state, (client.right, client.bottom));
+                    let hover = toolbar::hit(&layout, x, y);
+                    (*state).cursor = Some((x, y));
+                    if (*state).toolbar_hover != hover {
+                        (*state).toolbar_hover = hover;
                         toolbar_refresh(pin, &mut *state);
                     }
                     let mut track = TRACKMOUSEEVENT {
@@ -1571,6 +1609,7 @@ unsafe extern "system" fn toolbar_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 if let Some(state) = state_of(pin) {
                     if (*state).cursor.is_some() {
                         (*state).cursor = None;
+                        (*state).toolbar_hover = None;
                         toolbar_refresh(pin, &mut *state);
                     }
                 }
@@ -1701,6 +1740,43 @@ fn draft_item(state: &PinState) -> Option<annotation::Item> {
     )
 }
 
+
+/// 草稿在客户区占的区域（含线宽/箭头余量），用于增量刷新。
+fn draft_client_rect(state: &PinState, client: RECT) -> Option<RECT> {
+    let item = draft_item(state)?;
+    let bounds = item.bounds()?;
+    if client.right <= 0 || client.bottom <= 0 {
+        return None;
+    }
+    let kx = client.right as f32 / state.surface.width.max(1) as f32;
+    let ky = client.bottom as f32 / state.surface.height.max(1) as f32;
+    // 线宽、箭头与抗锯齿余量：按线宽放大再加固定余量。
+    let pad = (state.doc.width().max(4) as f32 * 2.0 + 16.0) as i32;
+    let left = (((bounds.x - pad) as f32) * kx).floor() as i32;
+    let top = (((bounds.y - pad) as f32) * ky).floor() as i32;
+    let right = (((bounds.x + bounds.width + pad) as f32) * kx).ceil() as i32;
+    let bottom = (((bounds.y + bounds.height + pad) as f32) * ky).ceil() as i32;
+    Some(RECT {
+        left: left.clamp(0, client.right),
+        top: top.clamp(0, client.bottom),
+        right: right.clamp(0, client.right),
+        bottom: bottom.clamp(0, client.bottom),
+    })
+}
+
+fn union_rect(a: Option<RECT>, b: Option<RECT>) -> Option<RECT> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(RECT {
+            left: a.left.min(b.left),
+            top: a.top.min(b.top),
+            right: a.right.max(b.right),
+            bottom: a.bottom.max(b.bottom),
+        }),
+        (Some(a), None) => Some(a),
+        (None, other) => other,
+    }
+}
+
 /// 收尾草稿：能成图就落进文档，然后清空草稿状态。
 /// `with_cursor=false` 用于折线的双击/右键收尾：右键点只结束、不额外补一个折点。
 fn finish_draft(state: &mut PinState, with_cursor: bool) {
@@ -1727,7 +1803,13 @@ fn exit_annotating(state: &mut PinState) {
     state.arrow_menu_open = false;
     state.delete_mode = false;
     state.cursor = None;
+    state.draft_rect = None;
+    // 退出标注后释放标注相关位图，内存回到不标注时的水平。
+    state.items_surface = None;
+    state.composite = None;
+    state.annot_dirty = true;
     toolbar_destroy(state);
+    state.toolbar_surface = None;
 }
 
 /// 工具栏动作分发：与截图覆盖层（`overlay.rs`）一致，只是尾巴换成「完成」。
@@ -1830,22 +1912,32 @@ fn apply_toolbar_action(state: &mut PinState, action: toolbar::Action) {
 }
 
 /// 标注叠加后的合成图：把标注画进图像分辨率的一份副本，再整体缩放上屏。
-unsafe fn paint_composite(hwnd: HWND, dc: HDC, state: &mut PinState) {
+unsafe fn paint_composite(hwnd: HWND, dc: HDC, state: &mut PinState, dirty: RECT) {
     let width = state.surface.width;
     let height = state.surface.height;
-    // 合成图按图像分辨率缓存，只有标注内容变了才重建；鼠标移动只重贴一次。
-    let stale = state.annot_dirty
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let mut client: RECT = std::mem::zeroed();
+    GetClientRect(hwnd, &mut client);
+    if client.right <= 0 || client.bottom <= 0 {
+        return;
+    }
+
+    // 已落图的标注单独缓存：只有标注内容真的变了才重画这一层，
+    // 拖动草稿时只重贴、不重新合成整图（原来每个鼠标点都要重建一次）。
+    let items_stale = state.annot_dirty
         || state
-            .composite
+            .items_surface
             .as_ref()
-            .map(|c| (c.width, c.height) != (width, height))
+            .map(|surface| (surface.width, surface.height) != (width, height))
             .unwrap_or(true);
-    if stale {
-        let Some(mut composite) = super::dib::Surface::new(width, height) else {
+    if items_stale {
+        let Some(mut items) = super::dib::Surface::new(width, height) else {
             return;
         };
         BitBlt(
-            composite.dc(),
+            items.dc(),
             0,
             0,
             width,
@@ -1855,37 +1947,79 @@ unsafe fn paint_composite(hwnd: HWND, dc: HDC, state: &mut PinState) {
             0,
             SRCCOPY,
         );
-        let draft = draft_item(state);
         if !state.annotations_hidden {
-            annotation::draw(
-                &mut composite,
-                &state.doc.items,
-                state.doc.selected,
-                0,
-                0,
-                draft.as_ref(),
-            );
+            annotation::draw(&mut items, &state.doc.items, state.doc.selected, 0, 0, None);
         }
-        state.composite = Some(composite);
+        state.items_surface = Some(items);
         state.annot_dirty = false;
     }
-    let Some(composite) = state.composite.as_ref() else {
-        return;
+
+    // 草稿（正在拖的那一个）每帧画在一份可复用的合成图上。
+    let draft = if state.annotations_hidden {
+        None
+    } else {
+        draft_item(state)
     };
-    let mut client: RECT = std::mem::zeroed();
-    GetClientRect(hwnd, &mut client);
+    let source = if draft.is_some() {
+        let stale = state
+            .composite
+            .as_ref()
+            .map(|surface| (surface.width, surface.height) != (width, height))
+            .unwrap_or(true);
+        if stale {
+            match super::dib::Surface::new(width, height) {
+                Some(surface) => state.composite = Some(surface),
+                None => return,
+            }
+        }
+        let composite = state.composite.as_mut().unwrap();
+        if let Some(items) = state.items_surface.as_ref() {
+            BitBlt(
+                composite.dc(),
+                0,
+                0,
+                width,
+                height,
+                items.dc(),
+                0,
+                0,
+                SRCCOPY,
+            );
+        }
+        if let Some(item) = draft.as_ref() {
+            annotation::draw(composite, &[], None, 0, 0, Some(item));
+        }
+        composite.dc()
+    } else {
+        match state.items_surface.as_ref() {
+            Some(items) => items.dc(),
+            None => return,
+        }
+    };
+
+    // 只重贴脏区：把客户区脏矩形换算回图像坐标。
+    let mut dst = dirty;
+    if dst.right <= dst.left || dst.bottom <= dst.top {
+        dst = client;
+    }
+    let sx = (dst.left as f32 * width as f32 / client.right as f32).floor() as i32;
+    let sy = (dst.top as f32 * height as f32 / client.bottom as f32).floor() as i32;
+    let sw = ((dst.right as f32 * width as f32 / client.right as f32).ceil() as i32 - sx)
+        .clamp(1, width - sx.min(width - 1));
+    let sh = ((dst.bottom as f32 * height as f32 / client.bottom as f32).ceil() as i32 - sy)
+        .clamp(1, height - sy.min(height - 1));
     SetStretchBltMode(dc, HALFTONE);
     StretchBlt(
         dc,
-        0,
-        0,
-        client.right,
-        client.bottom,
-        composite.dc(),
-        0,
-        0,
-        width,
-        height,
+        dst.left,
+        dst.top,
+        dst.right - dst.left,
+        dst.bottom - dst.top,
+        source,
+        sx,
+        sy,
+        sw,
+        sh,
         SRCCOPY,
     );
 }
@@ -2083,8 +2217,8 @@ unsafe fn paint(hwnd: HWND, state: &mut PinState) {
     let dc = BeginPaint(hwnd, &mut ps);
     let has_annotations = state.annotating || (!state.doc.items.is_empty() && !state.annotations_hidden);
     if has_annotations {
-        // 标注画在图像分辨率上，再整体缩放上屏。
-        paint_composite(hwnd, dc, state);
+        // 标注画在图像分辨率上，再按脏区缩放上屏。
+        paint_composite(hwnd, dc, state, ps.rcPaint);
     } else {
         let mut client: RECT = std::mem::zeroed();
         GetClientRect(hwnd, &mut client);
@@ -2162,6 +2296,9 @@ unsafe fn paint(hwnd: HWND, state: &mut PinState) {
         SelectObject(dc, old_font);
     }
     EndPaint(hwnd, &ps);
+    let mut client: RECT = std::mem::zeroed();
+    GetClientRect(hwnd, &mut client);
+    state.draft_rect = draft_client_rect(state, client);
 }
 
 #[derive(Clone, Copy)]
@@ -2795,9 +2932,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         }
                     }
                     // 折线的折点由单击落下，这里只更新预览光标点。
+                    // 草稿变化不动「已落图标注」缓存，只刷新「旧草稿 ∪ 新草稿」。
                     (*state).draft_cursor = Some(point);
-                    touch_annot(&mut *state);
-                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                    let mut client: RECT = std::mem::zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let next = draft_client_rect(&*state, client);
+                    let region = union_rect((*state).draft_rect, next);
+                    (*state).draft_rect = next;
+                    let ptr = region
+                        .as_ref()
+                        .map_or(std::ptr::null(), |rect| rect as *const RECT);
+                    InvalidateRect(hwnd, ptr, 0);
                 } else if (*state).drag.is_some() {
                     update_drag(hwnd, &mut *state);
                 }
