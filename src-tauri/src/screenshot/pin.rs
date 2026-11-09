@@ -24,6 +24,7 @@ use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SE
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, VK_CONTROL, VK_ESCAPE,
+    VK_Y, VK_Z,
     TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows_sys::Win32::System::Ole::{OleInitialize, OleUninitialize, DROPEFFECT_COPY};
@@ -206,7 +207,10 @@ struct PinState {
     annotating: bool,
     annotations_hidden: bool,
     doc: annotation::Document,
+    /// 已落下的草稿顶点（图像坐标）；折线是已点下的折点，其它工具只有起点。
     draft: Vec<(i32, i32)>,
+    /// 草稿当前光标点（图像坐标），预览与收尾都用它。
+    draft_cursor: Option<(i32, i32)>,
     /// 工具栏：分组记住上次选的形状，二级栏与下拉的开合状态。
     picks: toolbar::Picks,
     style_open: bool,
@@ -476,6 +480,7 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
         annotations_hidden: false,
         doc: annotation::Document::new(),
         draft: Vec::new(),
+        draft_cursor: None,
         picks: toolbar::Picks::default(),
         style_open: false,
         line_menu_open: false,
@@ -1334,6 +1339,8 @@ const TB_ROW: i32 = 49;
 const TB_GAP: i32 = 4;
 /// 下拉菜单向上展开所需留白（两条 30px 菜单项 + 间隔）。
 const TB_MENU: i32 = 66;
+/// 主栏下方给悬停提示条留的高度（提示画在按钮下方 6px 处）。
+const TB_TOOLTIP: i32 = 30;
 /// 工具栏与贴图窗口之间的间距。
 const TB_MARGIN: i32 = 8;
 
@@ -1345,6 +1352,9 @@ fn toolbar_height(state: &PinState) -> i32 {
         if state.line_menu_open || state.arrow_menu_open {
             height += TB_GAP + TB_MENU;
         }
+    } else {
+        // 没开二级栏时也要在主栏下方留出提示条的高度，否则提示文本被窗口裁掉。
+        height += TB_TOOLTIP;
     }
     height
 }
@@ -1664,11 +1674,54 @@ fn touch_annot(state: &mut PinState) {
     state.annot_dirty = true;
 }
 
+/// 用当前工具与样式构造草稿（图像坐标，origin 固定 0,0）。
+///
+/// 参数口径与截图覆盖层一致，否则拖拽预览会和松手后的结果不一样：
+/// 线型按「形状 / 线条」分档；箭头样式只在箭头工具下生效；
+/// 马赛克强度取马赛克档、模糊取模糊档。
+fn draft_item(state: &PinState) -> Option<annotation::Item> {
+    let tool = state.doc.tool()?;
+    let shapes = matches!(tool, Shape::Rect | Shape::Ellipse | Shape::Circle);
+    annotation::build_draft(
+        tool,
+        &state.draft,
+        state.draft_cursor,
+        (0, 0),
+        state.doc.color(),
+        state.doc.width(),
+        state.doc.fill(),
+        state.doc.line_style(shapes),
+        if tool == Shape::Arrow {
+            state.doc.arrow_style()
+        } else {
+            0
+        },
+        state.doc.strength(tool != Shape::Blur),
+        state.doc.opacity(),
+    )
+}
+
+/// 收尾草稿：能成图就落进文档，然后清空草稿状态。
+/// `with_cursor=false` 用于折线的双击/右键收尾：右键点只结束、不额外补一个折点。
+fn finish_draft(state: &mut PinState, with_cursor: bool) {
+    if !with_cursor {
+        state.draft_cursor = None;
+    }
+    if let Some(item) = draft_item(state) {
+        state.doc.push(item);
+        dbg_log(&format!("annot.push items={}", state.doc.items.len()));
+    }
+    state.draft.clear();
+    state.draft_cursor = None;
+    touch_annot(state);
+}
+
 /// 退出标注模式：标注保留在图上，只收起重绘状态与工具栏。
 fn exit_annotating(state: &mut PinState) {
     state.annotating = false;
     state.doc.clear_tool();
     state.draft.clear();
+    state.draft_cursor = None;
     state.style_open = false;
     state.line_menu_open = false;
     state.arrow_menu_open = false;
@@ -1705,6 +1758,7 @@ fn apply_toolbar_action(state: &mut PinState, action: toolbar::Action) {
                 state.style_open = true;
             }
             state.draft.clear();
+            state.draft_cursor = None;
         }
         Action::Pick(group, shape) => {
             state.delete_mode = false;
@@ -1714,6 +1768,7 @@ fn apply_toolbar_action(state: &mut PinState, action: toolbar::Action) {
             state.line_menu_open = false;
             state.arrow_menu_open = false;
             state.draft.clear();
+            state.draft_cursor = None;
         }
         Action::Tool(shape) => {
             state.delete_mode = false;
@@ -1722,6 +1777,7 @@ fn apply_toolbar_action(state: &mut PinState, action: toolbar::Action) {
             state.line_menu_open = false;
             state.arrow_menu_open = false;
             state.draft.clear();
+            state.draft_cursor = None;
         }
         Action::Color(index) => state.doc.set_color(index),
         // 这几项是「滚轮调值」的显示项，点击本身不改数值。
@@ -1799,23 +1855,7 @@ unsafe fn paint_composite(hwnd: HWND, dc: HDC, state: &mut PinState) {
             0,
             SRCCOPY,
         );
-        let draft = if state.draft.len() >= 2 {
-            annotation::build_draft(
-                state.doc.tool().unwrap_or(Shape::Rect),
-                &state.draft[..1],
-                state.draft.last().copied(),
-                (0, 0),
-                state.doc.color(),
-                state.doc.width(),
-                state.doc.fill(),
-                state.doc.line_style(true),
-                state.doc.arrow_style(),
-                state.doc.strength(false),
-                state.doc.opacity(),
-            )
-        } else {
-            None
-        };
+        let draft = draft_item(state);
         if !state.annotations_hidden {
             annotation::draw(
                 &mut composite,
@@ -2710,8 +2750,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         begin_drag(hwnd, &mut *state, lp);
                         return 0;
                     };
-                    let _ = tool;
+                    if tool == Shape::Polyline {
+                        // 折线与截图一致：单击逐个落折点，双击/右键/回车收尾。
+                        if (*state).draft.is_empty() {
+                            (*state).draft = vec![point];
+                        } else {
+                            (*state).draft.push(point);
+                        }
+                        (*state).draft_cursor = Some(point);
+                        touch_annot(&mut *state);
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
+                    }
                     (*state).draft = vec![point];
+                    (*state).draft_cursor = Some(point);
                     touch_annot(&mut *state);
                     SetCapture(hwnd);
                     return 0;
@@ -2734,22 +2786,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 if !(*state).draft.is_empty() {
                     let zoom = (*state).zoom.max(0.01);
                     let point = ((x as f32 / zoom) as i32, (y as f32 / zoom) as i32);
-                    if (*state).draft.len() == 1 {
-                        (*state).draft.push(point);
-                    } else if (*state)
-                        .doc
-                        .tool()
-                        .map(|tool| tool.is_path_shape())
-                        .unwrap_or(false)
-                    {
-                        // 铅笔/荧光笔是路径型：累积点，与覆盖层行为一致。
-                        let last = *(*state).draft.last().unwrap();
+                    let tool = (*state).doc.tool();
+                    if matches!(tool, Some(Shape::Pencil | Shape::Highlighter)) {
+                        // 铅笔/荧光笔：累积路径点，和截图一致。
+                        let last = (*state).draft_cursor.unwrap_or(point);
                         if (point.0 - last.0).abs() + (point.1 - last.1).abs() >= 2 {
                             (*state).draft.push(point);
                         }
-                    } else if let Some(last) = (*state).draft.last_mut() {
-                        *last = point;
                     }
+                    // 折线的折点由单击落下，这里只更新预览光标点。
+                    (*state).draft_cursor = Some(point);
                     touch_annot(&mut *state);
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                 } else if (*state).drag.is_some() {
@@ -2761,31 +2807,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_LBUTTONUP => {
             if let Some(state) = state_of(hwnd) {
                 let state_ref = &mut *state;
-                if !state_ref.draft.is_empty() {
-                    if state_ref.draft.len() >= 2 {
-                        let tool = state_ref.doc.tool().unwrap_or(Shape::Rect);
-                        let start = state_ref.draft[0];
-                        let end = *state_ref.draft.last().unwrap();
-                        let draft_points = [start];
-                        if let Some(item) = annotation::build_draft(
-                            tool,
-                            &draft_points,
-                            Some(end),
-                            (0, 0),
-                            state_ref.doc.color(),
-                            state_ref.doc.width(),
-                            state_ref.doc.fill(),
-                            state_ref.doc.line_style(true),
-                            state_ref.doc.arrow_style(),
-                            state_ref.doc.strength(false),
-                            state_ref.doc.opacity(),
-                        ) {
-                            state_ref.doc.push(item);
-                            dbg_log(&format!("annot.push items={}", state_ref.doc.items.len()));
-                        }
-                    }
-                    state_ref.draft.clear();
-                    touch_annot(state_ref);
+                // 折线不在这里收尾（双击/右键收尾）；其它工具松手即落图。
+                if !state_ref.draft.is_empty()
+                    && state_ref.doc.tool() != Some(Shape::Polyline)
+                {
+                    finish_draft(state_ref, true);
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                 }
                 (*state).drag = None;
@@ -2794,11 +2820,36 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_LBUTTONDBLCLK => {
+            if let Some(state) = state_of(hwnd) {
+                // 折线双击收尾；其余情况保持原有的双击动作。
+                if (*state).annotating
+                    && (*state).doc.tool() == Some(Shape::Polyline)
+                    && !(*state).draft.is_empty()
+                {
+                    finish_draft(&mut *state, false);
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                    return 0;
+                }
+            }
             run_double_click(hwnd);
             0
         }
         WM_RBUTTONUP => {
             if let Some(state) = state_of(hwnd) {
+                // 折线画到一半时右键先收尾，不弹菜单（与截图一致）；
+                // 右键只负责结束，右键落点不计入折点。
+                if (*state).annotating
+                    && (*state).doc.tool() == Some(Shape::Polyline)
+                    && !(*state).draft.is_empty()
+                {
+                    finish_draft(&mut *state, false);
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                    return 0;
+                }
+                // 选中任何标注工具时，右键菜单禁用（避免与标注操作抢右键）。
+                if (*state).annotating && (*state).doc.tool().is_some() {
+                    return 0;
+                }
                 (*state).drag = None;
                 ReleaseCapture();
                 show_menu(hwnd, &*state);
@@ -2815,8 +2866,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_MEASUREITEM => measure_menu_item(hwnd, lp),
         WM_DRAWITEM => draw_menu_item(hwnd, lp),
         WM_MOUSEWHEEL => {
-            // 滚轮在贴图上始终是缩放；数值项调节由工具栏小窗自己处理。
+            // 选中标注工具时滚轮不给贴图缩放（避免画图时误缩放）；
+            // 数值项调节由工具栏小窗自己处理。
             if let Some(state) = state_of(hwnd) {
+                if (*state).annotating && (*state).doc.tool().is_some() {
+                    return 0;
+                }
                 let delta = ((wp >> 16) & 0xFFFF) as u16 as i16 as i32;
                 apply_zoom(hwnd, &mut *state, delta);
             }
@@ -2892,18 +2947,36 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_KEYDOWN => {
-            if wp as u16 == VK_ESCAPE {
-                if let Some(state) = state_of(hwnd) {
-                    if (*state).annotating {
+            let key = wp as u16;
+            if let Some(state) = state_of(hwnd) {
+                if (*state).annotating {
+                    let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
+                    if key == VK_ESCAPE {
                         // 标注时 Esc 只退出标注模式，不关窗口。
                         exit_annotating(&mut *state);
                         touch_annot(&mut *state);
                         toolbar_destroy(&mut *state);
                         InvalidateRect(hwnd, std::ptr::null(), 0);
-                    } else if GetTickCount() >= (*state).escape_guard && confirm_close(hwnd, &*state)
-                    {
-                        DestroyWindow(hwnd);
+                        return 0;
                     }
+                    // 撤销/重做快捷键，与截图标注一致。
+                    if ctrl && key == VK_Z {
+                        (*state).doc.undo();
+                        touch_annot(&mut *state);
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
+                    }
+                    if ctrl && key == VK_Y {
+                        (*state).doc.redo();
+                        touch_annot(&mut *state);
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
+                    }
+                } else if key == VK_ESCAPE
+                    && GetTickCount() >= (*state).escape_guard
+                    && confirm_close(hwnd, &*state)
+                {
+                    DestroyWindow(hwnd);
                 }
             }
             0
