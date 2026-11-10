@@ -54,10 +54,13 @@
 
 # Resume Here
 
-0. 开发进行中（2026-11-10 晚）：开发版与 Vite 在跑；安装版（`D:\轻量化工具集`）同时运行。
-1. 当前 HEAD `4785eea`（`perf: make pin annotation repaint incremental`）；工作树只剩既有的 `window_pinner.rs`、`window_service.rs`、`.codex/`，不要提交。
-2. 下次开工按固定流程重启环境：`npm run dev`（Vite 1420）→ `cargo build` → 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%\lwt-dev` → 提权启动 → 核对进程路径与页面加载。
-3. 下一步补贴图标注的文字/序号/马赛克：`toolbar` 的 `Action::Tool(Shape::Text/Serial)` 已能切工具，缺的是贴图内的文字内联编辑（覆盖层那套 `start_text_edit`/IME 逻辑在 `overlay.rs`，需要按贴图窗口改造）。
-4. 之后：文本选择（「选择所有文本」「文本可选择」+ OCR）与贴图历史浏览；`MENU_HIDE_ANNOTATION` 已验证可切换。
-5. 注入测试注意：安装版与开发版热键冲突，临时改开发版热键用 `%TEMP%\lwt-hk-patch.js unique|restore`，测完必须 restore 并重启；输入注入里 `SetCursorPos` 后要等 ≥200ms 再 `mouse_event`；截图脚本 `%TEMP%\lwt-shot2.ps1` 已 DPI 感知且不改窗口尺寸（旧的 `lwt-screen.ps1` 会把窗口改成 1500×1050，别再用）。
+0. **开发进行中（2026-11-10 晚，换新会话交接）**：HEAD `eacede0`；工作树只剩既有三项；开发版 pid 9620（`%TEMP%\lwt-dev`）；Vite 后台任务 `bash-038bb9734b8e43ae` 在 `:1420`（新会话若已停，按第 2 条重启）。安装版同时在跑，热键可能冲突。
+1. **下一件事已定，但必须先确认再动工**：贴图文本选择（右键「选择所有文本」「文本可选择」仍置灰）。开工前先和用户确认 OCR 方案：
+   - 系统 Windows OCR（`Windows.Media.Ocr`，无第三方依赖、包体不增，但依赖系统语言包、复杂版面一般）；
+   - 本地 OCR 模型（识别更好，但要引运行时与模型文件、包体明显变大）。
+   用户明确要求：**先讨论确认，不要直接写代码**。
+2. 重启环境固定流程：`npm run dev`（Vite 1420）→ `cargo build` → 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%\lwt-dev` → 提权启动（`%TEMP%\lwt-launch.ps1`）→ 核对进程路径与页面加载（用 `%TEMP%\lwt-dev-shot7.ps1` 截图，旧的 `lwt-screen.ps1` 会把窗口改成 1500×1050，别用）。
+3. 已交付并验收的贴图能力：工具栏（复用截图工具栏 + 伴生小窗，`d32b36f`）、绘制与交互（`27c669d`）、性能（`4785eea`）、文字与序号（`450c122`）。
+4. 用户已明确暂缓：贴图历史浏览界面。待办：其他有快捷键的工具逐个迁到各自工具页的「快捷键」标签。
+5. 注入测试注意：临时改开发版热键用 `%TEMP%\lwt-hk-patch.js unique|restore`，测完必须 restore 并重启；输入注入里 `SetCursorPos` 后等 ≥200ms 再 `mouse_event`；**所有 .ps1 测试脚本必须 ASCII-only 或带 BOM**，否则 PowerShell 5.1 解析失败。
 6. 提交时排除 `window_service.rs`、`window_pinner.rs`、`.codex/`；提交前 `npm run build` + `cargo check` + `cargo test --lib screenshot:: -- --test-threads=1`。

@@ -46,6 +46,15 @@
 - **未测**：双击动作=复制、关闭前确认的弹窗、阴影关闭（`LightweightToolsetPinFlat` 类）、无覆盖层时按贴图钉「最近一次截图」、历史浏览。
 - 历史基线与既有验证（S1/S2）见 `progress.md` 与 `archive/`。
 
+# 现场交接（2026-11-10 19:27，换新会话前记录）
+
+- HEAD `eacede0`；工作树只剩既有三项（`window_pinner.rs`、`window_service.rs`、`.codex/`），无未提交功能代码。
+- 开发版进程：`%TEMP%\lwt-dev\lightweight-toolset.exe`，pid **9620**（19:11 启动）；安装版 `11732`、`17968` 同时在跑（`D:\轻量化工具集`）。
+- Vite：`bash-038bb9734b8e43ae` 后台任务跑着 `npm run dev`（:1420）。**新会话里这个后台任务可能已随旧会话结束**，先 `curl http://localhost:1420` 确认，不在就重启。
+- 开发版热键已恢复：`CTRL+ALT+A/P/X/H/R`（`pin_restore` 仍被其它软件占用，测试用 `CTRL+ALT+J`）。
+- 下一件事（用户已定：**先讨论、不要直接动工**）：贴图文本选择（右键「选择所有文本」「文本可选择」仍置灰），开工前必须先和用户确认 OCR 方案（系统 Windows OCR vs 本地 OCR 模型）。
+- 用户已明确「贴图历史浏览界面」暂缓不做。
+
 # Blockers
 
 - 无阻塞。文字与序号已验收提交；开发版与 Vite 在跑。下一步贴图文本选择与历史浏览。
