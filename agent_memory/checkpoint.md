@@ -73,9 +73,9 @@
 
 # Resume Here
 
-0. **开发环境已重启（2026-11-10 22:48）**：HEAD `fde2d58`；工作树 = 既有三项 + 贴图文本选择（含第四轮）改动，**未提交**；dev pid 18692（`%TEMP%\lwt-dev`，模型在 `%TEMP%\lwt-dev\ocr`），Vite `:1420` 在跑；`screenshotPinAutoCopyText=false`（默认）。
-1. **下一步：等用户验收第四轮后提交**（全选与划词共用「选中后自动复制」开关；文案已改名）。
-2. 提交 `feat: select and copy text in pin window via local OCR`，含 `src-tauri/resources/ocr/`（30MB）与 `agent_memory/`；提交前 `npm run build` + `cargo check` + `cargo test --lib -- --test-threads=1`。
+0. **已提交并收工（2026-11-10 22:55）**：HEAD **`81ae1b5`**（`feat: select and copy text in pin window via local OCR`，未推送）；工作树只剩既有三项（`window_pinner.rs`、`window_service.rs`、`.codex/`）；**开发版进程与 Vite 均已关闭**（只剩安装版 `D:\轻量化工具集` 在跑）。新会话开场按第 3 条重启环境。
+1. 贴图文本选择整批（本地 OCR + 内存策略 + 四项交互 + 「选中后自动复制」配置项）已验收通过并提交。
+2. 下一件事候选：其他有快捷键的工具逐个迁到各自工具页「快捷键」标签；贴图历史浏览界面按用户要求继续暂缓。推送/发版需用户明确要求。
 3. 坑（重要）：**不要用 PowerShell 改 `settings.json`**——PS 5.1 读无 BOM 的 UTF-8 会按 ANSI 解码，写回时带 BOM 且把中文变乱码（`windowTitle` 已被坑过一次，用 node 改回来）。要用脚本改配置就用 node。
 4. 重启环境固定流程：`npm run dev` → `cargo build` → `cmd /c start` 调 `%TEMP%\lwt-elevate.ps1`（内部 `lwt-dev-launch.ps1`：停旧实例、复制 exe 与 `resources\ocr` 到 `%TEMP%\lwt-dev`、提权启动）→ `%TEMP%\lwt-dev-shot8.ps1` 截图核对。
 3. 已交付并验收的贴图能力：工具栏（复用截图工具栏 + 伴生小窗，`d32b36f`）、绘制与交互（`27c669d`）、性能（`4785eea`）、文字与序号（`450c122`）。
