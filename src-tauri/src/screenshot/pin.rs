@@ -22,15 +22,19 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
 };
 use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+use windows_sys::Win32::UI::Input::Ime::{
+    ImmAssociateContext, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext,
+    ImmSetCandidateWindow, ImmSetCompositionWindow, CANDIDATEFORM, COMPOSITIONFORM,
+    CFS_CANDIDATEPOS, CFS_POINT,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, VK_CONTROL, VK_ESCAPE,
-    VK_Y, VK_Z,
-    TME_LEAVE, TRACKMOUSEEVENT,
+    GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, VK_BACK, VK_CONTROL,
+    VK_ESCAPE, VK_RETURN, VK_Y, VK_Z, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows_sys::Win32::System::Ole::{OleInitialize, OleUninitialize, DROPEFFECT_COPY};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-use super::annotation::{self, Shape};
+use super::annotation::{self, text_extent, Shape};
 use super::dib::Surface;
 use super::toolbar;
 
@@ -122,6 +126,7 @@ const CLASS_PIN: &str = "LightweightToolsetPin";
 const WM_PIN_COMMAND: u32 = WM_APP + 1;
 const TIMER_ZOOM: usize = 1;
 const TIMER_GLOW: usize = 2;
+const TIMER_CARET: usize = 3;
 /// 阴影外扩宽度（像素）。阴影由独立的分层窗口绘制，不占贴图窗口的客户区。
 const SHADOW_MARGIN: i32 = 16;
 /// 首次出现时的泛光时长（毫秒）。
@@ -227,6 +232,12 @@ struct PinState {
     annot_dirty: bool,
     /// 上一帧草稿在客户区占的区域，用于只刷新「旧草稿 ∪ 新草稿」。
     draft_rect: Option<RECT>,
+    /// 文字标注的内联编辑状态（图像坐标原点）。
+    editing: Option<PinTextEdit>,
+    /// 光标闪烁开关。
+    caret_on: bool,
+    /// 创建窗口时解绑下来的输入法上下文，进入文字编辑时再挂回去。
+    ime_context: isize,
     /// 贴在贴图窗口外侧的标注工具栏小窗。
     toolbar: Option<HWND>,
     /// 工具栏位图缓存（分层窗口重绘时复用，避免每次分配）。
@@ -500,11 +511,17 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
         composite: None,
         annot_dirty: true,
         draft_rect: None,
+        editing: None,
+        caret_on: false,
+        ime_context: 0,
         toolbar: None,
         toolbar_surface: None,
         toolbar_hover: None,
     });
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+    let raw = Box::into_raw(state);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw as isize);
+    // 默认解绑输入法（避免未编辑时按键被输入法吞掉），编辑文字时再挂回去。
+    (*raw).ime_context = ImmAssociateContext(hwnd, std::ptr::null_mut()) as isize;
     if let Ok(mut pins) = PINS.lock() {
         pins.push(hwnd as isize);
     }
@@ -1777,6 +1794,219 @@ fn union_rect(a: Option<RECT>, b: Option<RECT>) -> Option<RECT> {
     }
 }
 
+/// 文字标注的内联编辑状态：直接画在贴图上，不建子窗口（与截图一致）。
+struct PinTextEdit {
+    /// 图像坐标下的左上角。
+    origin: (i32, i32),
+    text: String,
+    composing: String,
+}
+
+/// 开始文字编辑：接管键盘与输入法。
+unsafe fn start_text_edit(hwnd: HWND, state: &mut PinState, point: (i32, i32)) {
+    state.editing = Some(PinTextEdit {
+        origin: point,
+        text: String::new(),
+        composing: String::new(),
+    });
+    state.caret_on = true;
+    // 文字输入需要焦点：贴图平时不抢焦点，编辑期间临时拿过来。
+    SetForegroundWindow(hwnd);
+    SetFocus(hwnd);
+    CreateCaret(hwnd, std::ptr::null_mut(), 1, 1);
+    SetTimer(hwnd, TIMER_CARET, 530, None);
+    update_ime_position(hwnd, state);
+    // 每次进入编辑都要重新挂回输入法上下文，否则第二个输入框只能打英文。
+    if state.ime_context != 0 {
+        ImmAssociateContext(hwnd, state.ime_context as *mut c_void);
+    }
+}
+
+/// 结束编辑：有文字就落成标注项。
+unsafe fn finish_text_edit(hwnd: HWND, state: &mut PinState) {
+    let Some(editing) = state.editing.take() else {
+        return;
+    };
+    KillTimer(hwnd, TIMER_CARET);
+    DestroyCaret();
+    state.caret_on = false;
+    ImmAssociateContext(hwnd, std::ptr::null_mut());
+    let text = editing.text.trim().to_owned();
+    if !text.is_empty() {
+        let mut item = annotation::Item::new(
+            Shape::Text,
+            vec![editing.origin],
+            state.doc.color(),
+            state.doc.font_size(),
+        );
+        item.text = text;
+        state.doc.push(item);
+        dbg_log(&format!("annot.push items={}", state.doc.items.len()));
+    }
+    touch_annot(state);
+}
+
+unsafe fn cancel_text_edit(hwnd: HWND, state: &mut PinState) {
+    if state.editing.take().is_some() {
+        KillTimer(hwnd, TIMER_CARET);
+        DestroyCaret();
+        state.caret_on = false;
+        ImmAssociateContext(hwnd, std::ptr::null_mut());
+    }
+}
+
+/// 读取输入法组合串：`flag` 为 GCS_COMPSTR(0x8) 或 GCS_RESULTSTR(0x800)。
+unsafe fn ime_string(hwnd: HWND, flag: u32) -> Option<String> {
+    let himc = ImmGetContext(hwnd);
+    if himc.is_null() {
+        return None;
+    }
+    let length = ImmGetCompositionStringW(himc, flag, std::ptr::null_mut(), 0);
+    if length <= 0 {
+        ImmReleaseContext(hwnd, himc);
+        return None;
+    }
+    let mut buffer = vec![0u16; (length as usize + 1) / 2];
+    let copied = ImmGetCompositionStringW(
+        himc,
+        flag,
+        buffer.as_mut_ptr() as *mut c_void,
+        length as u32,
+    );
+    ImmReleaseContext(hwnd, himc);
+    if copied <= 0 {
+        return None;
+    }
+    let units = (copied as usize) / 2;
+    Some(String::from_utf16_lossy(&buffer[..units]))
+}
+
+/// 编辑中文字在客户区的位置与尺寸（随贴图缩放）。
+fn edit_client_metrics(state: &PinState) -> Option<((i32, i32), (i32, i32), i32)> {
+    let editing = state.editing.as_ref()?;
+    let zoom = state.zoom.max(0.01);
+    let font = ((state.doc.font_size() as f32) * zoom).round() as i32;
+    let mut full = editing.text.clone();
+    full.push_str(&editing.composing);
+    let (width, height) = text_extent(&full, font.max(8));
+    let origin = (
+        (editing.origin.0 as f32 * zoom) as i32,
+        (editing.origin.1 as f32 * zoom) as i32,
+    );
+    Some((origin, (width, height), font))
+}
+
+/// 把候选窗/组合窗贴到光标处。
+unsafe fn update_ime_position(hwnd: HWND, state: &PinState) {
+    let Some((origin, (width, height), _)) = edit_client_metrics(state) else {
+        return;
+    };
+    let point = POINT {
+        x: origin.0 + width + 1,
+        y: origin.1 + height,
+    };
+    SetCaretPos(point.x, point.y);
+    let himc = ImmGetContext(hwnd);
+    if himc.is_null() {
+        return;
+    }
+    let mut composition: COMPOSITIONFORM = std::mem::zeroed();
+    composition.dwStyle = CFS_POINT;
+    composition.ptCurrentPos = point;
+    ImmSetCompositionWindow(himc, &composition);
+    let mut candidate: CANDIDATEFORM = std::mem::zeroed();
+    candidate.dwIndex = 0;
+    candidate.dwStyle = CFS_CANDIDATEPOS;
+    candidate.ptCurrentPos = point;
+    ImmSetCandidateWindow(himc, &candidate);
+    ImmReleaseContext(hwnd, himc);
+}
+
+fn composing_active(state: &PinState) -> bool {
+    state
+        .editing
+        .as_ref()
+        .map(|editing| !editing.composing.is_empty())
+        .unwrap_or(false)
+}
+
+/// 画文字编辑框、文字、组合串下划线与光标（客户区坐标）。
+unsafe fn draw_text_edit(dc: HDC, state: &PinState) {
+    let Some((origin, (width, height), font_size)) = edit_client_metrics(state) else {
+        return;
+    };
+    let Some(editing) = state.editing.as_ref() else {
+        return;
+    };
+    let mut full = editing.text.clone();
+    full.push_str(&editing.composing);
+
+    if !full.is_empty() {
+        let font = CreateFontW(
+            -font_size.max(8),
+            0,
+            0,
+            0,
+            400,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET as u32,
+            OUT_DEFAULT_PRECIS as u32,
+            CLIP_DEFAULT_PRECIS as u32,
+            CLEARTYPE_QUALITY as u32,
+            (DEFAULT_PITCH | FF_DONTCARE) as u32,
+            windows_sys::w!("Microsoft YaHei") as *const u16,
+        );
+        let old_font = SelectObject(dc, font);
+        SetBkMode(dc, TRANSPARENT as i32);
+        let wide: Vec<u16> = full.encode_utf16().collect();
+        // 1px 白色描边：四个方向先铺白，再用本色覆盖中心（与提交后、截图一致）。
+        SetTextColor(dc, 0x00FF_FFFF);
+        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            TextOutW(
+                dc,
+                origin.0 + dx,
+                origin.1 + dy,
+                wide.as_ptr(),
+                wide.len() as i32,
+            );
+        }
+        SetTextColor(dc, state.doc.color());
+        TextOutW(dc, origin.0, origin.1, wide.as_ptr(), wide.len() as i32);
+        SelectObject(dc, old_font);
+        DeleteObject(font);
+    }
+
+    // 编辑框：外深内浅双层 1px。
+    let (pad_x, pad_y) = (8, 6);
+    let brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    for (inset, color) in [(1, 0x0060_6060u32), (0, 0x00F0_F0F0u32)] {
+        let pen = CreatePen(PS_SOLID, 1, color);
+        let old_pen = SelectObject(dc, pen);
+        Rectangle(
+            dc,
+            origin.0 - pad_x - inset,
+            origin.1 - pad_y - inset,
+            origin.0 + width + pad_x + inset,
+            origin.1 + height + pad_y + inset,
+        );
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+    }
+    SelectObject(dc, brush);
+
+    if state.caret_on {
+        let caret_x = origin.0 + width + 2;
+        let pen = CreatePen(PS_SOLID, 2, 0x0030_3030);
+        let old_pen = SelectObject(dc, pen);
+        MoveToEx(dc, caret_x, origin.1 + 2, std::ptr::null_mut());
+        LineTo(dc, caret_x, origin.1 + height - 1);
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+    }
+}
+
 /// 收尾草稿：能成图就落进文档，然后清空草稿状态。
 /// `with_cursor=false` 用于折线的双击/右键收尾：右键点只结束、不额外补一个折点。
 fn finish_draft(state: &mut PinState, with_cursor: bool) {
@@ -1804,6 +2034,8 @@ fn exit_annotating(state: &mut PinState) {
     state.delete_mode = false;
     state.cursor = None;
     state.draft_rect = None;
+    state.editing = None;
+    state.caret_on = false;
     // 退出标注后释放标注相关位图，内存回到不标注时的水平。
     state.items_surface = None;
     state.composite = None;
@@ -2294,6 +2526,9 @@ unsafe fn paint(hwnd: HWND, state: &mut PinState) {
             DT_CENTER | DT_VCENTER | DT_SINGLELINE,
         );
         SelectObject(dc, old_font);
+    }
+    if state.editing.is_some() {
+        draw_text_edit(dc, state);
     }
     EndPaint(hwnd, &ps);
     let mut client: RECT = std::mem::zeroed();
@@ -2873,6 +3108,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         (x as f32 / zoom) as i32,
                         (y as f32 / zoom) as i32,
                     );
+                    // 正在编辑文字时，点别处先提交当前文字。
+                    if (*state).editing.is_some() {
+                        finish_text_edit(hwnd, &mut *state);
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
+                    }
                     if (*state).delete_mode {
                         // 删除模式下点哪条删哪条。
                         if let Some(index) = (*state).doc.hit_test(point.0, point.1) {
@@ -2887,6 +3128,26 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         begin_drag(hwnd, &mut *state, lp);
                         return 0;
                     };
+                    if tool == Shape::Text {
+                        start_text_edit(hwnd, &mut *state, point);
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
+                    }
+                    if tool == Shape::Serial {
+                        // 序号：单击落号，编号自增。
+                        let number = (*state).doc.next_serial();
+                        let mut item = annotation::Item::new(
+                            Shape::Serial,
+                            vec![point],
+                            (*state).doc.color(),
+                            (*state).doc.width(),
+                        );
+                        item.text = number.to_string();
+                        (*state).doc.push(item);
+                        touch_annot(&mut *state);
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
+                    }
                     if tool == Shape::Polyline {
                         // 折线与截图一致：单击逐个落折点，双击/右键/回车收尾。
                         if (*state).draft.is_empty() {
@@ -2981,6 +3242,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_RBUTTONUP => {
             if let Some(state) = state_of(hwnd) {
+                // 文字编辑中右键先提交，避免编辑框卡在那里。
+                if (*state).editing.is_some() {
+                    finish_text_edit(hwnd, &mut *state);
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                    return 0;
+                }
                 // 折线画到一半时右键先收尾，不弹菜单（与截图一致）；
                 // 右键只负责结束，右键落点不计入折点。
                 if (*state).annotating
@@ -3094,6 +3361,29 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_KEYDOWN => {
             let key = wp as u16;
             if let Some(state) = state_of(hwnd) {
+                // 文字编辑中：回车提交、Esc 取消、退格删字，其余按键交给输入法。
+                if (*state).editing.is_some() {
+                    if key == VK_RETURN {
+                        finish_text_edit(hwnd, &mut *state);
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                    } else if key == VK_ESCAPE {
+                        cancel_text_edit(hwnd, &mut *state);
+                        touch_annot(&mut *state);
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                    } else if key == VK_BACK {
+                        let composing = composing_active(&*state);
+                        if !composing {
+                            if let Some(editing) = (*state).editing.as_mut() {
+                                editing.text.pop();
+                            }
+                            (*state).caret_on = true;
+                            SetTimer(hwnd, TIMER_CARET, 530, None);
+                            update_ime_position(hwnd, &*state);
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                        }
+                    }
+                    return 0;
+                }
                 if (*state).annotating {
                     let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
                     if key == VK_ESCAPE {
@@ -3126,6 +3416,83 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             0
         }
+        WM_CHAR => {
+            if let Some(state) = state_of(hwnd) {
+                if (*state).editing.is_some() && !composing_active(&*state) {
+                    if let Some(c) = char::from_u32(wp as u32) {
+                        if !c.is_control() {
+                            (*state).caret_on = true;
+                            SetTimer(hwnd, TIMER_CARET, 530, None);
+                            if let Some(editing) = (*state).editing.as_mut() {
+                                editing.text.push(c);
+                            }
+                            update_ime_position(hwnd, &*state);
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                        }
+                    }
+                }
+            }
+            0
+        }
+        WM_IME_CHAR => 0,
+        WM_IME_STARTCOMPOSITION => {
+            if let Some(state) = state_of(hwnd) {
+                if let Some(editing) = (*state).editing.as_mut() {
+                    editing.composing.clear();
+                }
+                update_ime_position(hwnd, &*state);
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+            }
+            0
+        }
+        WM_IME_ENDCOMPOSITION => {
+            if let Some(state) = state_of(hwnd) {
+                if let Some(editing) = (*state).editing.as_mut() {
+                    editing.composing.clear();
+                }
+                update_ime_position(hwnd, &*state);
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+            }
+            0
+        }
+        WM_IME_COMPOSITION => {
+            let flags = lp as u32;
+            if let Some(state) = state_of(hwnd) {
+                if (*state).editing.is_some() {
+                    if flags & 0x800 != 0 {
+                        if let Some(result) = ime_string(hwnd, 0x800) {
+                            (*state).caret_on = true;
+                            SetTimer(hwnd, TIMER_CARET, 530, None);
+                            if let Some(editing) = (*state).editing.as_mut() {
+                                editing.text.push_str(&result);
+                                // 上屏后清空组合串，否则会显示成「你好nihao」。
+                                editing.composing.clear();
+                            }
+                        }
+                    }
+                    if flags & 0x8 != 0 {
+                        let composing = ime_string(hwnd, 0x8).unwrap_or_default();
+                        if let Some(editing) = (*state).editing.as_mut() {
+                            editing.composing = composing;
+                        }
+                    }
+                    update_ime_position(hwnd, &*state);
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                }
+            }
+            0
+        }
+        WM_TIMER if wp == TIMER_CARET => {
+            if let Some(state) = state_of(hwnd) {
+                if (*state).editing.is_some() {
+                    (*state).caret_on = !(*state).caret_on;
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                } else {
+                    KillTimer(hwnd, TIMER_CARET);
+                }
+            }
+            0
+        }
         WM_CLOSE => {
             if let Some(state) = state_of(hwnd) {
                 if confirm_close(hwnd, &*state) {
@@ -3139,6 +3506,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_NCDESTROY => {
             let state = state_of(hwnd);
             if let Some(state) = state {
+                cancel_text_edit(hwnd, &mut *state);
                 shadow_destroy(&mut *state);
                 toolbar_destroy(&mut *state);
                 // 记下关闭前的样子，供「恢复上次关闭的贴图」使用。
