@@ -9,7 +9,8 @@
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`450c122`**（`feat: support text and serial tools in pin annotation`，未推送），工作树只剩既有三项。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`fde2d58`**（docs 交接记录），工作树 = 既有三项 + 本轮贴图文本选择改动（**未提交，等用户验收**）。
+- 本轮改动：`M src-tauri/Cargo.toml`（去掉 windows WinRT 特性；新增 `image`、`pure-onnx-ocr`；`[profile.dev.package."*"] opt-level = 2`；windows-sys 加 ProcessStatus）、`M src-tauri/tauri.conf.json`（bundle resources → `ocr`）、`M src-tauri/src/settings.rs` + `lib.rs`（新增 `screenshot_pin_auto_copy_text`，默认 false；注入持久化回调）、`M src-tauri/src/screenshot/mod.rs`（`mod ocr`、开关转发）、`M src-tauri/src/screenshot/pin.rs`（预识别/菜单占位/默认开启/按区域划词/高亮合成层/点空白清选区/菜单开关）、`M src/App.tsx`（贴图页开关 + 事件同步）、`?? src-tauri/src/screenshot/ocr.rs`、`?? src-tauri/resources/ocr/ppocr_v6_small/`（模型 30MB）。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
@@ -25,6 +26,21 @@
 - `src/App.tsx`：`PIN_HOTKEY_IDS`、`renderHotkeyRow` 通用快捷键行、「贴图」标签五项设置、全局快捷键页过滤贴图组。
 
 # Verification
+
+- 2026-11-10 贴图文本选择第四轮（全选遵循同一开关 + 文案改名，**待提交**）：
+  - 「选择所有文本」不再无条件复制：开关关闭时只全选（剪贴板保持 `MARKER`），打开时全选并复制（`Select All Test ABC 123`）。
+  - 文案：右键菜单与工具页统一为「**选中后自动复制**」（原「划词后自动复制」），说明文案同步为「划词或『选择所有文本』后自动复制；关闭时只选中，需要自己按 Ctrl+C」。
+  - 截图：`%TEMP%\lwt-t7-menu.png`（菜单新文案 + 全选高亮 + 已复制提示）、`lwt-t7-all-off.png`（关闭时只高亮不复制）。
+  - 构建/测试：`cargo check` / `cargo build` / `npm run build` 通过；`cargo test --lib -- --test-threads=1` **45 passed / 0 failed / 2 ignored**。
+  - 收工状态：dev pid 18692（`%TEMP%\lwt-dev`），设置 `screenshotPinAutoCopyText=false`（默认），热键 `CTRL+ALT+A/P/X/H/R`。
+
+- 2026-11-10 贴图文本选择第三轮（本地 OCR + 内存/交互/配置项，**待用户验收、未提交**）：
+  - 构建/测试：`cargo check`（4 条既有告警）、`cargo build`、`npm run build` 全通过；`cargo test --lib -- --test-threads=1` **45 passed / 0 failed / 2 ignored**。
+  - 内存（OCR 子系统，测试进程实测）：idle 7.6MB → 识别峰值 **110–118MB** → 释放后 **1.6–2.2MB**；三轮不累积。
+  - 内存（App 实测，三张开/关循环）：开贴图 ~74–82MB WS，关闭后 **71–72MB WS / 15MB private**，三轮无增长；模型已外置（exe 从 90MB 降到 59MB），OCR 工作线程用完即丢引擎。
+  - 交互：默认「划词后自动复制」关闭 → 拖选后剪贴板保持原值（MARKER）、选区留存；右键菜单切到开 → 再拖选即复制（`election Tes`）；点贴图内空白处 → 选区消失（截图 `lwt-ocr-t5-cleared.png`）；右键菜单新项「划词后自动复制」默认未勾选；工具页「贴图 → 划词后自动复制」开关点击后 settings.json 同步 true/false。
+  - 截图：`%TEMP%\lwt-ui-menu2.png`（菜单含新项）、`lwt-ui-pin-tab.png`（工具页开关）、`lwt-ocr-t5-selected.png` / `lwt-ocr-t5-cleared.png`。
+  - 收工状态：dev pid 5440（`%TEMP%\lwt-dev`，模型已复制到 `%TEMP%\lwt-dev\ocr`），Vite 在跑，热键 `CTRL+ALT+A/P/X/H/R`。
 
 - 2026-11-09 贴图标注工具栏（已提交 `d32b36f`，用户验收通过；开发已暂停）：
   - 提交前检查：`npm run build` 通过；`cargo check` 通过（4 条既有告警）；全量串行 `cargo test --lib` **38 passed / 3 failed**——3 条均为 `window_pinner` 沙箱写 `%TEMP%` 失败，与本次无关；`cargo test --lib screenshot::` 23/23。
@@ -57,9 +73,10 @@
 
 # Blockers
 
-- 无阻塞。文字与序号已验收提交；开发版与 Vite 在跑。下一步贴图文本选择与历史浏览。
+- 无阻塞。第三轮改动已实现并自测，等用户验收后提交。
 
 # Next Action
 
-- 恢复开发时：`npm run dev` → `cargo build` → 复制 debug exe 到 `%TEMP%\lwt-dev` → 提权启动 → 核对进程路径与页面加载。
-- 下一批开发内容：贴图标注的文字 / 序号 / 马赛克（工具栏已能选工具，缺贴图内实现）；之后是贴图文本选择（含 OCR）与贴图历史浏览。
+- 等用户验收第四轮：「选择所有文本」在开关关闭时只选中、打开时复制；菜单/工具页文案已改为「选中后自动复制」。
+- 验收通过后提交（含 `agent_memory/` 与 `src-tauri/resources/ocr/`），提交前 `npm run build` + `cargo check` + `cargo test --lib -- --test-threads=1`；注意提交体积（模型 30MB）。
+- 后续待办：其他有快捷键的工具逐个迁到各自工具页「快捷键」标签；贴图历史浏览界面继续暂缓。

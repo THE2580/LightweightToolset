@@ -28,7 +28,7 @@ use windows_sys::Win32::UI::Input::Ime::{
     CFS_CANDIDATEPOS, CFS_POINT,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, VK_BACK, VK_CONTROL,
+    GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, VK_BACK, VK_C, VK_CONTROL,
     VK_ESCAPE, VK_RETURN, VK_Y, VK_Z, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows_sys::Win32::System::Ole::{OleInitialize, OleUninitialize, DROPEFFECT_COPY};
@@ -36,6 +36,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::annotation::{self, text_extent, Shape};
 use super::dib::Surface;
+use super::ocr;
 use super::toolbar;
 
 /// 一张贴图的像素（自顶向下 BGRA）。底部朝上的版本按需生成，不再常驻内存。
@@ -121,23 +122,58 @@ impl Default for PinOptions {
     }
 }
 
+/// 全局「划词即复制」开关：右键菜单与工具页共用，写入设置时同步这里。
+static AUTO_COPY_TEXT: AtomicUsize = AtomicUsize::new(0);
+
+/// 由设置写入/工具页调用：同步全局开关（新贴图与已存在的贴图都按它走）。
+pub(crate) fn set_auto_copy_text(enabled: bool) {
+    AUTO_COPY_TEXT.store(usize::from(enabled), Ordering::SeqCst);
+}
+
+fn auto_copy_text() -> bool {
+    AUTO_COPY_TEXT.load(Ordering::SeqCst) != 0
+}
+
+/// 右键菜单改「划词即复制」时写回设置的回调（启动时由 lib.rs 注入）。
+static PERSIST_AUTO_COPY: Mutex<Option<Box<dyn Fn(bool) + Send + Sync>>> = Mutex::new(None);
+
+pub(crate) fn set_auto_copy_persist(callback: impl Fn(bool) + Send + Sync + 'static) {
+    if let Ok(mut slot) = PERSIST_AUTO_COPY.lock() {
+        *slot = Some(Box::new(callback));
+    }
+}
+
+fn persist_auto_copy(enabled: bool) {
+    if let Ok(slot) = PERSIST_AUTO_COPY.lock() {
+        if let Some(callback) = slot.as_ref() {
+            callback(enabled);
+        }
+    }
+}
+
 /// 贴图窗口类：阴影由独立的分层窗口绘制，不再用系统 CS_DROPSHADOW。
 const CLASS_PIN: &str = "LightweightToolsetPin";
 const WM_PIN_COMMAND: u32 = WM_APP + 1;
+/// 后台 OCR 线程回传识别结果（`LPARAM` 是 `Box<OcrOutcome>`）。
+const WM_PIN_OCR: u32 = WM_APP + 3;
 const TIMER_ZOOM: usize = 1;
 const TIMER_GLOW: usize = 2;
 const TIMER_CARET: usize = 3;
+const TIMER_HINT: usize = 4;
 /// 阴影外扩宽度（像素）。阴影由独立的分层窗口绘制，不占贴图窗口的客户区。
 const SHADOW_MARGIN: i32 = 16;
 /// 首次出现时的泛光时长（毫秒）。
 const GLOW_MS: u32 = 520;
 const SHADOW_BLUE: (u8, u8, u8) = (0x4F, 0xA8, 0xFF);
 const SHADOW_GRAY: (u8, u8, u8) = (0x8A, 0x8A, 0x8A);
+/// 文本选中高亮的底色（RGB）。
+const TEXT_SELECT_COLOR: (u8, u8, u8) = (0x2F, 0x7C, 0xFF);
 const SHADOW_CLASS: &str = "LightweightToolsetPinShadowFrame\0";
 
 // 右键菜单命令 id。
 const MENU_SELECT_ALL_TEXT: usize = 1;
 const MENU_TEXT_SELECTABLE: usize = 2;
+const MENU_AUTO_COPY_TEXT: usize = 3;
 const MENU_ROTATE_LEFT: usize = 10;
 const MENU_ROTATE_RIGHT: usize = 11;
 const MENU_FLIP_H: usize = 12;
@@ -186,6 +222,25 @@ struct Drag {
     start_point: POINT,
     /// 缩放的边：1 左 2 右 4 上 8 下，0 表示拖动移动。
     edges: u32,
+}
+
+/// OCR 文本层的状态：贴图关闭前不再重复识别，图像换了才回到 `Idle`。
+enum OcrLayer {
+    /// 还没识别过。
+    Idle,
+    /// 后台线程正在识别。
+    Running,
+    /// 识别完成，词与包围盒都在这份结果里。
+    Ready(Arc<ocr::Text>),
+    /// 识别失败（无语言包、图太大等），下一次请求会重新尝试。
+    Failed,
+}
+
+/// 后台识别线程回传给窗口的结果。
+struct OcrOutcome {
+    /// 请求号：旧请求回来时直接丢弃。
+    seq: u32,
+    result: Result<ocr::Text, String>,
 }
 
 struct PinState {
@@ -244,6 +299,27 @@ struct PinState {
     toolbar_surface: Option<Surface>,
     /// 当前悬停的工具栏动作：不变时不重绘。
     toolbar_hover: Option<toolbar::Action>,
+    /// OCR 文本层：右键「文本可选择」「选择所有文本」用。
+    ocr: OcrLayer,
+    /// 递增的识别请求号，用来丢弃过期结果。
+    ocr_seq: u32,
+    /// 这次识别完是否顺手复制全文（「选择所有文本」在识别中等结果）。
+    ocr_copy_all: bool,
+    /// 「文本可选择」是否勾选。
+    text_select: bool,
+    /// 文本选择拖动起点（图像坐标）。
+    text_drag: Option<(i32, i32)>,
+    /// 拖动起点落在哪个词上（词下标，按阅读顺序）。
+    text_anchor: Option<usize>,
+    /// 当前选中的词下标，按阅读顺序升序。
+    text_sel: Vec<usize>,
+    /// 文本高亮合成层（图像分辨率）：底图 + 蓝色选区。
+    /// 选区画进离屏位图再整体贴屏，避免每帧在窗口 DC 上叠透明度导致闪烁。
+    text_overlay: Option<Surface>,
+    /// 上一帧高亮在客户区占的矩形，用来只刷新「旧选区 ∪ 新选区」。
+    text_rect: Option<RECT>,
+    /// 窗口上的临时提示（文案 + 过期时间），OCR 进度与复制结果用。
+    hint: Option<(String, u32)>,
 }
 
 /// 贴在贴图窗口正下方的一层分层阴影窗口。
@@ -517,6 +593,16 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
         toolbar: None,
         toolbar_surface: None,
         toolbar_hover: None,
+        ocr: OcrLayer::Idle,
+        ocr_seq: 0,
+        ocr_copy_all: false,
+        text_select: true,
+        text_drag: None,
+        text_anchor: None,
+        text_sel: Vec::new(),
+        text_overlay: None,
+        text_rect: None,
+        hint: None,
     });
     let raw = Box::into_raw(state);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw as isize);
@@ -541,6 +627,8 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
         if (*state).shadow.is_some() {
             SetTimer(hwnd, TIMER_GLOW, 40, None);
         }
+        // 贴图落图即预识别文本：识别完成前右键菜单只显示「正在检测文本」。
+        ensure_ocr(hwnd, &mut *state, false, true);
     }
 }
 
@@ -2444,6 +2532,113 @@ unsafe fn apply_zoom(hwnd: HWND, state: &mut PinState, delta: i32) {
     shadow_sync(hwnd, state);
 }
 
+/// 提示条的内边距。
+const TAG_PAD_X: i32 = 9;
+const TAG_PAD_Y: i32 = 4;
+
+/// 量一段提示文字的尺寸（含内边距）。
+unsafe fn tag_size(dc: HDC, text: &str) -> (i32, i32) {
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    let font = menu_font();
+    let old_font = SelectObject(dc, font);
+    let mut size: SIZE = std::mem::zeroed();
+    GetTextExtentPoint32W(dc, wide.as_ptr(), wide.len() as i32, &mut size);
+    SelectObject(dc, old_font);
+    (size.cx + TAG_PAD_X * 2, size.cy + TAG_PAD_Y * 2)
+}
+
+/// 半透明黑底 + 1px 白框 + 白字的提示条（缩放百分比、OCR 进度与复制结果共用）。
+unsafe fn draw_tag(dc: HDC, text: &str, left: i32, top: i32) {
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    let (width, height) = tag_size(dc, text);
+    let tag = RECT {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+    };
+    // 半透明黑底：用 1x1 黑源做 AlphaBlend。
+    if let Some(mut black) = Surface::new(1, 1) {
+        black.set_pixel(0, 0, 0);
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 190,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        AlphaBlend(
+            dc,
+            tag.left,
+            tag.top,
+            tag.right - tag.left,
+            tag.bottom - tag.top,
+            black.dc(),
+            0,
+            0,
+            1,
+            1,
+            blend,
+        );
+    }
+    let pen = CreatePen(PS_SOLID, 1, 0x00FF_FFFF);
+    let old_pen = SelectObject(dc, pen);
+    let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc, tag.left, tag.top, tag.right, tag.bottom);
+    SelectObject(dc, old_brush);
+    SelectObject(dc, old_pen);
+    DeleteObject(pen);
+    let font = menu_font();
+    let old_font = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT as i32);
+    SetTextColor(dc, 0x00FF_FFFF);
+    let mut text_rect = tag;
+    DrawTextW(
+        dc,
+        wide.as_ptr(),
+        wide.len() as i32,
+        &mut text_rect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+    );
+    SelectObject(dc, old_font);
+}
+
+/// 把图像分辨率的 `source` 按脏区缩放贴到窗口 DC 上（客户区尺寸变化时自动换算）。
+unsafe fn blit_client_region(hwnd: HWND, dc: HDC, source: HDC, image: (i32, i32), dirty: RECT) {
+    let (width, height) = image;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let mut client: RECT = std::mem::zeroed();
+    GetClientRect(hwnd, &mut client);
+    if client.right <= 0 || client.bottom <= 0 {
+        return;
+    }
+    let mut dst = dirty;
+    if dst.right <= dst.left || dst.bottom <= dst.top {
+        dst = client;
+    }
+    let sx = (dst.left as f32 * width as f32 / client.right as f32).floor() as i32;
+    let sy = (dst.top as f32 * height as f32 / client.bottom as f32).floor() as i32;
+    let sw = ((dst.right as f32 * width as f32 / client.right as f32).ceil() as i32 - sx)
+        .clamp(1, width - sx.min(width - 1));
+    let sh = ((dst.bottom as f32 * height as f32 / client.bottom as f32).ceil() as i32 - sy)
+        .clamp(1, height - sy.min(height - 1));
+    SetStretchBltMode(dc, HALFTONE);
+    StretchBlt(
+        dc,
+        dst.left,
+        dst.top,
+        dst.right - dst.left,
+        dst.bottom - dst.top,
+        source,
+        sx,
+        sy,
+        sw,
+        sh,
+        SRCCOPY,
+    );
+}
+
 unsafe fn paint(hwnd: HWND, state: &mut PinState) {
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
     let dc = BeginPaint(hwnd, &mut ps);
@@ -2452,80 +2647,31 @@ unsafe fn paint(hwnd: HWND, state: &mut PinState) {
         // 标注画在图像分辨率上，再按脏区缩放上屏。
         paint_composite(hwnd, dc, state, ps.rcPaint);
     } else {
-        let mut client: RECT = std::mem::zeroed();
-        GetClientRect(hwnd, &mut client);
-        SetStretchBltMode(dc, HALFTONE);
-        StretchBlt(
+        // 有文本选区时贴「底图 + 高亮」的合成层，否则直接贴原图；
+        // 两者都只重贴脏区，拖选时不会整窗重绘（之前会闪）。
+        let source = match state.text_overlay.as_ref() {
+            Some(overlay) => overlay.dc(),
+            None => state.surface.dc(),
+        };
+        blit_client_region(
+            hwnd,
             dc,
-            0,
-            0,
-            client.right,
-            client.bottom,
-            state.surface.dc(),
-            0,
-            0,
-            state.surface.width,
-            state.surface.height,
-            SRCCOPY,
+            source,
+            (state.surface.width, state.surface.height),
+            ps.rcPaint,
         );
     }
     if GetTickCount() < state.zoom_until {
-        // 缩放提示：半透明黑底 + 1px 白框 + 白字，格式「缩放：150%」。
-        let text = format!("缩放：{:.0}%", state.zoom * 100.0);
-        let wide: Vec<u16> = text.encode_utf16().collect();
-        let font = menu_font();
-        let old_font = SelectObject(dc, font);
-        let mut size: SIZE = std::mem::zeroed();
-        GetTextExtentPoint32W(dc, wide.as_ptr(), wide.len() as i32, &mut size);
-        let pad_x = 9;
-        let pad_y = 4;
-        let tag = RECT {
-            left: 8,
-            top: 8,
-            right: 8 + size.cx + pad_x * 2,
-            bottom: 8 + size.cy + pad_y * 2,
-        };
-        // 半透明黑底：用 1x1 黑源做 AlphaBlend。
-        if let Some(mut black) = super::dib::Surface::new(1, 1) {
-            black.set_pixel(0, 0, 0);
-            let blend = BLENDFUNCTION {
-                BlendOp: AC_SRC_OVER as u8,
-                BlendFlags: 0,
-                SourceConstantAlpha: 190,
-                AlphaFormat: AC_SRC_ALPHA as u8,
-            };
-            AlphaBlend(
-                dc,
-                tag.left,
-                tag.top,
-                tag.right - tag.left,
-                tag.bottom - tag.top,
-                black.dc(),
-                0,
-                0,
-                1,
-                1,
-                blend,
-            );
+        draw_tag(dc, &format!("缩放：{:.0}%", state.zoom * 100.0), 8, 8);
+    }
+    if let Some((text, until)) = &state.hint {
+        if GetTickCount() < *until {
+            let mut client: RECT = std::mem::zeroed();
+            GetClientRect(hwnd, &mut client);
+            let (_, height) = tag_size(dc, text);
+            let top = (client.bottom - 8 - height).max(8);
+            draw_tag(dc, text, 8, top);
         }
-        let pen = CreatePen(PS_SOLID, 1, 0x00FF_FFFF);
-        let old_pen = SelectObject(dc, pen);
-        let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        Rectangle(dc, tag.left, tag.top, tag.right, tag.bottom);
-        SelectObject(dc, old_brush);
-        SelectObject(dc, old_pen);
-        DeleteObject(pen);
-        SetBkMode(dc, TRANSPARENT as i32);
-        SetTextColor(dc, 0x00FF_FFFF);
-        let mut text_rect = tag;
-        DrawTextW(
-            dc,
-            wide.as_ptr(),
-            wide.len() as i32,
-            &mut text_rect,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-        );
-        SelectObject(dc, old_font);
     }
     if state.editing.is_some() {
         draw_text_edit(dc, state);
@@ -2584,6 +2730,15 @@ unsafe fn install_image(hwnd: HWND, state: &mut PinState, next: PinImage) {
     }
     // 图像换了（旋转/翻转/重置），标注合成缓存必须重做。
     state.annot_dirty = true;
+    // 包围盒是按旧图算的，OCR 结果与选区一并作废。
+    state.ocr = OcrLayer::Idle;
+    state.ocr_seq = state.ocr_seq.wrapping_add(1);
+    state.ocr_copy_all = false;
+    state.text_sel.clear();
+    state.text_anchor = None;
+    state.text_drag = None;
+    state.text_overlay = None;
+    state.text_rect = None;
     SetWindowPos(
         hwnd,
         HWND_TOPMOST,
@@ -2849,7 +3004,285 @@ fn menu_scale() -> f32 {
     }
 }
 
-/// 贴图的右键菜单：文本选择与标注先占位（置灰），其余项可用。
+/// 已经有识别结果时克隆一份 `Arc`，避免借用与可变借用打架。
+fn ready_text(state: &PinState) -> Option<Arc<ocr::Text>> {
+    match &state.ocr {
+        OcrLayer::Ready(text) => Some(Arc::clone(text)),
+        _ => None,
+    }
+}
+
+/// 贴图上的临时提示：2 秒后自动消失。
+unsafe fn show_hint(hwnd: HWND, state: &mut PinState, text: &str) {
+    state.hint = Some((text.to_owned(), GetTickCount() + 2000));
+    SetTimer(hwnd, TIMER_HINT, 100, None);
+}
+
+/// 需要时启动一次 OCR（后台线程），`select_all` 为真时识别完自动全选。
+/// `quiet` 用于贴图刚创建时的预识别：不弹提示，只在右键菜单里显示「正在检测文本」。
+unsafe fn ensure_ocr(hwnd: HWND, state: &mut PinState, select_all: bool, quiet: bool) {
+    match &state.ocr {
+        OcrLayer::Ready(_) => {
+            if select_all {
+                select_all_text(hwnd, state);
+            }
+            return;
+        }
+        OcrLayer::Running => {
+            // 已经在识别：记下这次要不要顺手全选，结果回来时一起处理。
+            state.ocr_copy_all |= select_all;
+            if !quiet {
+                show_hint(hwnd, state, "正在识别文字…");
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+            }
+            return;
+        }
+        OcrLayer::Idle | OcrLayer::Failed => {}
+    }
+    state.ocr_seq = state.ocr_seq.wrapping_add(1);
+    let seq = state.ocr_seq;
+    state.ocr = OcrLayer::Running;
+    state.ocr_copy_all = select_all;
+    state.text_sel.clear();
+    state.text_anchor = None;
+    let pixels = state.surface.pixels().to_vec();
+    let (width, height) = (state.surface.width, state.surface.height);
+    let target = hwnd as isize;
+    if !quiet {
+        show_hint(hwnd, state, "正在识别文字…");
+    }
+    InvalidateRect(hwnd, std::ptr::null(), 0);
+    std::thread::spawn(move || {
+        let result = ocr::recognize(&pixels, width, height);
+        let outcome = Box::new(OcrOutcome { seq, result });
+        PostMessageW(
+            target as HWND,
+            WM_PIN_OCR,
+            0,
+            Box::into_raw(outcome) as isize,
+        );
+    });
+}
+
+/// 把文本写进剪贴板并给出结果提示。
+unsafe fn copy_text_with_hint(hwnd: HWND, state: &mut PinState, content: &str) {
+    let content = content.trim();
+    if content.is_empty() {
+        show_hint(hwnd, state, "未识别到文字");
+        InvalidateRect(hwnd, std::ptr::null(), 0);
+        return;
+    }
+    let count = content
+        .chars()
+        .filter(|value| !value.is_whitespace())
+        .count();
+    match super::clipboard_image::copy_text(content) {
+        Ok(()) => show_hint(hwnd, state, &format!("已复制 {count} 字")),
+        Err(error) => show_hint(hwnd, state, &error),
+    }
+    InvalidateRect(hwnd, std::ptr::null(), 0);
+}
+
+/// 复制当前选中的词。
+unsafe fn copy_selection(hwnd: HWND, state: &mut PinState) {
+    if state.text_sel.is_empty() {
+        return;
+    }
+    let Some(text) = ready_text(state) else {
+        return;
+    };
+    let content = ocr::selected_text(&text, &state.text_sel);
+    copy_text_with_hint(hwnd, state, &content);
+}
+
+/// 「选择所有文本」：选中全部字符；是否顺手复制由「选中后自动复制」开关决定。
+unsafe fn select_all_text(hwnd: HWND, state: &mut PinState) {
+    let Some(text) = ready_text(state) else {
+        ensure_ocr(hwnd, state, true, false);
+        return;
+    };
+    if text.is_empty() {
+        show_hint(hwnd, state, "未识别到文字");
+        InvalidateRect(hwnd, std::ptr::null(), 0);
+        return;
+    }
+    state.text_sel = (0..text.words.len()).collect();
+    update_text_selection_view(hwnd, state);
+    // 与划词共用同一个开关：关掉时只全选，不写剪贴板。
+    if auto_copy_text() {
+        let content = ocr::all_text(&text);
+        copy_text_with_hint(hwnd, state, &content);
+    }
+}
+
+/// 识别完成后统一处理：全选（按开关决定是否复制）、或静默把结果挂上去。
+unsafe fn finish_ocr(hwnd: HWND, state: &mut PinState, text: ocr::Text, select_all: bool) {
+    let count = text.words.len();
+    let text = Arc::new(text);
+    state.ocr = OcrLayer::Ready(Arc::clone(&text));
+    if select_all {
+        if count == 0 {
+            show_hint(hwnd, state, "未识别到文字");
+        } else {
+            state.text_sel = (0..count).collect();
+            update_text_selection_view(hwnd, state);
+            // 「选中后自动复制」关闭时只全选，复制交给用户 Ctrl+C。
+            if auto_copy_text() {
+                let content = ocr::all_text(&text);
+                copy_text_with_hint(hwnd, state, &content);
+            }
+        }
+    } else if count == 0 {
+        show_hint(hwnd, state, "未识别到文字");
+    } else {
+        dbg_log(&format!("ocr.ready chars={count} lines={}", text.lines.len()));
+    }
+    update_text_selection_view(hwnd, state);
+    InvalidateRect(hwnd, std::ptr::null(), 0);
+}
+
+/// 光标位置最近的词：优先命中包围盒，否则取中心最近的。
+fn nearest_word(text: &ocr::Text, point: (i32, i32)) -> Option<usize> {
+    let mut best: Option<(i64, usize)> = None;
+    for (index, word) in text.words.iter().enumerate() {
+        if word.contains(point.0, point.1) {
+            return Some(index);
+        }
+        let (center_x, center_y) = word.center();
+        let dx = (center_x - point.0) as i64;
+        let dy = (center_y - point.1) as i64;
+        let distance = dx * dx + dy * dy;
+        if best.map(|(value, _)| distance < value).unwrap_or(true) {
+            best = Some((distance, index));
+        }
+    }
+    best.map(|(_, index)| index)
+}
+
+/// 按「起点词 → 当前词」的阅读顺序更新选区。
+fn update_selection(state: &mut PinState) {
+    let Some(text) = ready_text(state) else {
+        return;
+    };
+    let Some(anchor) = state.text_anchor else {
+        return;
+    };
+    let Some(point) = state.text_drag else {
+        return;
+    };
+    let Some(current) = nearest_word(&text, point) else {
+        return;
+    };
+    let (from, to) = if anchor <= current {
+        (anchor, current)
+    } else {
+        (current, anchor)
+    };
+    state.text_sel = (from..=to).collect();
+}
+
+/// 把当前选区画进离屏高亮层（底图 + 半透明蓝底）。
+/// 选区为空时直接释放该层，回到「只贴原图」的快路径。
+unsafe fn refresh_text_overlay(state: &mut PinState) {
+    let (width, height) = (state.surface.width, state.surface.height);
+    if width <= 0 || height <= 0 {
+        state.text_overlay = None;
+        return;
+    }
+    let Some(text) = ready_text(state) else {
+        state.text_overlay = None;
+        return;
+    };
+    if state.text_sel.is_empty() {
+        state.text_overlay = None;
+        return;
+    }
+    // 尺寸变了（旋转/翻转后）或还没有缓存时重新分配。
+    let overlay = match state.text_overlay.take() {
+        Some(surface) if (surface.width, surface.height) == (width, height) => surface,
+        _ => match Surface::new(width, height) {
+            Some(surface) => surface,
+            None => return,
+        },
+    };
+    let copied = BitBlt(
+        overlay.dc(),
+        0,
+        0,
+        width,
+        height,
+        state.surface.dc(),
+        0,
+        0,
+        SRCCOPY,
+    );
+    if copied == 0 {
+        return;
+    }
+    let Some(mut brush) = Surface::new(1, 1) else {
+        return;
+    };
+    brush.set_pixel(TEXT_SELECT_COLOR.0, TEXT_SELECT_COLOR.1, TEXT_SELECT_COLOR.2);
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: 96,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+    for &index in &state.text_sel {
+        let Some(word) = text.words.get(index) else {
+            continue;
+        };
+        AlphaBlend(
+            overlay.dc(),
+            word.x,
+            word.y,
+            word.width.max(1),
+            word.height.max(1),
+            brush.dc(),
+            0,
+            0,
+            1,
+            1,
+            blend,
+        );
+    }
+    state.text_overlay = Some(overlay);
+}
+
+/// 选区在客户区占的矩形（按当前缩放换算）。
+fn selection_client_rect(state: &PinState) -> Option<RECT> {
+    let text = ready_text(state)?;
+    let zoom = state.zoom.max(0.01);
+    let mut union: Option<RECT> = None;
+    for &index in &state.text_sel {
+        let Some(word) = text.words.get(index) else {
+            continue;
+        };
+        let rect = RECT {
+            left: (word.x as f32 * zoom).round() as i32,
+            top: (word.y as f32 * zoom).round() as i32,
+            right: ((word.x + word.width) as f32 * zoom).round() as i32,
+            bottom: ((word.y + word.height) as f32 * zoom).round() as i32,
+        };
+        union = union_rect(union, Some(rect));
+    }
+    union
+}
+
+/// 选区变化后：重建高亮层，并只刷新「旧选区 ∪ 新选区」，避免整窗重绘导致闪烁。
+unsafe fn update_text_selection_view(hwnd: HWND, state: &mut PinState) {
+    refresh_text_overlay(state);
+    let next = selection_client_rect(state);
+    let dirty = union_rect(state.text_rect, next);
+    state.text_rect = next;
+    let ptr = dirty
+        .as_ref()
+        .map_or(std::ptr::null(), |rect| rect as *const RECT);
+    InvalidateRect(hwnd, ptr, 0);
+}
+
+/// 贴图的右键菜单：文本选择、图像处理、标注、窗口选项。
 unsafe fn show_menu(hwnd: HWND, state: &PinState) {
     let menu = CreatePopupMenu();
     let process = CreatePopupMenu();
@@ -2889,18 +3322,34 @@ unsafe fn show_menu(hwnd: HWND, state: &PinState) {
         MenuEntry::item("重置所有处理", false, false),
     );
 
-    append_entry(
-        &mut store,
-        menu,
-        MENU_SELECT_ALL_TEXT,
-        MenuEntry::item("选择所有文本", true, false),
-    );
-    append_entry(
-        &mut store,
-        menu,
-        MENU_TEXT_SELECTABLE,
-        MenuEntry::item("文本可选择", true, false),
-    );
+    if matches!(state.ocr, OcrLayer::Running) {
+        // 识别中：两项先让位给一条灰色占位（与 PixPin 一致，避免中途点空）。
+        append_entry(
+            &mut store,
+            menu,
+            0,
+            MenuEntry::item("正在检测文本", true, false),
+        );
+    } else {
+        append_entry(
+            &mut store,
+            menu,
+            MENU_SELECT_ALL_TEXT,
+            MenuEntry::item("选择所有文本", false, false),
+        );
+        append_entry(
+            &mut store,
+            menu,
+            MENU_TEXT_SELECTABLE,
+            MenuEntry::item("文本可选择", false, state.text_select),
+        );
+        append_entry(
+            &mut store,
+            menu,
+            MENU_AUTO_COPY_TEXT,
+            MenuEntry::item("选中后自动复制", false, auto_copy_text()),
+        );
+    }
     append_entry(&mut store, menu, 0, MenuEntry::separator());
     append_entry(
         &mut store,
@@ -3006,8 +3455,35 @@ unsafe fn save_as(hwnd: HWND, state: &PinState) {
     }
 }
 
+/// 勾选/取消「文本可选择」：勾上时先确保有 OCR 结果，并与标注模式互斥。
+unsafe fn toggle_text_select(hwnd: HWND, state: &mut PinState) {
+    state.text_select = !state.text_select;
+    state.text_drag = None;
+    state.text_anchor = None;
+    if state.annotating {
+        // 两套交互都吃左键，同时开着会互相抢；进入文本选择先退出标注。
+        exit_annotating(state);
+    }
+    if state.text_select {
+        ensure_ocr(hwnd, state, false, false);
+    } else {
+        state.text_sel.clear();
+        update_text_selection_view(hwnd, state);
+    }
+    InvalidateRect(hwnd, std::ptr::null(), 0);
+}
+
 unsafe fn handle_menu(hwnd: HWND, state: &mut PinState, command: usize) {
     match command {
+        MENU_SELECT_ALL_TEXT => select_all_text(hwnd, state),
+        MENU_TEXT_SELECTABLE => toggle_text_select(hwnd, state),
+        MENU_AUTO_COPY_TEXT => {
+            let next = !auto_copy_text();
+            set_auto_copy_text(next);
+            persist_auto_copy(next);
+            // 关掉时把已有选区留着，用户自己 Ctrl+C；这里只需重开菜单看勾选状态。
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+        }
         MENU_ROTATE_LEFT => {
             let next = processed(state.surface.pixels(), state.surface.width, state.surface.height, Process::RotateLeft);
             install_image(hwnd, state, next);
@@ -3034,6 +3510,11 @@ unsafe fn handle_menu(hwnd: HWND, state: &mut PinState, command: usize) {
             if state.annotating {
                 exit_annotating(state);
             } else {
+                // 标注与文本选择互斥。
+                state.text_select = false;
+                state.text_drag = None;
+                state.text_anchor = None;
+                state.text_sel.clear();
                 state.annotating = true;
                 state.cursor = None;
             }
@@ -3093,6 +3574,56 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if let Some(state) = state_of(hwnd) {
                 let x = (lp & 0xFFFF) as i16 as i32;
                 let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
+                // 已经选中过文本时，落到非文字区域这一下就取消选区（窗口内的点击才管）。
+                if !(*state).text_sel.is_empty() {
+                    let zoom = (*state).zoom.max(0.01);
+                    let point = ((x as f32 / zoom) as i32, (y as f32 / zoom) as i32);
+                    let inside_word = ready_text(&*state)
+                        .map(|text| {
+                            text.words
+                                .iter()
+                                .any(|word| word.contains(point.0, point.1))
+                        })
+                        .unwrap_or(false);
+                    if !inside_word {
+                        (*state).text_sel.clear();
+                        (*state).text_anchor = None;
+                        update_text_selection_view(hwnd, &mut *state);
+                    }
+                }
+                if (*state).text_select && !(*state).annotating {
+                    let zoom = (*state).zoom.max(0.01);
+                    let point = ((x as f32 / zoom) as i32, (y as f32 / zoom) as i32);
+                    // 窗口边缘留给缩放/拖动，不参与划词。
+                    let mut client: RECT = std::mem::zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let near_edge = x < EDGE
+                        || y < EDGE
+                        || x >= client.right - EDGE
+                        || y >= client.bottom - EDGE;
+                    // 只有点中文字才进入划词；空白/图片区域仍然拖动窗口。
+                    let hit = if near_edge {
+                        None
+                    } else {
+                        ready_text(&*state).and_then(|text| {
+                            text.words
+                                .iter()
+                                .position(|word| word.contains(point.0, point.1))
+                        })
+                    };
+                    if let Some(index) = hit {
+                        (*state).text_anchor = Some(index);
+                        (*state).text_drag = Some(point);
+                        (*state).text_sel.clear();
+                        update_text_selection_view(hwnd, &mut *state);
+                        SetCapture(hwnd);
+                        return 0;
+                    }
+                    if ready_text(&*state).is_none() {
+                        // 还没识别完：确认识别在跑，这一下按普通拖动处理。
+                        ensure_ocr(hwnd, &mut *state, false, false);
+                    }
+                }
                 if (*state).annotating {
                     // 工具栏在独立小窗里，这里的点击都落在画布上。
                     if (*state).line_menu_open || (*state).arrow_menu_open {
@@ -3181,6 +3712,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if let Some(state) = state_of(hwnd) {
                 let x = (lp & 0xFFFF) as i16 as i32;
                 let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
+                if (*state).text_drag.is_some() {
+                    let zoom = (*state).zoom.max(0.01);
+                    (*state).text_drag = Some(((x as f32 / zoom) as i32, (y as f32 / zoom) as i32));
+                    update_selection(&mut *state);
+                    update_text_selection_view(hwnd, &mut *state);
+                    return 0;
+                }
                 if !(*state).draft.is_empty() {
                     let zoom = (*state).zoom.max(0.01);
                     let point = ((x as f32 / zoom) as i32, (y as f32 / zoom) as i32);
@@ -3213,6 +3751,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_LBUTTONUP => {
             if let Some(state) = state_of(hwnd) {
                 let state_ref = &mut *state;
+                // 文本选择：松手即定稿，选中内容直接进剪贴板。
+                if state_ref.text_drag.take().is_some() {
+                    update_selection(state_ref);
+                    update_text_selection_view(hwnd, state_ref);
+                    ReleaseCapture();
+                    // 「划词后自动复制」关闭时只留选区，用户自己按 Ctrl+C。
+                    if auto_copy_text() {
+                        copy_selection(hwnd, state_ref);
+                    }
+                    return 0;
+                }
                 // 折线不在这里收尾（双击/右键收尾）；其它工具松手即落图。
                 if !state_ref.draft.is_empty()
                     && state_ref.doc.tool() != Some(Shape::Polyline)
@@ -3263,6 +3812,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return 0;
                 }
                 (*state).drag = None;
+                (*state).text_drag = None;
                 ReleaseCapture();
                 show_menu(hwnd, &*state);
             }
@@ -3272,6 +3822,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // 右键菜单项：低 16 位是命令 id。
             if let Some(state) = state_of(hwnd) {
                 handle_menu(hwnd, &mut *state, (wp & 0xFFFF) as usize);
+            }
+            0
+        }
+        WM_PIN_OCR => {
+            // 后台识别线程的结果：过期请求直接丢掉。
+            let outcome = *Box::from_raw(lp as *mut OcrOutcome);
+            if let Some(state) = state_of(hwnd) {
+                if (*state).ocr_seq == outcome.seq {
+                    let select_all = (*state).ocr_copy_all;
+                    (*state).ocr_copy_all = false;
+                    match outcome.result {
+                        Ok(text) => finish_ocr(hwnd, &mut *state, text, select_all),
+                        Err(message) => {
+                            (*state).ocr = OcrLayer::Failed;
+                            show_hint(hwnd, &mut *state, &message);
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                        }
+                    }
+                }
             }
             0
         }
@@ -3305,6 +3874,26 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 } else {
                     0
                 };
+                // 文本可选择时，只有落在文字上才用 I 形光标；窗口边缘仍优先缩放。
+                if edges == 0 && (*state).text_select && !(*state).annotating {
+                    let zoom = (*state).zoom.max(0.01);
+                    let image_point = (
+                        ((point.x - rect.left) as f32 / zoom) as i32,
+                        ((point.y - rect.top) as f32 / zoom) as i32,
+                    );
+                    let over_text = (*state).text_drag.is_some()
+                        || ready_text(&*state)
+                            .map(|text| {
+                                text.words
+                                    .iter()
+                                    .any(|word| word.contains(image_point.0, image_point.1))
+                            })
+                            .unwrap_or(false);
+                    if over_text {
+                        SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_IBEAM));
+                        return 1;
+                    }
+                }
                 let cursor = match edges {
                     1 | 2 => IDC_SIZEWE,
                     4 | 8 => IDC_SIZENS,
@@ -3344,6 +3933,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     KillTimer(hwnd, TIMER_GLOW);
                 }
                 shadow_sync(hwnd, &mut *state);
+            }
+            0
+        }
+        WM_TIMER if wp == TIMER_HINT => {
+            if let Some(state) = state_of(hwnd) {
+                let expired = (*state)
+                    .hint
+                    .as_ref()
+                    .map(|(_, until)| GetTickCount() >= *until)
+                    .unwrap_or(true);
+                if expired {
+                    (*state).hint = None;
+                    KillTimer(hwnd, TIMER_HINT);
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                }
             }
             0
         }
@@ -3407,6 +4011,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         InvalidateRect(hwnd, std::ptr::null(), 0);
                         return 0;
                     }
+                } else if key == VK_C
+                    && GetKeyState(VK_CONTROL as i32) < 0
+                    && !(*state).text_sel.is_empty()
+                {
+                    // 文本选择态下的 Ctrl+C 只复制选中的文字。
+                    copy_selection(hwnd, &mut *state);
+                    return 0;
                 } else if key == VK_ESCAPE
                     && GetTickCount() >= (*state).escape_guard
                     && confirm_close(hwnd, &*state)

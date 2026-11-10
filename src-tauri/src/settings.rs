@@ -113,6 +113,9 @@ pub struct AppSettings {
     /// 贴图历史保留数量。
     #[serde(default = "default_pin_history")]
     pub screenshot_pin_history: u8,
+    /// 贴图划词后是否立即复制到剪贴板（默认关闭，只选中不复制）。
+    #[serde(default)]
+    pub screenshot_pin_auto_copy_text: bool,
 }
 
 fn default_pin_lock() -> String {
@@ -205,6 +208,7 @@ impl Default for AppSettings {
             screenshot_pin_confirm_close: false,
             screenshot_pin_shadow: default_pin_shadow(),
             screenshot_pin_history: default_pin_history(),
+            screenshot_pin_auto_copy_text: false,
         }
     }
 }

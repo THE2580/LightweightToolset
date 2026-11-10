@@ -128,6 +128,7 @@ struct SettingsPatch {
     screenshot_pin_confirm_close: Option<bool>,
     screenshot_pin_shadow: Option<bool>,
     screenshot_pin_history: Option<u8>,
+    screenshot_pin_auto_copy_text: Option<bool>,
 }
 
 fn cold_start_ms(state: &AppState) -> Result<u128, String> {
@@ -1204,6 +1205,10 @@ fn update_app_settings(
     if let Some(history) = patch.screenshot_pin_history {
         settings.screenshot_pin_history = history.clamp(1, 100);
     }
+    if let Some(auto_copy) = patch.screenshot_pin_auto_copy_text {
+        settings.screenshot_pin_auto_copy_text = auto_copy;
+        screenshot::set_pin_auto_copy_text(auto_copy);
+    }
     if let Some(window_title) = patch.window_title {
         let title = window_title.trim();
         if !title.is_empty() {
@@ -1541,6 +1546,26 @@ pub fn run() {
             });
             if silent_start {
                 push_debug_log(&app.state::<AppState>(), "window", "main_window.silent_start");
+            }
+            // 贴图右键菜单里的「划词即复制」要能写回设置，且与工具页同步。
+            {
+                let handle = app.handle().clone();
+                screenshot::set_pin_auto_copy_persist(move |enabled| {
+                    let Some(state) = handle.try_state::<AppState>() else {
+                        return;
+                    };
+                    let saved = {
+                        let Ok(mut registry) = state.registry.lock() else {
+                            return;
+                        };
+                        registry.settings_mut().screenshot_pin_auto_copy_text = enabled;
+                        registry.settings().clone()
+                    };
+                    if let Err(error) = save_app_settings(&handle.state::<AppState>(), &saved) {
+                        push_debug_log(&handle.state::<AppState>(), "screenshot", error);
+                    }
+                    let _ = handle.emit("screenshot-pin-auto-copy-changed", enabled);
+                });
             }
             build_tray(app.handle())?;
             Ok(())

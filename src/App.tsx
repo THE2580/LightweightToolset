@@ -369,6 +369,7 @@ type AppSettings = {
   screenshotPinConfirmClose: boolean;
   screenshotPinShadow: boolean;
   screenshotPinHistory: number;
+  screenshotPinAutoCopyText: boolean;
 };
 
 type SettingsPatch = Partial<Omit<AppSettings, "tools" | "autoStart">>;
@@ -783,12 +784,16 @@ function App() {
   }, []);
 
   useEffect(() => {
-    let dispose: (() => void) | undefined;
+    const disposers: (() => void)[] = [];
     void loadSnapshot();
     void listen("app-runtime-state-changed", () => void loadSnapshot())
-      .then((nextDispose) => { dispose = nextDispose; })
+      .then((nextDispose) => { disposers.push(nextDispose); })
       .catch((reason) => setError(String(reason)));
-    return () => dispose?.();
+    // 贴图右键菜单里切换「划词后自动复制」时，工具页的开关跟着刷新。
+    void listen("screenshot-pin-auto-copy-changed", () => void loadSnapshot())
+      .then((nextDispose) => { disposers.push(nextDispose); })
+      .catch((reason) => setError(String(reason)));
+    return () => disposers.forEach((dispose) => dispose());
   }, [loadSnapshot]);
 
   useEffect(() => {
@@ -1858,6 +1863,7 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
   const pinConfirmClose = settings?.screenshotPinConfirmClose ?? false;
   const pinShadow = settings?.screenshotPinShadow ?? true;
   const pinHistory = settings?.screenshotPinHistory ?? 20;
+  const pinAutoCopyText = settings?.screenshotPinAutoCopyText ?? false;
   const currentHotkey = tools.find((item) => item.id === "screenshot")?.hotkey ?? tool.hotkey;
   // 贴图组的快捷键与截图快捷键一样走工具页配置。
   const pinHotkeys = appHotkeys.filter((item) => item.supportsHotkey && PIN_HOTKEY_IDS.includes(item.id));
@@ -2348,6 +2354,20 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
                 aria-label="窗口阴影"
                 className={`switch ${pinShadow ? "on" : ""}`}
                 onClick={() => void updateSettings({ screenshotPinShadow: !pinShadow })}
+                type="button"
+              >
+                <span />
+              </button>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h2>选中后自动复制</h2>
+                <p>划词或「选择所有文本」后自动复制；关闭时只选中，需要自己按 Ctrl+C</p>
+              </div>
+              <button
+                aria-label="选中后自动复制"
+                className={`switch ${pinAutoCopyText ? "on" : ""}`}
+                onClick={() => void updateSettings({ screenshotPinAutoCopyText: !pinAutoCopyText })}
                 type="button"
               >
                 <span />

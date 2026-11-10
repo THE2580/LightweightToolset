@@ -2,6 +2,7 @@ mod annotation;
 mod capture;
 mod clipboard_image;
 mod dib;
+mod ocr;
 mod overlay;
 mod pin;
 mod toolbar;
@@ -172,6 +173,8 @@ fn pin_config(app: &AppHandle) -> (pin::PinOptions, usize, PathBuf) {
     };
     let settings = registry.settings().clone();
     drop(registry);
+    // 全局「划词即复制」开关与设置保持一致（右键菜单改过之后，新贴图也用新值）。
+    pin::set_auto_copy_text(settings.screenshot_pin_auto_copy_text);
     let options = pin::PinOptions {
         shadow: settings.screenshot_pin_shadow,
         confirm_close: settings.screenshot_pin_confirm_close,
@@ -183,6 +186,16 @@ fn pin_config(app: &AppHandle) -> (pin::PinOptions, usize, PathBuf) {
         settings.screenshot_pin_history.clamp(1, 100) as usize,
         data_dir(&state),
     )
+}
+
+/// 贴图「划词后自动复制」开关（设置写入 / 启动初始化用）。
+pub(crate) fn set_pin_auto_copy_text(enabled: bool) {
+    pin::set_auto_copy_text(enabled);
+}
+
+/// 注入「右键菜单改开关后写回设置」的回调。
+pub(crate) fn set_pin_auto_copy_persist(callback: impl Fn(bool) + Send + Sync + 'static) {
+    pin::set_auto_copy_persist(callback);
 }
 
 /// 由全局热键调用：抓屏 → 原生覆盖层选区 → 复制到剪贴板并保存 PNG。

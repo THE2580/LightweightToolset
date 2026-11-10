@@ -3,6 +3,28 @@
 
 # Current Focus
 
+- **贴图文本选择（本地 OCR + 内存/交互/配置项，2026-11-10 第三轮，已实现待验收，未提交）**：
+  - 引擎：`pure-onnx-ocr` 0.3.2 + PP-OCRv6 small（det 9.9MB / rec 21.2MB），纯 Rust tract 推理。
+  - **内存策略（用户口径：识别完回到没有 OCR 时的水平）**：模型外置到 exe 同级 `ocr/ppocr_v6_small/`（不再 `include_bytes!`，否则映射页常驻）；单条 `lwt-ocr` 工作线程串行识别，**每识别完立刻 drop 引擎**，再调 `SetProcessWorkingSetSize` 把已释放页还给系统。实测：测试进程 idle 7.6MB → 峰值 110–118MB → 释放后 1.6–2.2MB；三张开/关循环无累积。
+  - 文字层：按行识别，行内按字符权重（CJK 1.0 / ASCII 0.55）拆字符单元，选区和复制都按字符下标。
+  - 交互：①落图即预识别，识别中右键菜单用灰色「正在检测文本」顶替两项；②新贴图默认开启「文本可选择」；③只有文字区域划词，空白/图片区域拖动窗口、边缘 6px 优先缩放；④选区画进离屏高亮层、只刷新「旧选区 ∪ 新选区」；⑤点贴图内非文字区域清空选区。
+  - 配置项：`screenshotPinAutoCopyText`（默认 **false**），文案「**选中后自动复制**」——右键菜单与工具页「贴图」标签各一项、状态同步并持久化；**同时作用于划词和「选择所有文本」**：关闭时两条路径都只选中不写剪贴板，用户自己 `Ctrl+C`。
+  - 性能：`[profile.dev.package."*"] opt-level = 2`（debug 依赖也优化）；540×220 稳态约 0.9s（含每次重新加载模型）。
+
+- **贴图文本选择（本地 OCR，2026-11-10，已实现待验收，未提交）**：
+  - 引擎：`pure-onnx-ocr` 0.3.2 + PP-OCRv6 small（det 9.9MB / rec 21.2MB），纯 Rust tract 推理、无 C/C++ 运行时；模型 `include_bytes!` 进二进制（开发版从 `%TEMP%` 运行，外部资源目录会失效）。
+  - 模型来源：`huggingface.co/PaddlePaddle/PP-OCRv6_small_{det,rec}_onnx` 的 `inference.onnx` + `inference.yml`（yml 内含字典），放在 `src-tauri/resources/ocr/ppocr_v6_small/{det,rec}/`。
+  - 文字层结构：识别按「行」返回，行内按字符权重（CJK 1.0 / ASCII 0.55）均分成字符单元，选区按字符下标范围；复制用字符拼接，跨行换行。
+  - 交互四项（用户口径）：①贴图落图即预识别，识别中右键菜单用灰色「正在检测文本」顶替两项；②新贴图默认开启「文本可选择」；③只有点在文字上才划词，空白/图片区域拖动窗口，窗口边缘（6px）优先缩放；④选区画进离屏高亮层、只刷新「旧选区 ∪ 新选区」修闪烁。
+  - 性能：`[profile.dev.package."*"] opt-level = 2`（否则 debug 推理慢一个数量级）；引擎加载 178ms，540×220 首轮 1.27s / 稳态 0.43s，1888×897 首轮 4.5s。
+  - 体验上限：复杂版面/极小字号仍可能出错；首次识别有 1–2s 等待（有「正在检测文本」占位）。
+
+- **贴图文本选择（系统 OCR，2026-11-10，已实现待验收，未提交）**：
+  - 方案：`Windows.Media.Ocr`（无第三方依赖、包体不增），新增 `screenshot/ocr.rs`；`SoftwareBitmap` 由 BGRA 缓冲构造（alpha 统一置 255），小图先 2× HALFTONE 放大再识别，包围盒按倍数缩回。
+  - 接入：右键「选择所有文本」「文本可选择」解禁；「文本可选择」为勾选项，勾上时后台线程识别（`WM_APP+3` 回传结果）；拖选按阅读顺序命中词、蓝色半透明高亮、松手自动复制并提示「已复制 N 字」；Ctrl+C 复制选区；「选择所有文本」全选并复制；识别中/失败/无文字都有提示；与标注模式互斥；旋转/翻转后 OCR 结果作废。
+  - 验证：单测 46 passed（含 OCR 真实识别探针 1 条 ignored）；注入实测拖选、全选、菜单状态、高亮对齐均通过。
+  - 体验上限：12px 界面小字仍有错字，复杂版面一般——系统 OCR 的固有上限，已和用户确认先看效果。
+
 - **批 A：贴图标注绘制问题（2026-11-09，已修，已验收，提交 `27c669d`）**：
   - 根因：pin 的草稿构造参数口径不对——`line_style(true)` 恒取形状档（线条被画成虚线）、`arrow_style()` 不分工具（直线也带箭头）、马赛克强度恒传 `strength(false)`（用了模糊档）、路径型工具只传 `[起点] + 光标`（铅笔/荧光笔/折线都退化成两点，铅笔荧光笔甚至不成图）。
   - 修法：新增 `draft_item(&PinState)` / `finish_draft(&mut PinState)` 统一草稿构造与收尾，口径与 `overlay.rs` 一致；`PinState` 增加 `draft_cursor`（图像坐标的预览光标点）。
@@ -36,30 +58,26 @@
 - 拖放：`8c97d46` 已回退到 ghost 版（能拖、无缩略图）；`778e0a4` 崩溃事故见 `bugs.md`，根因待查。
 
 # Remaining
-1. 本次改动尚未提交（`pin.rs`、`toolbar.rs`、`agent_memory/`）；用户验收已通过。
-2. 贴图标注补：文字、序号、马赛克/模糊（工具栏能选中，但贴图内还没有文字内联编辑等实现）。
-3. 贴图文本选择（「选择所有文本」「文本可选择」+ OCR）。
-4. 贴图历史浏览界面。
-5. 其他有快捷键的工具逐个迁到各自工具页的「快捷键」标签。
-6. 不做：截图查看、GIF、UI 检测、多语言、主题/托盘图标自定义（见 `progress.md`）。
+1. 贴图文本选择已实现待验收；验收后提交（`Cargo.toml`、`screenshot/mod.rs`、`screenshot/pin.rs` + 新增 `screenshot/ocr.rs`，以及 `agent_memory/`）。
+2. 贴图标注补：马赛克/模糊在贴图内还没有实现（工具栏能选中）。
+3. 贴图历史浏览界面（用户已明确暂缓）。
+4. 其他有快捷键的工具逐个迁到各自工具页的「快捷键」标签。
+5. 不做：截图查看、GIF、UI 检测、多语言、主题/托盘图标自定义（见 `progress.md`）。
 
 # Verification
-- `cargo build` 通过（4 条既有告警）；`cargo test --lib screenshot::` **23/23**。
-- 注入实测（提权 PowerShell，热键临时改为 `CTRL+ALT+SHIFT+A/P` 避开安装版）：
-  - 900×600 贴图：进标注 → 点形状组 → 小窗 830×112（二级栏完整，8 色全见）→ 拖红框（`items=1`）→ 对勾退出 → 工具栏销毁、红框留存；
-  - 320×240 贴图：工具栏完整显示在贴图下方（不再被裁切），绘制正常；
-  - 贴屏幕底部（pin 700,1380–1000,1540）：工具栏翻到贴图上方 ✔；
-  - 截图见 `%TEMP%\lwt-pin-tb8-c.png`、`lwt-pin-tb6-c.png`、`lwt-pin-tb10-a.png`。
-- 未验证：文字/序号/马赛克工具绘制、下拉菜单（线型/箭头）在小窗里的展开、滚轮调数值、删除模式、窗口拖动时小窗跟随（`WM_WINDOWPOSCHANGED` 已接）。
+- 构建：`cargo check` / `cargo build` / `npm run build` 全通过（4 条既有告警）；`cargo test --lib -- --test-threads=1` **45 passed / 0 failed / 2 ignored**。
+- 内存：OCR 测试进程 idle 7.6MB → 峰值 110–118MB → 释放后 1.6–2.2MB；App 三张开/关：开 74–82MB WS、关 71–72MB WS，无累积。
+- 行为：默认不自动复制（剪贴板保持 MARKER）；开关打开后划词与「选择所有文本」都会复制（后者实测 `Select All Test ABC 123`）；点空白清选区；工具页开关与 settings.json 双向同步；菜单文案「选中后自动复制」。
+- 截图：`%TEMP%\lwt-t7-menu.png`、`lwt-t7-all-off.png`、`lwt-ui-pin-tab.png`、`lwt-ocr-t5-selected.png`、`lwt-ocr-t5-cleared.png`。
+- 未验证：旋转/翻转后重新识别、超大图耗时、安装包实际体积（模型 30MB 外置）。
 
 # Resume Here
 
-0. **开发已停止（2026-11-10 晚，换新会话交接）**：HEAD `22542d4`；工作树只剩既有三项；**开发版进程与 Vite 均已关闭**（只剩安装版 `D:\轻量化工具集` 在跑）。新会话开场必须按第 2 条重启环境。
-1. **下一件事已定，但必须先确认再动工**：贴图文本选择（右键「选择所有文本」「文本可选择」仍置灰）。开工前先和用户确认 OCR 方案：
-   - 系统 Windows OCR（`Windows.Media.Ocr`，无第三方依赖、包体不增，但依赖系统语言包、复杂版面一般）；
-   - 本地 OCR 模型（识别更好，但要引运行时与模型文件、包体明显变大）。
-   用户明确要求：**先讨论确认，不要直接写代码**。
-2. 重启环境固定流程：`npm run dev`（Vite 1420）→ `cargo build` → 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%\lwt-dev` → 提权启动（`%TEMP%\lwt-launch.ps1`）→ 核对进程路径与页面加载（用 `%TEMP%\lwt-dev-shot7.ps1` 截图，旧的 `lwt-screen.ps1` 会把窗口改成 1500×1050，别用）。
+0. **开发环境已重启（2026-11-10 22:48）**：HEAD `fde2d58`；工作树 = 既有三项 + 贴图文本选择（含第四轮）改动，**未提交**；dev pid 18692（`%TEMP%\lwt-dev`，模型在 `%TEMP%\lwt-dev\ocr`），Vite `:1420` 在跑；`screenshotPinAutoCopyText=false`（默认）。
+1. **下一步：等用户验收第四轮后提交**（全选与划词共用「选中后自动复制」开关；文案已改名）。
+2. 提交 `feat: select and copy text in pin window via local OCR`，含 `src-tauri/resources/ocr/`（30MB）与 `agent_memory/`；提交前 `npm run build` + `cargo check` + `cargo test --lib -- --test-threads=1`。
+3. 坑（重要）：**不要用 PowerShell 改 `settings.json`**——PS 5.1 读无 BOM 的 UTF-8 会按 ANSI 解码，写回时带 BOM 且把中文变乱码（`windowTitle` 已被坑过一次，用 node 改回来）。要用脚本改配置就用 node。
+4. 重启环境固定流程：`npm run dev` → `cargo build` → `cmd /c start` 调 `%TEMP%\lwt-elevate.ps1`（内部 `lwt-dev-launch.ps1`：停旧实例、复制 exe 与 `resources\ocr` 到 `%TEMP%\lwt-dev`、提权启动）→ `%TEMP%\lwt-dev-shot8.ps1` 截图核对。
 3. 已交付并验收的贴图能力：工具栏（复用截图工具栏 + 伴生小窗，`d32b36f`）、绘制与交互（`27c669d`）、性能（`4785eea`）、文字与序号（`450c122`）。
 4. 用户已明确暂缓：贴图历史浏览界面。待办：其他有快捷键的工具逐个迁到各自工具页的「快捷键」标签。
 5. 注入测试注意：临时改开发版热键用 `%TEMP%\lwt-hk-patch.js unique|restore`，测完必须 restore 并重启；输入注入里 `SetCursorPos` 后等 ≥200ms 再 `mouse_event`；**所有 .ps1 测试脚本必须 ASCII-only 或带 BOM**，否则 PowerShell 5.1 解析失败。
