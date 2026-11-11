@@ -9,7 +9,7 @@
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`ecc7ca2`**（`feat: scale drag ghost and add gold shadow for locked pins`，含拖拽缩略图 + 锁定态金色阴影；未推送），工作树只剩既有三项。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD **`b5775dc`**（`feat: release screenshot tool v0.7.0`），tag **`v0.7.0`** 已推送，Release 已发布；工作树只剩既有三项。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
@@ -26,6 +26,12 @@
 
 # Verification
 
+- 2026-11-11 `v0.7.0` 发版（已发布）：
+  - 发布前：`npm run build` / `cargo check` / `cargo test --lib -- --test-threads=1`（48 passed / 2 ignored）；`npm run tauri build` 成功，安装包 33,846,940 字节。
+  - 安装验证：静默安装到 `D:\轻量化工具集`（覆盖 0.6.4），确认 `ocr/ppocr_v6_small/{det,rec}/inference.onnx` 落位、exe 版本 0.7.0（41,409,536 字节）；启动后 `Ctrl+Alt+A` 截图 → `Ctrl+Alt+P` 贴图 → OCR `ocr.ready chars=255 lines=15`，右键菜单恢复「选择所有文本」，证明 release 版从安装目录加载模型成功。
+  - 验证后已把正式版 `settings.json` 还原（截图工具仍为关闭），并重启安装版。
+  - 发布：推送 `master`（54+ 提交）、tag `v0.7.0`、Release 资产 `LightweightToolset_0.7.0_x64-setup.exe`（名称完整、GitHub 计算 digest 与本地 SHA-256 一致）、README 与仓库 About 已更新到 0.7.0。
+  - 清理：开发版数据/缓存/快捷方式、`%TEMP%\lwt-dev` 已删除，Vite 已停。
 - 2026-11-11 锁定态金色阴影（**已验收并提交 `ecc7ca2`**）：
   - 新增 `ShadowTone { Gray, Blue, Gold }` + `shadow_tone(focused, glowing, locked)`：未激活一律灰；激活（焦点或泛光）时未锁定蓝、已锁定金；金色取 `#F2C14E`。
   - `shadow_key` 由 `(w,h,bool,strength)` 改为 `(w,h,tone,strength)`，色调变化会触发重绘；右键「锁定」切换后立即 `shadow_sync`，蓝 ↔ 金当场生效。
@@ -95,5 +101,6 @@
 
 # Next Action
 
-- 拖拽缩略图 + 锁定态金色阴影已提交（`ecc7ca2`），未推送；推送/发版需用户明确要求。
-- 下批候选：标注拖动/文本再编辑（用户定为后续扩展项，建议按「选中+拖动」→「文本双击再编辑」→「控制点缩放」三档）；缩略图观感优化；其他工具快捷键迁移；贴图历史浏览继续暂缓。
+- 项目处于已发版稳定状态（v0.7.0），工作树只剩既有三项；无待提交内容。
+- 后续候选：标注拖动/文本再编辑（用户定为后续扩展项，建议拆「选中+拖动」→「文本双击再编辑」→「控制点缩放」三档）；拖拽缩略图观感优化；其他工具快捷键迁移到各自工具页；贴图历史浏览（暂缓）。
+- 恢复开发：`npm run dev` → `cargo build` → `%TEMP%\lwt-elevate.ps1`（内部复制 exe 与 `resources\ocr` 到 `%TEMP%\lwt-dev`）；注意发版清理已删除这些脚本依赖的目录，launch 脚本会自动重建。

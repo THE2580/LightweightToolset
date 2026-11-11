@@ -1,8 +1,8 @@
 # 项目背景
 
 - LightweightToolset 是旧版 LightweightWindowsToolset 的独立 Tauri 2 / Rust / React / TypeScript 路线；旧 Electron 项目只作稳定参考与迁移对照，新功能不回写旧项目。
-- 已实现工具：剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示、截图（原生覆盖层，S2 标注迭代中；行为参照 `docs/pixpin-clone-analysis.md`）。后续候选：快捷翻译、桌宠。
-- 当前稳定发布为 `v0.6.4`，发布提交 `fa580e8`，仓库 `https://github.com/THE2580/LightweightToolset`。
+- 已实现工具：截图与贴图（原生覆盖层 + 贴图窗口 + 标注 + 本地 OCR 文本选择，行为参照 `docs/pixpin-clone-analysis.md`）、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。后续候选：快捷翻译、桌宠。
+- 当前稳定发布为 `v0.7.0`，发布提交 `b5775dc`，仓库 `https://github.com/THE2580/LightweightToolset`。
 
 # 协作环境
 
@@ -48,6 +48,7 @@
 
 # 发布索引
 
+- `v0.7.0` / `b5775dc`：新增工具「截图与贴图」——区域截图（覆盖层、放大镜取色、辅助线、可配置压暗）、12 种标注与二级栏、贴图窗口（拖动/缩放/锁定/穿透/阴影/右键图像处理）、贴图标注（窗口外伴生工具栏）、本地 OCR 文本选择（PP-OCRv6，离线、用后释放内存、「选中后自动复制」可关）、超级拖放与跟随缩略图、锁定态金色阴影；安装包含 30MB 离线模型，体积增至 33,846,940 字节。资产 `LightweightToolset_0.7.0_x64-setup.exe`，SHA-256 `705D550D7330C54F6BAB7EC15C49F6294DF66FD007D87FF07706D9C0645AB4EE`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.0`。
 - `v0.6.4` / `fa580e8`：「快捷键提示」改用专用图标（键盘 + 提示气泡），修复侧栏兜底扳手与页头键盘不一致；侧栏、工具页头部、编辑弹窗、空状态统一。资产 `轻量化工具集_0.6.4_x64-setup.exe`（2,677,923 字节），SHA-256 `34C167F700B288B40D0384718804265C2387F83981632FEB90EB0D4898FAB5CD`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.6.4`。
 - `v0.6.3` / `ed31f94`：静默启动时的启动通知（含实际快捷键、注册失败降级）；开发版专属默认值（静默启动/置顶/开发者模式默认开、工具全关、自启关并锁定、存储路径不可改）；开发版标题追加「（开发版）」；托盘与通知应用名改中文产品名（开发版带标识）。资产 `轻量化工具集_0.6.3_x64-setup.exe`（2,677,488 字节），SHA-256 `3A02BC5B13FECEC35D7AB68732F860AEE3B180676E24D4444AE5A7C37848C6C4`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.6.3`。
 - `v0.6.2` / `9b5257e`：开机自启改计划任务（登录触发 + HighestAvailable + InteractiveToken + PT0S，清理旧 Run 键）；开发版 identifier 完全隔离（数据/WebView2/单实例/AUMID/开始菜单快捷方式/自启项）；开发版自启开关固定关闭并置灰；新增「静默启动」设置（主窗口 `visible:false` + setup 条件 show）。资产 `轻量化工具集_0.6.2_x64-setup.exe`（2,675,727 字节），SHA-256 `F3ADC3CFFF9807A490580C51074021E3EF210E27D864062E1A184173C88AB601`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.6.2`。

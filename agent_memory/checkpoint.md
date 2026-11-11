@@ -1,7 +1,11 @@
 # Goal
-复刻 PixPin 截图工具（LightweightToolset 新工具）。贴图标注的工具栏、批 A（绘制/交互）、批 B（性能）、文字与序号均已验收并提交（`d32b36f`、`27c669d`、`4785eea`、`450c122`）。下一步是贴图文本选择（OCR）与贴图历史浏览。
+复刻 PixPin 截图工具（LightweightToolset 新工具），第一版已于 2026-11-11 随 `v0.7.0` 发布。贴图标注工具栏、绘制/交互、性能、文字与序号、贴图文本选择（本地 OCR）、拖拽缩略图与锁定态金色阴影均已验收，第一版随 `v0.7.0` 发布。
 
 # Current Focus
+
+- **v0.7.0 已发布（2026-11-11）**：截图与贴图第一版全部交付——区域截图（覆盖层/放大镜/辅助线/压暗）、12 种标注与二级栏、贴图窗口（拖动/缩放/锁定/穿透/阴影/右键处理）、贴图标注（窗口外工具栏）、本地 OCR 文本选择（离线 PP-OCRv6、用后释放、选中后自动复制可关）、超级拖放与跟随缩略图、锁定态金色阴影。
+  - 安装包 `LightweightToolset_0.7.0_x64-setup.exe`（33,846,940 字节，SHA-256 `705D550D7330C54F6BAB7EC15C49F6294DF66FD007D87FF07706D9C0645AB4EE`），Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.0`，发布提交 `b5775dc`。
+  - 安装验证通过：模型落在 `<install>/ocr/ppocr_v6_small`，安装版贴图 OCR 正常。
 
 - **锁定态金色阴影（2026-11-11，已验收并提交 `ecc7ca2`）**：
   - `ShadowTone{Gray,Blue,Gold}` + `shadow_tone(focused, glowing, locked)`：未激活灰 / 焦点未锁定蓝 / 焦点已锁定金（`#F2C14E`）；泛光与焦点同色相。
@@ -69,11 +73,7 @@
 
 # Resume Here
 
-0. **开发环境在跑（2026-11-11 20:00）**：HEAD **`ecc7ca2`**（拖拽缩略图 + 锁定态金色阴影，未推送）；工作树只剩既有三项；dev pid 19284（`%TEMP%\lwt-dev`），Vite `:1420` 在跑。
-1. 已交付并验收：截图 S1/S2、贴图 S3（`cd1052a`、`9c72761`）、贴图标注工具栏（`d32b36f`）、绘制与交互（`27c669d`）、性能（`4785eea`）、文字与序号（`450c122`）、贴图文本选择（本地 OCR，`81ae1b5`）、拖拽缩略图 + 锁定态金色阴影（`ecc7ca2`）。
-2. 推送/发版需用户明确要求；当前 HEAD 未推送。
-3. 后续扩展项（用户定为「后续可扩展项，这版不做」）：标注可拖动（拖包围盒）与文本可再编辑，涉及截图与贴图两处；评估为中等偏大（约 350–500 行），建议拆成「选中+拖动」→「文本双击再编辑」→「控制点缩放」三档。
-3. 坑（重要）：**不要用 PowerShell 改 `settings.json`**——PS 5.1 读无 BOM 的 UTF-8 会按 ANSI 解码，写回时带 BOM 且把中文变乱码（`windowTitle` 已被坑过一次，用 node 改回来）。要用脚本改配置就用 node。
-4. 重启环境固定流程：`npm run dev` → `cargo build` → `cmd /c start` 调 `%TEMP%\lwt-elevate.ps1`（内部 `lwt-dev-launch.ps1`：停旧实例、复制 exe 与 `resources\ocr` 到 `%TEMP%\lwt-dev`、提权启动）→ `%TEMP%\lwt-dev-shot8.ps1` 截图核对。
-5. 注入测试注意：临时改开发版热键用 `%TEMP%\lwt-hk-patch.js unique|restore`，测完必须 restore 并重启；`SetCursorPos` 后等 ≥200ms 再 `mouse_event`；**所有 .ps1 测试脚本必须 ASCII-only 或带 BOM**，否则 PowerShell 5.1 解析失败；**按住 Ctrl 时不要按 Esc（= Ctrl+Esc 会弹开始菜单），取消拖放前先松开 Ctrl**。
-6. 提交时排除 `window_service.rs`、`window_pinner.rs`、`.codex/`；提交前 `npm run build` + `cargo check` + `cargo test --lib -- --test-threads=1`。
+0. **已发版（2026-11-11）**：HEAD `b5775dc`，tag `v0.7.0` 已推送、Release 已发布；工作树只剩既有三项；开发环境已关闭（Vite 停、`%TEMP%\lwt-dev` 已清理），安装版 0.7.0 正常运行。
+1. 下一批候选（用户未定）：标注拖动/文本再编辑（建议三档：选中+拖动 → 文本双击再编辑 → 控制点缩放）；拖拽缩略图观感优化；其他工具快捷键迁移；贴图历史浏览（暂缓）。
+2. 重启开发环境：`npm run dev` → `cargo build` → `cmd /c start` 调 `%TEMP%\lwt-elevate.ps1`（内部 `lwt-dev-launch.ps1` 会重建 `%TEMP%\lwt-dev` 并复制 `resources\ocr`）→ `%TEMP%\lwt-dev-shot8.ps1` 截图核对。
+3. 坑：不要用 PowerShell 改 `settings.json`（PS 5.1 会按 ANSI 解码并写 BOM）；注入测试取消拖放前先松 Ctrl（`Ctrl+Esc` 会弹开始菜单）；`Start-Process` 启动 GUI 会挂住管道，用 `cmd /c start` 解耦。

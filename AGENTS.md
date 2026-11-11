@@ -2,7 +2,7 @@
 
 ## 项目目标
 
-LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻量化桌面工具集：固定主窗口、单实例、单托盘，工具编译期注册、可独立启用/停用，所有数据本地存储。现有工具：剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。当前稳定版 `v0.6.4`。旧 Electron 版 LightweightWindowsToolset 只作迁移参考，新功能不回写。
+LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻量化桌面工具集：固定主窗口、单实例、单托盘，工具编译期注册、可独立启用/停用，所有数据本地存储。现有工具：截图与贴图、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。当前稳定版 `v0.7.0`。旧 Electron 版 LightweightWindowsToolset 只作迁移参考，新功能不回写。
 
 ## 技术栈
 
@@ -113,6 +113,10 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - **条目 id 必须唯一**：不要用毫秒时间戳单独做 id（同一毫秒批量生成会撞车，React `key` 重复会导致列表重复渲染、编辑/删除打错条目）；统一用「时间戳-自增序号」，并在加载时修复历史重复 id。
 - **弹窗退场状态要能复位**：带淡出动画的弹窗在提交失败（校验不过、后端拒绝）时必须把 `closing` 复位，否则遮罩停在透明却覆盖全屏的状态，界面表现为「卡死」。
 - **禁止对仓库 Rust 文件直接跑 `rustfmt`**：仓库没有 `rustfmt.toml`，默认 100 列会把整文件重排，产生上百行无关噪声；误格式化后立即 `git checkout --` 还原。
+- **截图贴图的 OCR 模型随包分发**：模型放 `src-tauri/resources/ocr/ppocr_v6_small/`，`bundle.resources` 映射成安装目录下的 `ocr/`（NSIS 生成脚本里是 `$INSTDIR\ocr\ppocr_v6_small\{det,rec}`）；运行时**只认 exe 同级的 `ocr/`**，release 里不得保留 `CARGO_MANIFEST_DIR` 兜底，否则在开发机上安装测试会“假通过”，掩盖资源放错位置。
+- **OCR 内存要按需加载、用完释放**：不要把 30MB 模型 `include_bytes!` 进二进制（映射页会常驻，达不到「识别完回落到无 OCR 基线」的要求）；单工作线程串行识别、每张识别完 drop 引擎并 `SetProcessWorkingSetSize` 归还工作集。
+- **改 `settings.json` 一律用 node 或带 BOM 的 UTF-8**：PowerShell 5.1 读写无 BOM 的 UTF-8 会按 ANSI 解码并写入 BOM，导致中文乱码、应用启动读配置失败（开发版 `windowTitle` 与正式版配置各踩过一次）。
+- **注入测试注意 `Ctrl+Esc`**：按住 Ctrl 时按 Esc 等于 `Ctrl+Esc`，会弹出开始菜单；模拟取消拖放前先松开 Ctrl。
 - **本机网络**：`git` 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 均失败，需先让用户开启代理，不要擅自清空代理配置直连。
 
 ## 分支、提交与发布
@@ -121,7 +125,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 提交信息沿用 Conventional Commits：`feat:`、`fix:`、`chore:`、`docs:`、`refactor:`，发布提交在末尾追加版本号（如 `fix: release startup initialization v0.4.4`）。
 - 提交前必须：`git status --short` 核对仅包含预期文件；`npm run build`；`cargo check`；涉及 Rust 逻辑时跑串行单测。
 - 版本规则：新增工具调整第一/二位版本号；缺陷修复或既有工具扩展调整第三位。
-- 发布 = 带注释 tag + GitHub Release + 安装包 SHA-256 记录，须用户明确授权；当前最新为 `v0.6.4`。
+- 发布 = 带注释 tag + GitHub Release + 安装包 SHA-256 记录，须用户明确授权；当前最新为 `v0.7.0`。
 - **发版时必须同步更新 README 与项目简介（固定动作，不是可选项）**：每次发版都要把对外说明更新到当版，不允许只发代码、文档滞后。
   1. **README**：版本号、功能列表（新增 / 变更 / 移除）、下载与安装说明；过期的截图、命令或描述一并修正。
   2. **项目简介**：GitHub 仓库 About 描述随版本与功能更新（`gh repo edit --description "..."`）。
