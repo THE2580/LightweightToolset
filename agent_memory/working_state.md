@@ -9,7 +9,7 @@
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`81ae1b5`**（`feat: select and copy text in pin window via local OCR`，含 `src-tauri/resources/ocr/` 模型 30MB；未推送），工作树只剩既有三项。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；最新提交 **`ecc7ca2`**（`feat: scale drag ghost and add gold shadow for locked pins`，含拖拽缩略图 + 锁定态金色阴影；未推送），工作树只剩既有三项。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
@@ -25,6 +25,18 @@
 - `src/App.tsx`：`PIN_HOTKEY_IDS`、`renderHotkeyRow` 通用快捷键行、「贴图」标签五项设置、全局快捷键页过滤贴图组。
 
 # Verification
+
+- 2026-11-11 锁定态金色阴影（**已验收并提交 `ecc7ca2`**）：
+  - 新增 `ShadowTone { Gray, Blue, Gold }` + `shadow_tone(focused, glowing, locked)`：未激活一律灰；激活（焦点或泛光）时未锁定蓝、已锁定金；金色取 `#F2C14E`。
+  - `shadow_key` 由 `(w,h,bool,strength)` 改为 `(w,h,tone,strength)`，色调变化会触发重绘；右键「锁定」切换后立即 `shadow_sync`，蓝 ↔ 金当场生效。
+  - 实测（`%TEMP%\lwt-shadow-test.txt`）：焦点未锁定边缘取样 `R180 G202 B226`（偏蓝）→ 锁定后 `R206 G206 B197`（偏暖金）→ 解锁回到 `R180 G202 B226`；截图 `%TEMP%\lwt-shadow-blue.png` / `lwt-shadow-gold.png`。
+  - 单测：`shadow_tone` 覆盖灰/蓝/金六种组合；`cargo test --lib` **48 passed / 0 failed / 2 ignored**。
+
+- 2026-11-11 拖拽缩略图（方案 B，**已验收并提交 `ecc7ca2`**）：
+  - 做法：`ghost_show` 不再直接贴原图，新增 `ghost_thumbnail()` 生成「盒式平均缩小（长边 ≤ 220px）+ 四周淡阴影（距离平方衰减 alpha，留白 14px）」的预乘 BGRA 层；窗口尺寸 = 缩略图 + 留白，图像左上角固定在光标 +18px，鼠标穿透不变。
+  - 拖放机制未改（仍是自绘 ghost + 自实现 IDropSource），因此没有碰 `778e0a4` 的崩溃路径。
+  - 用户实机验收：**DSH、QQ 聊天、资源管理器、Chrome 四个接收方拖放全部通过，缩略图显示正常**；暂定这版，后续可优化（阴影是距离衰减不是真高斯、偏移固定）。
+  - 代码/测试：`cargo test --lib screenshot::pin` **8/8**（新增 2 条 `ghost_thumbnail` 单测：缩放后图像不透明、阴影边缘 alpha、小图不放大）；`cargo build` 通过。
 
 - 2026-11-10 贴图文本选择：**已验收并提交 `81ae1b5`**（本地 OCR + 内存策略 + 四项交互 + 「选中后自动复制」配置项）。核心实测：
   - 识别：PP-OCRv6 small，用户样例输出与 PixPin 基本一致；540×220 稳态约 0.9s（每次重新加载模型）。
@@ -83,6 +95,5 @@
 
 # Next Action
 
-- 本批已提交、未推送（推送/发版需用户明确要求）。
-- 下批候选：其他有快捷键的工具逐个迁到各自工具页「快捷键」标签；贴图历史浏览界面继续暂缓。
-- 恢复开发时：`npm run dev` → `cargo build` → `%TEMP%\lwt-elevate.ps1`（内部会复制 exe 与 `resources\ocr` 到 `%TEMP%\lwt-dev`）→ 截图核对页面。
+- 拖拽缩略图 + 锁定态金色阴影已提交（`ecc7ca2`），未推送；推送/发版需用户明确要求。
+- 下批候选：标注拖动/文本再编辑（用户定为后续扩展项，建议按「选中+拖动」→「文本双击再编辑」→「控制点缩放」三档）；缩略图观感优化；其他工具快捷键迁移；贴图历史浏览继续暂缓。
