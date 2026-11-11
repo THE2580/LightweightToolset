@@ -145,22 +145,34 @@ fn has_models(dir: &std::path::Path) -> bool {
     dir.join("det").join("inference.onnx").exists() && dir.join("rec").join("inference.onnx").exists()
 }
 
-/// 解析模型目录：exe 同级 `ocr/` > 仓库资源目录（开发期）。
+/// 解析模型目录：exe 同级 `ocr/`；开发期才回落到仓库资源目录。
+///
+/// release 构建里刻意不保留仓库路径兜底：否则在开发机上安装测试会“假通过”，
+/// 掩盖安装包资源放错位置的问题。
 fn model_dir() -> Result<PathBuf, String> {
-    if let Some(dir) = std::env::current_exe()
+    let exe_dir = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|parent| candidate_dir(&parent.join("ocr"))))
-    {
+        .and_then(|exe| exe.parent().map(|parent| parent.to_path_buf()));
+    if let Some(dir) = exe_dir.as_ref().map(|parent| candidate_dir(&parent.join("ocr"))) {
         if has_models(&dir) {
             return Ok(dir);
         }
     }
-    // 开发期（直接跑 target/debug 或资源还没复制到临时目录）回落到仓库资源目录。
-    let dev = candidate_dir(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join("ocr"));
-    if has_models(&dev) {
-        return Ok(dev);
+    #[cfg(debug_assertions)]
+    {
+        // 开发期（直接跑 target/debug 或资源还没复制到临时目录）才允许读仓库。
+        let dev =
+            candidate_dir(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join("ocr"));
+        if has_models(&dev) {
+            return Ok(dev);
+        }
     }
-    Err("找不到 OCR 模型（应位于 exe 同级的 ocr/ppocr_v6_small）".to_owned())
+    Err(format!(
+        "找不到 OCR 模型（应位于 {}）",
+        exe_dir
+            .map(|dir| candidate_dir(&dir.join("ocr")).display().to_string())
+            .unwrap_or_else(|| "exe 同级的 ocr/ppocr_v6_small".to_owned())
+    ))
 }
 
 /// 加载一次模型。调用方用完必须丢弃，不要让引擎常驻。
