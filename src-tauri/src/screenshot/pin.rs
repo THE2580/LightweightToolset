@@ -165,7 +165,38 @@ const SHADOW_MARGIN: i32 = 16;
 /// 首次出现时的泛光时长（毫秒）。
 const GLOW_MS: u32 = 520;
 const SHADOW_BLUE: (u8, u8, u8) = (0x4F, 0xA8, 0xFF);
+/// 锁定态（焦点）用金色，和 PixPin 一致：一眼能看出「这张图被锁了」。
+const SHADOW_GOLD: (u8, u8, u8) = (0xF2, 0xC1, 0x4E);
 const SHADOW_GRAY: (u8, u8, u8) = (0x8A, 0x8A, 0x8A);
+
+/// 阴影色调：失焦灰、未锁定焦点蓝、已锁定焦点金。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ShadowTone {
+    Gray = 0,
+    Blue = 1,
+    Gold = 2,
+}
+
+impl ShadowTone {
+    fn color(self) -> (u8, u8, u8) {
+        match self {
+            Self::Gray => SHADOW_GRAY,
+            Self::Blue => SHADOW_BLUE,
+            Self::Gold => SHADOW_GOLD,
+        }
+    }
+}
+
+/// 按「是否激活 / 是否锁定」决定色调：没激活一律灰，激活时锁定为金、否则蓝。
+fn shadow_tone(focused: bool, glowing: bool, locked: bool) -> ShadowTone {
+    if !(focused || glowing) {
+        ShadowTone::Gray
+    } else if locked {
+        ShadowTone::Gold
+    } else {
+        ShadowTone::Blue
+    }
+}
 /// 文本选中高亮的底色（RGB）。
 const TEXT_SELECT_COLOR: (u8, u8, u8) = (0x2F, 0x7C, 0xFF);
 const SHADOW_CLASS: &str = "LightweightToolsetPinShadowFrame\0";
@@ -260,7 +291,7 @@ struct PinState {
     focused: bool,
     glow_until: u32,
     /// 最近一次绘制的阴影参数，避免拖动时无谓重建位图。
-    shadow_key: (i32, i32, bool, i32),
+    shadow_key: (i32, i32, i32, i32),
     /// 超级拖放结束后的短暂时间窗：拖放用 Esc 取消时不要让窗口一起关掉。
     escape_guard: u32,
     /// 标注模式。
@@ -570,7 +601,7 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
         shadow_enabled: options.shadow,
         focused: false,
         glow_until: GetTickCount() + GLOW_MS,
-        shadow_key: (0, 0, false, -1),
+        shadow_key: (0, 0, -1, -1),
         escape_guard: 0,
         annotating: false,
         annotations_hidden: false,
@@ -674,7 +705,7 @@ unsafe fn shadow_destroy(state: &mut PinState) {
             DestroyWindow(shadow.hwnd);
         }
     }
-    state.shadow_key = (0, 0, false, -1);
+    state.shadow_key = (0, 0, -1, -1);
 }
 
 /// 首次出现时的泛光强度：1.0 起步逐渐收回到稳定值。
@@ -698,7 +729,8 @@ unsafe fn shadow_sync(hwnd: HWND, state: &mut PinState) {
     }
     let now = GetTickCount();
     let glowing = now < state.glow_until;
-    let blue = state.focused || glowing;
+    // 激活态（焦点或出现泛光）按锁定状态取蓝/金，失焦一律灰。
+    let tone = shadow_tone(state.focused, glowing, state.lock != PinLock::None);
     let strength = if glowing {
         glow_strength(state.glow_until - now)
     } else {
@@ -729,7 +761,7 @@ unsafe fn shadow_sync(hwnd: HWND, state: &mut PinState) {
             surface: None,
             size: (0, 0),
         });
-        state.shadow_key = (0, 0, false, -1);
+        state.shadow_key = (0, 0, -1, -1);
         ShowWindow(shadow_hwnd, SW_SHOWNOACTIVATE);
     }
     let Some(shadow) = state.shadow.as_mut() else {
@@ -749,12 +781,12 @@ unsafe fn shadow_sync(hwnd: HWND, state: &mut PinState) {
         outer_h,
         SWP_NOACTIVATE,
     );
-    let key = (width, height, blue, (strength * 100.0) as i32);
+    let key = (width, height, tone as i32, (strength * 100.0) as i32);
     if state.shadow_key == key {
         return;
     }
     state.shadow_key = key;
-    render_shadow(shadow, width, height, outer_x, outer_y, blue, strength);
+    render_shadow(shadow, width, height, outer_x, outer_y, tone, strength);
 }
 
 unsafe fn render_shadow(
@@ -763,7 +795,7 @@ unsafe fn render_shadow(
     image_h: i32,
     dst_x: i32,
     dst_y: i32,
-    blue: bool,
+    tone: ShadowTone,
     strength: f32,
 ) {
     let w = image_w + SHADOW_MARGIN * 2;
@@ -776,7 +808,7 @@ unsafe fn render_shadow(
         return;
     };
     let m = SHADOW_MARGIN;
-    let color = if blue { SHADOW_BLUE } else { SHADOW_GRAY };
+    let color = tone.color();
     {
         let bytes = surface.pixels_mut();
         bytes.fill(0);
@@ -1294,6 +1326,12 @@ unsafe fn set_drag_image(
 // ---------------------------------------------------------------------------
 
 const GHOST_CLASS: &str = "LightweightToolsetDragGhost";
+/// 缩略图长边上限：太小看不清、太大会挡住落点。
+const GHOST_MAX_SIDE: i32 = 220;
+/// 缩略图四周的阴影留白。
+const GHOST_MARGIN: i32 = 14;
+/// 缩略图相对光标的偏移（图像左上角的位置）。
+const GHOST_OFFSET: i32 = 18;
 static GHOST: Mutex<Option<(isize, i32, i32)>> = Mutex::new(None);
 
 unsafe extern "system" fn ghost_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -1317,13 +1355,108 @@ unsafe fn register_ghost_class() {
     RegisterClassW(&wc);
 }
 
-/// 建一个跟随光标的半透明贴图预览（鼠标穿透，不影响落点判定）。
+/// 生成缩略图 + 四周柔和阴影（预乘 BGRA，直接交给 `UpdateLayeredWindow`）。
+fn ghost_thumbnail(
+    source: &[u8],
+    width: i32,
+    height: i32,
+    thumb_width: i32,
+    thumb_height: i32,
+    margin: i32,
+) -> Vec<u8> {
+    let layer_width = thumb_width + margin * 2;
+    let layer_height = thumb_height + margin * 2;
+    let mut out = vec![0u8; (layer_width * layer_height * 4) as usize];
+
+    // 阴影：纯黑 + 低 alpha，按到图像矩形的距离平方衰减，视觉上是一圈淡阴影。
+    for y in 0..layer_height {
+        for x in 0..layer_width {
+            let dx = if x < margin {
+                margin - x
+            } else if x >= margin + thumb_width {
+                x - (margin + thumb_width) + 1
+            } else {
+                0
+            };
+            let dy = if y < margin {
+                margin - y
+            } else if y >= margin + thumb_height {
+                y - (margin + thumb_height) + 1
+            } else {
+                0
+            };
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let distance = dx.max(dy).min(margin);
+            let ratio = 1.0 - distance as f32 / margin as f32;
+            let alpha = (ratio * ratio * 70.0).round() as u8;
+            let index = ((y * layer_width + x) * 4) as usize;
+            // 预乘：黑色乘任何 alpha 都还是 0，只填 alpha。
+            out[index + 3] = alpha;
+        }
+    }
+
+    // 图像：盒式平均缩小，避免直接取样产生锯齿。
+    for ty in 0..thumb_height {
+        let sy0 = (ty as i64 * height as i64 / thumb_height as i64) as i32;
+        let mut sy1 = ((ty as i64 + 1) * height as i64 / thumb_height as i64) as i32;
+        if sy1 <= sy0 {
+            sy1 = sy0 + 1;
+        }
+        let sy1 = sy1.min(height);
+        for tx in 0..thumb_width {
+            let sx0 = (tx as i64 * width as i64 / thumb_width as i64) as i32;
+            let mut sx1 = ((tx as i64 + 1) * width as i64 / thumb_width as i64) as i32;
+            if sx1 <= sx0 {
+                sx1 = sx0 + 1;
+            }
+            let sx1 = sx1.min(width);
+            let (mut blue, mut green, mut red, mut count) = (0u32, 0u32, 0u32, 0u32);
+            for sy in sy0..sy1 {
+                for sx in sx0..sx1 {
+                    let index = ((sy * width + sx) * 4) as usize;
+                    blue += source[index] as u32;
+                    green += source[index + 1] as u32;
+                    red += source[index + 2] as u32;
+                    count += 1;
+                }
+            }
+            if count == 0 {
+                continue;
+            }
+            let index = (((margin + ty) * layer_width + margin + tx) * 4) as usize;
+            // 原图 alpha 常为 0（截屏 DIB），这里统一按不透明处理。
+            out[index] = (blue / count) as u8;
+            out[index + 1] = (green / count) as u8;
+            out[index + 2] = (red / count) as u8;
+            out[index + 3] = 255;
+        }
+    }
+    out
+}
+
 unsafe fn ghost_show(state: &PinState) {
     let width = state.surface.width;
     let height = state.surface.height;
     if width <= 0 || height <= 0 {
         return;
     }
+    // 小图不放大，大图按长边上限缩小。
+    let scale = (GHOST_MAX_SIDE as f32 / width.max(height) as f32).min(1.0);
+    let thumb_width = ((width as f32 * scale).round() as i32).max(1);
+    let thumb_height = ((height as f32 * scale).round() as i32).max(1);
+    let layer_width = thumb_width + GHOST_MARGIN * 2;
+    let layer_height = thumb_height + GHOST_MARGIN * 2;
+    let pixels = ghost_thumbnail(
+        state.surface.pixels(),
+        width,
+        height,
+        thumb_width,
+        thumb_height,
+        GHOST_MARGIN,
+    );
+
     let class = widen(GHOST_CLASS);
     let hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
@@ -1332,8 +1465,8 @@ unsafe fn ghost_show(state: &PinState) {
         WS_POPUP,
         0,
         0,
-        width,
-        height,
+        layer_width,
+        layer_height,
         std::ptr::null_mut(),
         std::ptr::null_mut(),
         GetModuleHandleW(std::ptr::null()),
@@ -1343,11 +1476,13 @@ unsafe fn ghost_show(state: &PinState) {
         dbg_log("ghost.create_failed");
         return;
     }
-    dbg_log(&format!("ghost.created {width}x{height}"));
+    dbg_log(&format!(
+        "ghost.created thumb={thumb_width}x{thumb_height} layer={layer_width}x{layer_height}"
+    ));
     let mut info: BITMAPINFO = std::mem::zeroed();
     info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    info.bmiHeader.biWidth = width;
-    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biWidth = layer_width;
+    info.bmiHeader.biHeight = -layer_height;
     info.bmiHeader.biPlanes = 1;
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
@@ -1365,32 +1500,29 @@ unsafe fn ghost_show(state: &PinState) {
         return;
     }
     std::ptr::copy_nonoverlapping(
-        state.surface.pixels().as_ptr(),
+        pixels.as_ptr(),
         bits as *mut u8,
-        (width * height * 4) as usize,
+        (layer_width * layer_height * 4) as usize,
     );
-    let target = std::slice::from_raw_parts_mut(bits as *mut u8, (width * height * 4) as usize);
-    for pixel in target.chunks_exact_mut(4) {
-        pixel[3] = 255;
-    }
     let screen = GetDC(std::ptr::null_mut());
     let memory = CreateCompatibleDC(screen);
     let old = SelectObject(memory, bitmap);
     let mut point: POINT = std::mem::zeroed();
     GetCursorPos(&mut point);
+    // 位置按「图像左上角 = 光标 + 偏移」算，阴影留白往左上让。
     let destination = POINT {
-        x: point.x + 16,
-        y: point.y + 16,
+        x: point.x + GHOST_OFFSET - GHOST_MARGIN,
+        y: point.y + GHOST_OFFSET - GHOST_MARGIN,
     };
     let source = POINT { x: 0, y: 0 };
     let size = SIZE {
-        cx: width,
-        cy: height,
+        cx: layer_width,
+        cy: layer_height,
     };
     let blend = BLENDFUNCTION {
         BlendOp: AC_SRC_OVER as u8,
         BlendFlags: 0,
-        SourceConstantAlpha: 230,
+        SourceConstantAlpha: 255,
         AlphaFormat: AC_SRC_ALPHA as u8,
     };
     let updated = UpdateLayeredWindow(
@@ -1411,7 +1543,7 @@ unsafe fn ghost_show(state: &PinState) {
     ReleaseDC(std::ptr::null_mut(), screen);
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     if let Ok(mut slot) = GHOST.lock() {
-        *slot = Some((hwnd as isize, width, height));
+        *slot = Some((hwnd as isize, layer_width, layer_height));
     }
 }
 
@@ -1426,8 +1558,8 @@ unsafe fn ghost_move() {
     SetWindowPos(
         hwnd as HWND,
         HWND_TOPMOST,
-        point.x + 16,
-        point.y + 16,
+        point.x + GHOST_OFFSET - GHOST_MARGIN,
+        point.y + GHOST_OFFSET - GHOST_MARGIN,
         width,
         height,
         SWP_NOACTIVATE,
@@ -3529,7 +3661,7 @@ unsafe fn handle_menu(hwnd: HWND, state: &mut PinState, command: usize) {
         }
         MENU_SHADOW => {
             state.shadow_enabled = !state.shadow_enabled;
-            state.shadow_key = (0, 0, false, -1);
+            state.shadow_key = (0, 0, -1, -1);
             if state.shadow_enabled {
                 state.glow_until = GetTickCount() + GLOW_MS;
                 SetTimer(hwnd, TIMER_GLOW, 40, None);
@@ -3542,6 +3674,8 @@ unsafe fn handle_menu(hwnd: HWND, state: &mut PinState, command: usize) {
             } else {
                 PinLock::None
             };
+            // 锁定状态决定焦点态阴影颜色，切换后立刻重画（蓝 ↔ 金）。
+            shadow_sync(hwnd, state);
         }
         MENU_CLOSE => {
             if confirm_close(hwnd, state) {
@@ -4285,7 +4419,10 @@ fn decode_png(path: &Path) -> Option<PinImage> {
 
 #[cfg(test)]
 mod tests {
-    use super::{hit_edges, resize_rect, wheel_zoom, DoubleClick, PinLock};
+    use super::{
+        ghost_thumbnail, hit_edges, resize_rect, shadow_tone, wheel_zoom, DoubleClick, PinLock,
+        ShadowTone,
+    };
     use windows_sys::Win32::Foundation::RECT;
 
     fn rect() -> RECT {
@@ -4342,5 +4479,58 @@ mod tests {
         assert_eq!(DoubleClick::parse("close"), DoubleClick::Close);
         assert_eq!(DoubleClick::parse("copy"), DoubleClick::Copy);
         assert_eq!(DoubleClick::parse(""), DoubleClick::None);
+    }
+
+    #[test]
+    fn ghost_thumbnail_scales_and_keeps_image_opaque() {
+        // 400x200 纯红图 → 缩略到 100x50，四周留 6px 阴影。
+        let width = 400;
+        let height = 200;
+        let mut source = vec![0u8; (width * height * 4) as usize];
+        for pixel in source.chunks_exact_mut(4) {
+            pixel[0] = 0;
+            pixel[1] = 0;
+            pixel[2] = 255;
+            pixel[3] = 0;
+        }
+        let (thumb_w, thumb_h, margin) = (100, 50, 6);
+        let layer_width = thumb_w + margin * 2;
+        let layer_height = thumb_h + margin * 2;
+        let layer = ghost_thumbnail(&source, width, height, thumb_w, thumb_h, margin);
+        assert_eq!(layer.len(), (layer_width * layer_height * 4) as usize);
+        // 图像区域：不透明且保留原色（拆成 BGRA 后 B 分量取自源像素的蓝）。
+        let center = (((margin + 20) * layer_width + margin + 20) * 4) as usize;
+        assert_eq!(layer[center + 3], 255);
+        assert_eq!(layer[center + 2], 255);
+        // 阴影边缘：不透明区域之外 alpha 为 0。
+        let corner = 0;
+        assert_eq!(layer[corner + 3], 0);
+        // 紧贴图像的阴影像素有部分 alpha（距离图像左边 1px 的那一列）。
+        let shadow = (((margin / 2) * layer_width + (margin - 1)) * 4) as usize;
+        assert!(layer[shadow + 3] > 0);
+    }
+
+    #[test]
+    fn shadow_tone_follows_focus_and_lock() {
+        // 失焦（也没泛光）一律灰。
+        assert_eq!(shadow_tone(false, false, false), ShadowTone::Gray);
+        assert_eq!(shadow_tone(false, false, true), ShadowTone::Gray);
+        // 焦点态：未锁定蓝、锁定金。
+        assert_eq!(shadow_tone(true, false, false), ShadowTone::Blue);
+        assert_eq!(shadow_tone(true, false, true), ShadowTone::Gold);
+        // 出现泛光也算激活，颜色跟随锁定状态。
+        assert_eq!(shadow_tone(false, true, false), ShadowTone::Blue);
+        assert_eq!(shadow_tone(false, true, true), ShadowTone::Gold);
+    }
+
+    #[test]
+    fn ghost_thumbnail_without_scaling_keeps_size() {
+        // 小图按原尺寸放进分层窗口（不放大）。
+        let (width, height) = (20, 10);
+        let source = vec![255u8; (width * height * 4) as usize];
+        let layer = ghost_thumbnail(&source, width, height, width, height, 4);
+        assert_eq!(layer.len(), (((width + 8) * (height + 8)) * 4) as usize);
+        let center = (((4 + 5) * (width + 8) + 4 + 10) * 4) as usize;
+        assert_eq!(layer[center + 3], 255);
     }
 }
