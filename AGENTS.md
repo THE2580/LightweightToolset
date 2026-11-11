@@ -15,6 +15,8 @@ LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻
 
 - `src/`：React 前端。`App.tsx` 为主窗口（体量大，优先局部修改）；`popup.tsx` / `free.tsx` 为快捷弹窗与自由窗口；`notification.tsx` 为快捷键提示浮窗页；`shortcutNotify.ts` 是页面按键上报桥；样式集中在 `App.css`、`popup.css`、`free.css`、`notification.css`。
 - `src-tauri/src/`：Rust 后端。`lib.rs` 为应用装配与命令入口；`main.rs` 兼作采键子进程入口（`--shortcut-tip-helper`）；`autostart.rs` 开机自启（计划任务）；`tools.rs` 工具注册与生命周期；`clipboard.rs`、`shortcut_tip.rs`、`app_usage.rs`、`key_usage.rs`、`input_monitor.rs`、`timer.rs`、`window_pinner.rs`、`window_service.rs`、`windows_notification.rs`、`settings.rs` 按功能拆分。
+- `src-tauri/src/screenshot/`：截图与贴图工具。`overlay.rs` 全屏覆盖层（选区/放大镜/辅助线/标注阶段）、`annotation.rs` 标注模型与绘制、`toolbar.rs` 工具栏两套布局（截图/贴图）、`pin.rs` 贴图窗口（含标注、文本选择、拖放缩略图、三态阴影）、`ocr.rs` 本地 OCR（PP-OCRv6 + pure-onnx-ocr）、`dib.rs` / `save.rs` / `clipboard_image.rs` 像素与落盘。
+- `src-tauri/resources/ocr/ppocr_v6_small/`：OCR 模型（det/rec 的 `inference.onnx` + `inference.yml`，约 30MB），由 `tauri.conf.json` 的 `bundle.resources` 放到安装目录 `ocr/`；运行时只认 exe 同级 `ocr/`。
 - `src-tauri/capabilities/default.json`：Tauri 权限清单；`src-tauri/tauri.conf.json`：窗口/打包配置。
 - `agent_memory/`：项目记忆（权威状态源，随仓库提交）；`archive/` 存旧摘要。
 

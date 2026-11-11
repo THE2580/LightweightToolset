@@ -1,79 +1,38 @@
 # Goal
-复刻 PixPin 截图工具（LightweightToolset 新工具），第一版已于 2026-11-11 随 `v0.7.0` 发布。贴图标注工具栏、绘制/交互、性能、文字与序号、贴图文本选择（本地 OCR）、拖拽缩略图与锁定态金色阴影均已验收，第一版随 `v0.7.0` 发布。
+
+复刻 PixPin 截图工具（LightweightToolset 新工具）。**第一版已于 2026-11-11 随 `v0.7.0` 发布**：区域截图、12 种标注与二级栏、贴图窗口、贴图标注、本地 OCR 文本选择、超级拖放缩略图、锁定态金色阴影。后续候选见 `progress.md`「待办」。
 
 # Current Focus
 
-- **v0.7.0 已发布（2026-11-11）**：截图与贴图第一版全部交付——区域截图（覆盖层/放大镜/辅助线/压暗）、12 种标注与二级栏、贴图窗口（拖动/缩放/锁定/穿透/阴影/右键处理）、贴图标注（窗口外工具栏）、本地 OCR 文本选择（离线 PP-OCRv6、用后释放、选中后自动复制可关）、超级拖放与跟随缩略图、锁定态金色阴影。
-  - 安装包 `LightweightToolset_0.7.0_x64-setup.exe`（33,846,940 字节，SHA-256 `705D550D7330C54F6BAB7EC15C49F6294DF66FD007D87FF07706D9C0645AB4EE`），Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.0`，发布提交 `b5775dc`。
-  - 安装验证通过：模型落在 `<install>/ocr/ppocr_v6_small`，安装版贴图 OCR 正常。
+- **v0.7.0 已发布（2026-11-11）**：安装包 `LightweightToolset_0.7.0_x64-setup.exe`（33,846,940 字节，SHA-256 `705D550D7330C54F6BAB7EC15C49F6294DF66FD007D87FF07706D9C0645AB4EE`），Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.0`，发布提交 `b5775dc`；安装验证通过（模型落在 `<install>/ocr/ppocr_v6_small`，安装版 OCR 正常）。
+- 当前无进行中的开发任务；工作树只剩既有三项（`window_service.rs`、`window_pinner.rs`、`.codex/`）。
 
-- **锁定态金色阴影（2026-11-11，已验收并提交 `ecc7ca2`）**：
-  - `ShadowTone{Gray,Blue,Gold}` + `shadow_tone(focused, glowing, locked)`：未激活灰 / 焦点未锁定蓝 / 焦点已锁定金（`#F2C14E`）；泛光与焦点同色相。
-  - `shadow_key` 改带 tone，色调变化即重绘；右键「锁定」切换后立刻 `shadow_sync`。
-  - 实测：边缘取样 蓝 `R180 G202 B226` ↔ 金 `R206 G206 B197`，切换即时。
+# 下一批候选（用户未定）
 
-- **拖拽缩略图（方案 B，2026-11-11，已验收并提交 `ecc7ca2`）**：
-  - `ghost_thumbnail()` 生成「长边 ≤220px 盒式平均缩小 + 四周淡阴影（距离平方衰减 alpha，留白 14px）」的预乘 BGRA 层，图像左上角固定在光标 +18px；`WS_EX_TRANSPARENT` 穿透不变。
-  - 拖放机制未动（自绘 ghost + 自实现 IDropSource），没碰 `778e0a4` 崩溃路径；用户在 DSH / QQ / 资源管理器 / Chrome 四个接收方实测通过，缩略图暂定这版、后续可优化（真高斯阴影、尺寸可配）。
-  - 坑：注入测试里**按住 Ctrl 时按 Esc = Ctrl+Esc 会弹开始菜单**，取消拖放前要先松开 Ctrl。
+1. 标注拖动 / 文本再编辑（后续扩展项）：建议三档——①选中 + 拖动平移；②文字双击再编辑（复用内联编辑器、提交替换原 item）；③控制点缩放（多点图形需重采样，最后做）。两处（`overlay.rs`、`pin.rs`）都要接；拖动只在标注模式下生效，避免与划词/拖窗口抢左键。
+2. 拖拽缩略图观感优化（真高斯阴影、长边可配、偏移微调）。
+3. 其他有快捷键的工具迁到各自工具页「快捷键」标签。
+4. 贴图历史浏览界面（用户暂缓）。
+5. 系统 DragImage 崩溃根因（`778e0a4`，当前走自绘 ghost，不动也可）。
 
-- **贴图文本选择（本地 OCR + 内存/交互/配置项，2026-11-10 第三轮，已实现待验收，未提交）**：
-  - 引擎：`pure-onnx-ocr` 0.3.2 + PP-OCRv6 small（det 9.9MB / rec 21.2MB），纯 Rust tract 推理。
-  - **内存策略（用户口径：识别完回到没有 OCR 时的水平）**：模型外置到 exe 同级 `ocr/ppocr_v6_small/`（不再 `include_bytes!`，否则映射页常驻）；单条 `lwt-ocr` 工作线程串行识别，**每识别完立刻 drop 引擎**，再调 `SetProcessWorkingSetSize` 把已释放页还给系统。实测：测试进程 idle 7.6MB → 峰值 110–118MB → 释放后 1.6–2.2MB；三张开/关循环无累积。
-  - 文字层：按行识别，行内按字符权重（CJK 1.0 / ASCII 0.55）拆字符单元，选区和复制都按字符下标。
-  - 交互：①落图即预识别，识别中右键菜单用灰色「正在检测文本」顶替两项；②新贴图默认开启「文本可选择」；③只有文字区域划词，空白/图片区域拖动窗口、边缘 6px 优先缩放；④选区画进离屏高亮层、只刷新「旧选区 ∪ 新选区」；⑤点贴图内非文字区域清空选区。
-  - 配置项：`screenshotPinAutoCopyText`（默认 **false**），文案「**选中后自动复制**」——右键菜单与工具页「贴图」标签各一项、状态同步并持久化；**同时作用于划词和「选择所有文本」**：关闭时两条路径都只选中不写剪贴板，用户自己 `Ctrl+C`。
-  - 性能：`[profile.dev.package."*"] opt-level = 2`（debug 依赖也优化）；540×220 稳态约 0.9s（含每次重新加载模型）。
+# Remaining / 不做
 
-- **批 A：贴图标注绘制问题（2026-11-09，已修，已验收，提交 `27c669d`）**：
-  - 根因：pin 的草稿构造参数口径不对——`line_style(true)` 恒取形状档（线条被画成虚线）、`arrow_style()` 不分工具（直线也带箭头）、马赛克强度恒传 `strength(false)`（用了模糊档）、路径型工具只传 `[起点] + 光标`（铅笔/荧光笔/折线都退化成两点，铅笔荧光笔甚至不成图）。
-  - 修法：新增 `draft_item(&PinState)` / `finish_draft(&mut PinState)` 统一草稿构造与收尾，口径与 `overlay.rs` 一致；`PinState` 增加 `draft_cursor`（图像坐标的预览光标点）。
-  - 折线改为与截图一致的交互：单击逐点落下折点，双击/右键收尾（画到一半时右键先收尾、不弹菜单）。
-  - 实测通过：直线/箭头拖拽预览为实线、箭头只在箭头工具出现；折线三点成形；铅笔、荧光笔可涂画；马赛克拖拽预览与松手结果一致。
-- **批 A 补充（2026-11-09，已修，已验收，提交 `27c669d`）**：
-  - 折线右键/双击收尾不再把收尾点补成折点（`finish_draft(state, with_cursor)`，右键、双击传 `false`）。
-  - 选中任意标注工具时禁用右键菜单与滚轮缩放（未选工具时保持原行为）。
-  - 工具栏提示条：未展开二级栏时窗口底部预留 `TB_TOOLTIP=30`，一级栏悬停提示不再被裁掉。
-  - 支持 `Ctrl+Z` / `Ctrl+Y` 撤销/重做标注（标注模式下拦截，不关闭窗口）。
-  - 实测：`menu_after_tool=0`、`menu_no_tool=1`、滚轮后贴图矩形不变、铅笔提示条可见、undo 后线条消失 / redo 恢复、折线两点 + 右键只出一段。
+- 不做：截图查看、GIF、UI 检测、多语言、主题/托盘图标自定义、托盘点击动作（详见 `progress.md`）。
+- 未测但用户已「直接通过」：双击动作=复制、关闭前确认弹窗、无覆盖层时按贴图键贴「最近一次截图」。
 
-- **贴图标注：文字与序号（2026-11-10，已验收，提交 `450c122`）**：
-  - 序号：单击落号，`doc.next_serial()` 自增，样式沿用截图（圆底白字）。
-  - 文字：贴图内的内联编辑（不建子窗口）——点一下出现输入框与光标，接管 IME（`ImmGetContext`/组合串/候选窗定位），回车或右键提交、Esc 取消、退格删字；提交后按 `doc.font_size()` 生成文字项，留存在图上。
-  - 编辑期间临时 `SetForegroundWindow` + `SetFocus` 拿焦点（贴图平时不抢焦点）；退出标注/关闭窗口会取消编辑并销毁光标。
-  - 验收过程中修掉两处：①只有第一个文字框能用输入法——提交/取消会解绑 IME 且只在创建时绑过一次，改为窗口创建时记下 `ime_context`、每次编辑重新挂回；②编辑中文字没有白描边——改为与 `annotation::draw` 相同的「四方向白 + 本色覆盖」。
-  - 实测：序号连点出 1/2/3；连续多个文字框中英文输入与切换正常（用户实机验收通过）；编辑中与提交后的描边一致。
+# Verification（最近一次）
 
-- **批 B：贴图标注性能（2026-11-09，已优化，已验收，提交 `4785eea`）**：
-  - 测量（debug 构建，1200×800 贴图）：优化前 `paint` 平均 7.06ms / 最大 9.65ms，工具栏重绘平均 9.51ms / 最大 12.89ms（两者叠加接近 16.7ms 帧预算 → 掉帧）。
-  - 改动：①工具栏位图缓存复用（不再每次新建 DIB）、哨兵处理改 u32 批量；②只有「悬停目标变化」才重绘工具栏（同一按钮内移动不重绘）；③标注分两层缓存——已落图标注 `items_surface` 只在内容变化时重画，草稿合成 `composite` 复用；④绘制时只刷新「旧草稿 ∪ 新草稿」脏区并按脏区换算 StretchBlt 源矩形，不再整窗重贴；⑤退出标注释放标注相关位图。
-  - 优化后：`paint` 平均 **2.67ms**（最大 8.78，为首次整图合成）、工具栏重绘平均 **3.05ms**（且次数由 20 降到 14）。内存（1200×800 贴图）：创建贴图 +11.5MB、进标注 +4.3MB、画完第 1 个矩形 +3.6MB 后保持不变、退出标注 −4.1MB。
-
-- **贴图标注工具栏（2026-11-09，已验收，未提交）**：
-  - `pin.rs` 删掉临时迷你工具栏（`PinAction`/`pin_toolbar_*`/`draw_pin_toolbar`），改为 `toolbar::layout/draw/hit` + `Mode::Pin`，动作分发照抄 `overlay.rs`。
-  - 用户否决「画在贴图窗口内」（窗口比工具栏窄时被裁切，实测 320×240 只剩前 6 个按钮、看不见对勾），选定**贴图窗口外的独立伴生小窗**（像 PixPin）。
-  - 小窗：`LightweightToolsetPinToolbar`，`WS_EX_LAYERED|TOOLWINDOW|TOPMOST|NOACTIVATE`，Sentinel 抠透明 + `UpdateLayeredWindow`；主栏贴贴图下沿 8px、二级栏与下拉在其下方生长；下方放不下整体翻到贴图上方；宽度按 `2×内容宽 − 主栏宽` 计算（二级栏比主栏宽，约 1017px）。
-  - 交互：Esc 标注时只退出标注；无工具时拖动仍是移动窗口；删除模式点画布删除；滚轮落在数值项调数值、其余在画布上缩放。
-  - 标注合成缓存（图像分辨率 + `annot_dirty`），鼠标悬停只重贴不重算。
-- 拖放：`8c97d46` 回退到 ghost 版后，2026-11-11 在其上做出「缩小图 + 淡阴影」的跟随缩略图（方案 B），拖放机制未变；`778e0a4` 崩溃事故（系统 `IDragSourceHelper` 路径）根因仍未查，见 `bugs.md`。
-
-# Remaining
-1. 贴图历史浏览界面（用户已明确暂缓）。
-2. 其他有快捷键的工具逐个迁到各自工具页的「快捷键」标签。
-3. 拖拽缩略图观感优化（真高斯阴影、可配置长边、偏移微调）——用户说「之后可优化」，非当前待办。
-4. 未测项：双击动作=复制、关闭前确认弹窗、无覆盖层时按贴图键贴「最近一次截图」（用户已表示直接通过，不需补测）。
-5. 不做：截图查看、GIF、UI 检测、多语言、主题/托盘图标自定义（见 `progress.md`）。
-
-# Verification
-- 构建：`cargo check` / `cargo build` / `npm run build` 全通过（4 条既有告警）；`cargo test --lib -- --test-threads=1` **45 passed / 0 failed / 2 ignored**。
-- 内存：OCR 测试进程 idle 7.6MB → 峰值 110–118MB → 释放后 1.6–2.2MB；App 三张开/关：开 74–82MB WS、关 71–72MB WS，无累积。
-- 行为：默认不自动复制（剪贴板保持 MARKER）；开关打开后划词与「选择所有文本」都会复制（后者实测 `Select All Test ABC 123`）；点空白清选区；工具页开关与 settings.json 双向同步；菜单文案「选中后自动复制」。
-- 截图：`%TEMP%\lwt-t7-menu.png`、`lwt-t7-all-off.png`、`lwt-ui-pin-tab.png`、`lwt-ocr-t5-selected.png`、`lwt-ocr-t5-cleared.png`。
-- 未验证：旋转/翻转后重新识别、超大图耗时、安装包实际体积（模型 30MB 外置）。
+- `npm run build` / `cargo check` / `cargo test --lib -- --test-threads=1`：**48 passed / 0 failed / 2 ignored**（ignored 为 OCR 端到端探针）。
+- `npm run tauri build` 成功；安装包 33,846,940 字节；安装后 `ocr/` 落位正确、`Ctrl+Alt+A` → `Ctrl+Alt+P` → `ocr.ready chars=255 lines=15`。
+- 逐轮历史验证记录见 `archive/2026-11-11-screenshot-progress.md`。
 
 # Resume Here
 
-0. **已发版（2026-11-11）**：HEAD `b5775dc`，tag `v0.7.0` 已推送、Release 已发布；工作树只剩既有三项；开发环境已关闭（Vite 停、`%TEMP%\lwt-dev` 已清理），安装版 0.7.0 正常运行。
-1. 下一批候选（用户未定）：标注拖动/文本再编辑（建议三档：选中+拖动 → 文本双击再编辑 → 控制点缩放）；拖拽缩略图观感优化；其他工具快捷键迁移；贴图历史浏览（暂缓）。
-2. 重启开发环境：`npm run dev` → `cargo build` → `cmd /c start` 调 `%TEMP%\lwt-elevate.ps1`（内部 `lwt-dev-launch.ps1` 会重建 `%TEMP%\lwt-dev` 并复制 `resources\ocr`）→ `%TEMP%\lwt-dev-shot8.ps1` 截图核对。
-3. 坑：不要用 PowerShell 改 `settings.json`（PS 5.1 会按 ANSI 解码并写 BOM）；注入测试取消拖放前先松 Ctrl（`Ctrl+Esc` 会弹开始菜单）；`Start-Process` 启动 GUI 会挂住管道，用 `cmd /c start` 解耦。
+0. **已发版（2026-11-11）**：HEAD `b5775dc`（工作树干净，仅既有三项）；tag `v0.7.0` 已推送、Release 已发布；开发环境已关闭（Vite 停、`%TEMP%\lwt-dev` 已清理），安装版 0.7.0 正常运行。
+1. 下一批做什么等用户指定；候选见上「下一批候选」。
+2. 重启开发环境：`npm run dev`（:1420）→ `cargo build` → `cmd /c start` 调 `%TEMP%\lwt-elevate.ps1`（内部 `lwt-dev-launch.ps1` 会重建 `%TEMP%\lwt-dev` 并复制 `resources\ocr`）→ `%TEMP%\lwt-dev-shot8.ps1` 截图核对页面。
+3. 坑速查：
+   - 改 `settings.json` 用 node（PS 5.1 会按 ANSI 解码并写 BOM）；改正式版配置要「先停进程」。
+   - 注入测试取消拖放前先松 Ctrl（`Ctrl+Esc` 会弹开始菜单）；`SetCursorPos` 后等 ≥200ms 再 `mouse_event`；`.ps1` 必须 ASCII-only 或带 BOM。
+   - `Start-Process` 启动 GUI 会挂住 DSH 管道，用 `cmd /c start` 解耦。
+   - 提交时排除 `window_service.rs`、`window_pinner.rs`、`.codex/`。

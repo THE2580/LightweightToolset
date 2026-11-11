@@ -1,106 +1,44 @@
 # Scope
 
-- 截图工具（PixPin 复刻）：S1 抓屏/覆盖层、S2 标注/工具栏/设置页全部完成；S3 贴图两轮落地并由用户验收通过。
-- 已提交：`2183a2c`（保存目录 + 8 色预设）、`727dff0`（工具页标签 + 配置项 + 辅助线重构 + 选区翻转）、`cc66594`/`a12535a`/`08160d1`（docs）、`cd1052a`（贴图首轮）、**`9c72761`（贴图修偏 + 三态阴影 + 右键菜单，最新）**。
-- 本批新增：贴图上下颠倒修复、滚轮缩放改左上角固定、压贴图出现延迟（线程预热 + 历史后台落盘）、PixPin 同款三态阴影（出现淡蓝泛光/焦点淡蓝/失焦灰，独立分层窗口）、右键菜单（图像处理五项、复制图像、图像另存为、窗口阴影、锁定、关闭；标注与文本选择置灰）。
-- 「截图查看」已取消，不做。
-- 进行中：贴图标注。`toolbar.rs` 已支持 `Mode::Pin` + `Action::Done`（主栏固定窗口顶部、二级栏与下拉向下生长）；pin 端改为**贴图窗口外的独立伴生小窗**（`LightweightToolsetPinToolbar`）承载工具栏，主栏贴贴图下沿、放不下翻上方；右键菜单「标注/隐藏标注」已解禁。**用户已验收，已提交 `d32b36f`**；贴图文字/序号/马赛克、文本选择、历史浏览未做。
-- 已提交：工具栏 `d32b36f`、批 A `27c669d`、批 B `4785eea`、文字与序号 `450c122`。
+- 工具集已含七个工具：**截图与贴图**（第一版，`v0.7.0` 发布）、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。
+- 截图与贴图范围：区域截图（原生覆盖层/放大镜取色/辅助线/压暗）、12 种标注与二级栏、贴图窗口（拖动/缩放/锁定/穿透/阴影/右键图像处理）、贴图标注（窗口外伴生工具栏、文字与序号）、贴图文本选择（本地 OCR）、超级拖放与跟踪缩略图。
+- 明确不在本版：标注拖动/文本再编辑、贴图历史浏览界面（暂缓）、系统级 DragImage 缩略图。
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD **`b5775dc`**（`feat: release screenshot tool v0.7.0`），tag **`v0.7.0`** 已推送，Release 已发布；工作树只剩既有三项。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD **`b5775dc`**（`feat: release screenshot tool v0.7.0`），tag **`v0.7.0`** 已推送，Release 已发布；远程与本地一致，工作树只剩既有三项。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
 # Active Files
 
-- `src-tauri/src/screenshot/pin.rs`（约 3150 行）：常驻 `screenshot-pin` 线程 + `WM_APP+1` 指令通道；贴图 wndproc（绘制/拖动/缩放/滚轮/锁定/穿透/双击/关闭确认）；`PinShadow` 分层阴影三态；`processed()` 旋转翻转与 `install_image`；右键菜单（`WM_COMMAND` 派发）与 `save_as`（`GetSaveFileNameW`）；历史读写与 `restore_last`；**标注模式**（`annotating/doc/draft/picks/style_open/line_menu_open/arrow_menu_open/delete_mode/composite/annot_dirty/toolbar`）与**工具栏伴生小窗**（`LightweightToolsetPinToolbar` + `toolbar_proc` + `toolbar_refresh`）；6 个单测。
-- `src-tauri/src/screenshot/toolbar.rs`：`Mode{Screenshot,Pin}`——截图模式工具栏贴选区下方（放不下翻上），贴图模式主栏固定在工具栏窗口顶部、二级栏与下拉菜单向下生长；`Action::Done` 对勾。
-- `src-tauri/src/screenshot/overlay.rs`：`OverlayOutcome.pin`、`Action::Pin`、`WM_OVERLAY_PIN`（`WM_APP+2`）与 `request_pin()`；删掉 `R/O/C/L/A/B/P/H/M/F/T/N` 与 `1–4`、`[`/`]` 单键。
-- `src-tauri/src/screenshot/toolbar.rs`：`Action::Pin`、主栏 14 个按钮、图钉图标、提示文案带贴图快捷键。
-- `src-tauri/src/screenshot/mod.rs`：`capture_config` 返回 `PinOptions` + 历史数量、`pin::warm_up()`、`pin_from_hotkey/restore_pin/close_all_pins/toggle_pins_visible/toggle_pins_passthrough`、`pin_hotkey_text()`、`stop()` 关闭全部贴图。
-- `src-tauri/src/settings.rs` / `lib.rs`：`screenshotPinLock/DoubleClick/ConfirmClose/Shadow/History`（含 serde 默认值与 patch 校验）、`get_screenshot_defaults` 五项。
-- `src-tauri/src/tools.rs`：`APP_HOTKEYS` 由 1 条扩到 6 条（`screenshot_pin`/`pin_restore`/`pin_close_all`/`pin_toggle_visible`/`pin_passthrough`），`register_app_hotkeys` 改为逐条注册并汇总失败。
-- `src/App.tsx`：`PIN_HOTKEY_IDS`、`renderHotkeyRow` 通用快捷键行、「贴图」标签五项设置、全局快捷键页过滤贴图组。
+- `src-tauri/src/screenshot/mod.rs`：模块装配、`capture_config`（返回 `PinOptions` + 历史数量）、`pin_from_hotkey` / `restore_pin` / `close_all_pins` / `toggle_pins_visible` / `toggle_pins_passthrough`、`pin_hotkey_text()`、`stop()`；`set_pin_auto_copy_text` / `set_pin_auto_copy_persist` 转发。
+- `src-tauri/src/screenshot/overlay.rs`：全屏覆盖层（三 DIB 段、脏区增量重绘、辅助线、放大镜、选区翻转、标注阶段与工具栏 `Mode::Screenshot`）；`OverlayOutcome.pin` 与 `request_pin()`。
+- `src-tauri/src/screenshot/annotation.rs`：`Item`/`Document`/撤销重做（快照式 `begin_change`）/`hit_test`/绘制；`Item.bounds()` 已就绪，**尚无平移/换文本 API**。
+- `src-tauri/src/screenshot/toolbar.rs`：`Mode{Screenshot,Pin}` 两套布局与命中、`Action::Done`/`Pin`、二级栏与下拉。
+- `src-tauri/src/screenshot/pin.rs`（约 4400 行）：`screenshot-pin` 线程与指令通道；贴图 wndproc（绘制/拖动/缩放/滚轮/锁定/穿透/双击/关闭确认/右键菜单）；`PinShadow` 三态阴影（灰/蓝/金，`ShadowTone`）；旋转翻转；贴图标注（伴生工具栏小窗 `LightweightToolsetPinToolbar`）；文本选择（OCR 状态机、字符单元、离屏高亮层、`选中后自动复制`）；拖放（自绘 ghost + `ghost_thumbnail` 缩略图 + 自实现 `IDataObject`/`IDropSource`）；单测 9 条。
+- `src-tauri/src/screenshot/ocr.rs`：PP-OCRv6 small + `pure-onnx-ocr`（tract 纯 Rust）；单工作线程串行识别、按需加载、用完 drop 引擎并 `trim_working_set`；模型从 exe 同级 `ocr/`（`#[cfg(debug_assertions)]` 才回落仓库）。
+- `src-tauri/src/screenshot/{dib,save,clipboard_image}.rs`：DIB 段、PNG 编码与命名模板、剪贴板（图像 + 文本）。
+- `src-tauri/src/settings.rs` / `lib.rs`：截图/贴图设置项（含 `screenshot_pin_auto_copy_text`，默认 false）、patch 校验、`set_pin_auto_copy_persist` 注入。
+- `src-tauri/src/tools.rs`：`APP_HOTKEYS` 6 条（截图、贴图、恢复、关闭全部、隐藏显示、穿透），逐条注册并汇总失败。
+- `src/App.tsx`：截图工具页五个标签（截图/贴图/保存/标注/快捷键）、`PIN_HOTKEY_IDS`、`选中后自动复制` 开关与 `screenshot-pin-auto-copy-changed` 事件同步。
+- `src-tauri/resources/ocr/ppocr_v6_small/`：det/rec 的 `inference.onnx` + `inference.yml`（约 30MB，随安装包分发）。
+- `src-tauri/tauri.conf.json`：`bundle.resources` 把 `resources/ocr` 映射到安装目录 `ocr/`。
 
 # Verification
 
 - 2026-11-11 `v0.7.0` 发版（已发布）：
-  - 发布前：`npm run build` / `cargo check` / `cargo test --lib -- --test-threads=1`（48 passed / 2 ignored）；`npm run tauri build` 成功，安装包 33,846,940 字节。
-  - 安装验证：静默安装到 `D:\轻量化工具集`（覆盖 0.6.4），确认 `ocr/ppocr_v6_small/{det,rec}/inference.onnx` 落位、exe 版本 0.7.0（41,409,536 字节）；启动后 `Ctrl+Alt+A` 截图 → `Ctrl+Alt+P` 贴图 → OCR `ocr.ready chars=255 lines=15`，右键菜单恢复「选择所有文本」，证明 release 版从安装目录加载模型成功。
-  - 验证后已把正式版 `settings.json` 还原（截图工具仍为关闭），并重启安装版。
-  - 发布：推送 `master`（54+ 提交）、tag `v0.7.0`、Release 资产 `LightweightToolset_0.7.0_x64-setup.exe`（名称完整、GitHub 计算 digest 与本地 SHA-256 一致）、README 与仓库 About 已更新到 0.7.0。
-  - 清理：开发版数据/缓存/快捷方式、`%TEMP%\lwt-dev` 已删除，Vite 已停。
-- 2026-11-11 锁定态金色阴影（**已验收并提交 `ecc7ca2`**）：
-  - 新增 `ShadowTone { Gray, Blue, Gold }` + `shadow_tone(focused, glowing, locked)`：未激活一律灰；激活（焦点或泛光）时未锁定蓝、已锁定金；金色取 `#F2C14E`。
-  - `shadow_key` 由 `(w,h,bool,strength)` 改为 `(w,h,tone,strength)`，色调变化会触发重绘；右键「锁定」切换后立即 `shadow_sync`，蓝 ↔ 金当场生效。
-  - 实测（`%TEMP%\lwt-shadow-test.txt`）：焦点未锁定边缘取样 `R180 G202 B226`（偏蓝）→ 锁定后 `R206 G206 B197`（偏暖金）→ 解锁回到 `R180 G202 B226`；截图 `%TEMP%\lwt-shadow-blue.png` / `lwt-shadow-gold.png`。
-  - 单测：`shadow_tone` 覆盖灰/蓝/金六种组合；`cargo test --lib` **48 passed / 0 failed / 2 ignored**。
-
-- 2026-11-11 拖拽缩略图（方案 B，**已验收并提交 `ecc7ca2`**）：
-  - 做法：`ghost_show` 不再直接贴原图，新增 `ghost_thumbnail()` 生成「盒式平均缩小（长边 ≤ 220px）+ 四周淡阴影（距离平方衰减 alpha，留白 14px）」的预乘 BGRA 层；窗口尺寸 = 缩略图 + 留白，图像左上角固定在光标 +18px，鼠标穿透不变。
-  - 拖放机制未改（仍是自绘 ghost + 自实现 IDropSource），因此没有碰 `778e0a4` 的崩溃路径。
-  - 用户实机验收：**DSH、QQ 聊天、资源管理器、Chrome 四个接收方拖放全部通过，缩略图显示正常**；暂定这版，后续可优化（阴影是距离衰减不是真高斯、偏移固定）。
-  - 代码/测试：`cargo test --lib screenshot::pin` **8/8**（新增 2 条 `ghost_thumbnail` 单测：缩放后图像不透明、阴影边缘 alpha、小图不放大）；`cargo build` 通过。
-
-- 2026-11-10 贴图文本选择：**已验收并提交 `81ae1b5`**（本地 OCR + 内存策略 + 四项交互 + 「选中后自动复制」配置项）。核心实测：
-  - 识别：PP-OCRv6 small，用户样例输出与 PixPin 基本一致；540×220 稳态约 0.9s（每次重新加载模型）。
-  - 内存：OCR 测试进程 idle 7.6MB → 峰值 110–118MB → 释放后 1.6–2.2MB；App 三张开/关 WS 71–82MB，无累积。
-  - 交互：菜单「正在检测文本」占位、默认开启文本可选择、仅文字区域划词、点空白清选区、选区离屏合成无闪烁。
-  - 配置项：`screenshotPinAutoCopyText` 默认 false，右键菜单与工具页「选中后自动复制」双向同步，**同时作用于划词与「选择所有文本」**。
-  - 构建/测试：`npm run build`、`cargo check`、`cargo build` 通过；`cargo test --lib -- --test-threads=1` **45 passed / 0 failed / 2 ignored**。
-
-- 2026-11-10 贴图文本选择第四轮（全选遵循同一开关 + 文案改名）：
-  - 「选择所有文本」不再无条件复制：开关关闭时只全选（剪贴板保持 `MARKER`），打开时全选并复制（`Select All Test ABC 123`）。
-  - 文案：右键菜单与工具页统一为「**选中后自动复制**」（原「划词后自动复制」），说明文案同步为「划词或『选择所有文本』后自动复制；关闭时只选中，需要自己按 Ctrl+C」。
-  - 截图：`%TEMP%\lwt-t7-menu.png`（菜单新文案 + 全选高亮 + 已复制提示）、`lwt-t7-all-off.png`（关闭时只高亮不复制）。
-  - 构建/测试：`cargo check` / `cargo build` / `npm run build` 通过；`cargo test --lib -- --test-threads=1` **45 passed / 0 failed / 2 ignored**。
-  - 收工状态：dev pid 18692（`%TEMP%\lwt-dev`），设置 `screenshotPinAutoCopyText=false`（默认），热键 `CTRL+ALT+A/P/X/H/R`。
-
-- 2026-11-10 贴图文本选择第三轮（本地 OCR + 内存/交互/配置项，**待用户验收、未提交**）：
-  - 构建/测试：`cargo check`（4 条既有告警）、`cargo build`、`npm run build` 全通过；`cargo test --lib -- --test-threads=1` **45 passed / 0 failed / 2 ignored**。
-  - 内存（OCR 子系统，测试进程实测）：idle 7.6MB → 识别峰值 **110–118MB** → 释放后 **1.6–2.2MB**；三轮不累积。
-  - 内存（App 实测，三张开/关循环）：开贴图 ~74–82MB WS，关闭后 **71–72MB WS / 15MB private**，三轮无增长；模型已外置（exe 从 90MB 降到 59MB），OCR 工作线程用完即丢引擎。
-  - 交互：默认「划词后自动复制」关闭 → 拖选后剪贴板保持原值（MARKER）、选区留存；右键菜单切到开 → 再拖选即复制（`election Tes`）；点贴图内空白处 → 选区消失（截图 `lwt-ocr-t5-cleared.png`）；右键菜单新项「划词后自动复制」默认未勾选；工具页「贴图 → 划词后自动复制」开关点击后 settings.json 同步 true/false。
-  - 截图：`%TEMP%\lwt-ui-menu2.png`（菜单含新项）、`lwt-ui-pin-tab.png`（工具页开关）、`lwt-ocr-t5-selected.png` / `lwt-ocr-t5-cleared.png`。
-  - 收工状态：dev pid 5440（`%TEMP%\lwt-dev`，模型已复制到 `%TEMP%\lwt-dev\ocr`），Vite 在跑，热键 `CTRL+ALT+A/P/X/H/R`。
-
-- 2026-11-09 贴图标注工具栏（已提交 `d32b36f`，用户验收通过；开发已暂停）：
-  - 提交前检查：`npm run build` 通过；`cargo check` 通过（4 条既有告警）；全量串行 `cargo test --lib` **38 passed / 3 failed**——3 条均为 `window_pinner` 沙箱写 `%TEMP%` 失败，与本次无关；`cargo test --lib screenshot::` 23/23。
-  - 注入实测（热键临时改 `CTRL+ALT+SHIFT+A/P` 避开安装版）：900×600 贴图进标注 → 点形状组 → 小窗 1017×112（二级栏 8 色全见）→ 拖红框（`items=1`）→ 对勾退出、工具栏销毁、红框留存；320×240 贴图工具栏完整不被裁切；贴屏幕底部（700,1380–1000,1540）的贴图工具栏翻到上方；右键菜单「标注/隐藏标注」解禁后可点。
-  - 截图：`%TEMP%\lwt-pin-tb8-c.png`、`lwt-pin-tb6-c.png`、`lwt-pin-tb10-a.png`、`lwt-pin-menu.png`。
-  - 未验证：文字/序号/马赛克绘制、线型/箭头下拉、滚轮调数值、删除模式、拖动时小窗跟随。
-  - 收工状态：开发版进程与 Vite `:1420` 已关闭（只剩安装版 `D:\轻量化工具集` 两个进程）；开发版热键已恢复 `CTRL+ALT+A/P/X/H/R`。
-
-- 2026-11-08 S3 第二轮自检（`9c72761`）：
-  - `npm run build`、`cargo check`、`cargo test --lib screenshot::` 23/23 通过。
-  - 注入实测：贴图不再上下颠倒；按下贴图到窗口可见 80–125 ms；滚轮 `600,400` 起点不动（400×296 → 440×326）；阴影三态截图确认（淡蓝泛光 / 失焦灰 / 焦点淡蓝）；`WM_COMMAND` 11/12/14/40/20/50 分别验证右旋 400×296→296×400 且左上不动、重置、阴影 1→0→1、复制进剪贴板 400×296、菜单关闭销毁窗口；关闭全部与恢复上一次关闭正常（恢复用 `CTRL+ALT+J` 验证，因本机 R 被其它软件占用）。
-  - 排查记录：关闭一度全部失效，实为开发版「关闭前确认」开着、pin 线程堆了 4 个 `MessageBoxW` 模态框；把该设置关掉后恢复正常，不是代码缺陷。
-- 2026-11-08 S3 首轮自检（`cd1052a`）：
-  - 构建：`npm run build` 通过；`cargo check` 通过（仅既有 2 条 `unused_mut` + 1 条 annotation 死代码告警）；`cargo test --lib screenshot::` **23/23**；全量串行 38 passed / 3 failed（`window_pinner` 三条均为沙箱写 `%TEMP%` 失败，与本次无关）。
-  - 端到端（提权 PowerShell 注入）：`Ctrl+Alt+Shift+A` 覆盖层 → 拖选 → `Ctrl+Alt+P` 贴图：贴图窗口矩形与选区完全一致（400×320），**没有抢走前台焦点**；拖动 +120/+90 精确跟随；滚轮 400×300 → 440×330（110%）以中心缩放；`Ctrl+Alt+X` 关闭全部生效。
-  - `pin_restore` 与原尺寸恢复（500,350,900,670 一致）；`pin_toggle_visible` 隐藏 `IsWindowVisible=False`、再按恢复；`pin_passthrough` 扩展样式 `0x800A8`（LAYERED|TRANSPARENT|TOOLWINDOW|TOPMOST）。
-  - 锁定类型=全部锁定时拖动位移为 0；双击动作=关闭时双击后窗口数 1→0；保留数量=2 时历史 `.png`/`.meta` 都只剩 2 份。
-  - 工具栏截图确认：14 个按钮、图钉图标在最右、栏宽与图标间距正常。
-- **未测**：双击动作=复制、关闭前确认的弹窗、阴影关闭（`LightweightToolsetPinFlat` 类）、无覆盖层时按贴图钉「最近一次截图」、历史浏览。
-- 历史基线与既有验证（S1/S2）见 `progress.md` 与 `archive/`。
-
-# 现场交接（2026-11-10 19:27，换新会话前记录）
-
-- HEAD `22542d4`；工作树只剩既有三项（`window_pinner.rs`、`window_service.rs`、`.codex/`），无未提交功能代码。
-- 开发环境已关闭（切换会话前）：开发版进程已结束，Vite `:1420` 无监听；只剩安装版 `11732`、`17968`（`D:\轻量化工具集`）在跑。新会话需按固定流程重启。
-- Vite：已停止；新会话先起 `npm run dev`（:1420）。
-- 开发版热键已恢复：`CTRL+ALT+A/P/X/H/R`（`pin_restore` 仍被其它软件占用，测试用 `CTRL+ALT+J`）。
-- 下一件事（用户已定：**先讨论、不要直接动工**）：贴图文本选择（右键「选择所有文本」「文本可选择」仍置灰），开工前必须先和用户确认 OCR 方案（系统 Windows OCR vs 本地 OCR 模型）。
-- 用户已明确「贴图历史浏览界面」暂缓不做。
+  - 发布前：`npm run build` / `cargo check` / `cargo test --lib -- --test-threads=1`（48 passed / 2 ignored）；`npm run tauri build` 成功。
+  - 安装验证：静默安装覆盖 `D:\轻量化工具集`；`ocr/ppocr_v6_small/{det,rec}/inference.onnx` 落位、exe 0.7.0（41,409,536 字节）；`Ctrl+Alt+A` 截图 → `Ctrl+Alt+P` 贴图 → OCR `ocr.ready chars=255 lines=15`、菜单恢复「选择所有文本」，证明 release 从安装目录加载模型成功。
+  - 验证后已还原正式版 `settings.json`（截图工具保持关闭）并重启安装版；测试产生的 `screenshot/` 数据已删除。
+  - 发布：推送 `master`、tag `v0.7.0`、Release 资产 `LightweightToolset_0.7.0_x64-setup.exe`（名称完整、digest 与本地 SHA-256 一致）、README 与 About 更新到 0.7.0。
+- 截图功能逐轮验证记录（S1/S2/S3、贴图标注、文本选择、缩略图、金色阴影）见 `archive/2026-11-11-screenshot-progress.md`。
 
 # Blockers
 
-- 无阻塞。贴图文本选择（本地 OCR + 内存策略 + 交互 + 配置项）已验收并提交 `81ae1b5`。
+- 无阻塞。项目处于已发版稳定状态（v0.7.0）。
 
 # Next Action
 
-- 项目处于已发版稳定状态（v0.7.0），工作树只剩既有三项；无待提交内容。
-- 后续候选：标注拖动/文本再编辑（用户定为后续扩展项，建议拆「选中+拖动」→「文本双击再编辑」→「控制点缩放」三档）；拖拽缩略图观感优化；其他工具快捷键迁移到各自工具页；贴图历史浏览（暂缓）。
-- 恢复开发：`npm run dev` → `cargo build` → `%TEMP%\lwt-elevate.ps1`（内部复制 exe 与 `resources\ocr` 到 `%TEMP%\lwt-dev`）；注意发版清理已删除这些脚本依赖的目录，launch 脚本会自动重建。
+- 当前无待办；等用户指定下一批。候选见 `progress.md`「待办」：标注拖动/文本再编辑（三档）、缩略图观感优化、其他工具快捷键迁移、贴图历史浏览（暂缓）。
+- 恢复开发：`npm run dev`（:1420）→ `cargo build` → 用 `%TEMP%\lwt-elevate.ps1`（内部 `lwt-dev-launch.ps1` 重建 `%TEMP%\lwt-dev` 并复制 `resources\ocr`）→ `%TEMP%\lwt-dev-shot8.ps1` 截图核对页面。
