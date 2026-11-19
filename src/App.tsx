@@ -2264,21 +2264,13 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
                 <p>贴图历史存在截图数据目录，超出后自动删掉最旧的</p>
               </div>
               <div className="settings-inline">
-                <input
-                  aria-label="贴图历史保留数量"
-                  className="settings-input mono narrow"
-                  max={100}
-                  min={1}
-                  onChange={(event) => {
-                    const next = Number(event.currentTarget.value);
-                    if (Number.isFinite(next) && next >= 1 && next <= 100) {
-                      void updateSettings({ screenshotPinHistory: Math.round(next) });
-                    }
-                  }}
-                  type="number"
+                <CountPicker
+                  align="end"
+                  ariaLabel="贴图历史保留数量"
+                  limits={WINDOW_PIN_LIMITS}
+                  onChange={(value) => void updateSettings({ screenshotPinHistory: value })}
                   value={pinHistory}
                 />
-                <span className="settings-unit">张</span>
               </div>
             </div>
             <p className="settings-note">贴图窗口始终置顶：可拖动移动、拖边角缩放、滚轮缩放；右键或 Esc 关闭。</p>
@@ -2758,6 +2750,77 @@ function HotkeyRowEditor({
   );
 }
 
+/// 数量档位选择器：默认显示当前值，悬停/聚焦展开档位，支持拖动滑块与点选。
+/// 窗口置顶「最大数量」与截图「历史保留数量」共用同一实现。
+function CountPicker({
+  align = "center",
+  ariaLabel,
+  limits,
+  onChange,
+  value,
+}: {
+  align?: "center" | "end";
+  ariaLabel: string;
+  limits: readonly number[];
+  onChange: (value: number) => void;
+  value: number;
+}) {
+  const optionsRef = useRef<HTMLDivElement | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const foundIndex = limits.indexOf(value);
+  // 历史值可能不在档位上（旧输入框允许 1–100），定位到最近的档位，但显示保持真实值。
+  const activeIndex = foundIndex >= 0
+    ? foundIndex
+    : limits.reduce((best, limit, index) => Math.abs(limit - value) < Math.abs(limits[best] - value) ? index : best, 0);
+
+  function indexAt(clientX: number) {
+    const rect = optionsRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return 0;
+    }
+    return Math.max(0, Math.min(limits.length - 1, Math.floor(((clientX - rect.left) / rect.width) * limits.length)));
+  }
+
+  return (
+    <div className={`window-pinner-limit-stage ${align === "end" ? "align-end" : ""}`}>
+      <div className="window-pinner-limit-picker" aria-label={`${ariaLabel}，当前 ${value}`} tabIndex={0}>
+        <strong>{value}</strong>
+        <div className="window-pinner-limit-options" ref={optionsRef}>
+          <span
+            className={`window-pinner-limit-slider ${dragIndex !== null ? "dragging" : ""}`}
+            onPointerCancel={() => setDragIndex(null)}
+            onPointerDown={(event) => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setDragIndex(indexAt(event.clientX)); }}
+            onPointerMove={(event) => { if (dragIndex !== null) setDragIndex(indexAt(event.clientX)); }}
+            onPointerUp={(event) => {
+              if (dragIndex === null) {
+                return;
+              }
+              const index = indexAt(event.clientX);
+              setDragIndex(null);
+              event.currentTarget.releasePointerCapture(event.pointerId);
+              onChange(limits[index]);
+            }}
+            style={{ transform: `translateX(${(dragIndex ?? activeIndex) * 100}%)` }}
+          >
+            {dragIndex !== null ? limits[dragIndex] : value}
+          </span>
+          {limits.map((limit) => (
+            <button
+              aria-pressed={value === limit}
+              className={value === limit ? "active" : ""}
+              key={limit}
+              onClick={(event) => { event.currentTarget.blur(); onChange(limit); }}
+              type="button"
+            >
+              {limit}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HotkeySettings({
   appHotkeys,
   setSnapshot,
@@ -2902,10 +2965,8 @@ function WindowPinnerToolPage({ appHotkeys, setAppSnapshot, tool, tools }: {
   tools: Tool[];
 }) {
   const [snapshot, setSnapshot] = useState<WindowPinnerSnapshot | null>(null);
-  const [dragLimitIndex, setDragLimitIndex] = useState<number | null>(null);
   const [hotkeyNotice, setHotkeyNotice] = useState<HotkeyNotice | null>(null);
   const [hotkeyNoticeClosing, setHotkeyNoticeClosing] = useState(false);
-  const limitOptionsRef = useRef<HTMLDivElement | null>(null);
   const { pushToast } = useToastQueue();
   // 快捷键已迁到本页工具栏，需读实时 tools 才能在保存后立即刷新。
   const currentHotkey = tools.find((item) => item.id === "window_pinner")?.hotkey ?? tool.hotkey;
@@ -2957,16 +3018,6 @@ function WindowPinnerToolPage({ appHotkeys, setAppSnapshot, tool, tools }: {
     } catch (error) { setSnapshot(previous); pushToast(String(error)); }
   }
 
-  function limitIndexAt(clientX: number) {
-    const rect = limitOptionsRef.current?.getBoundingClientRect();
-    if (!rect) return 0;
-    return Math.max(0, Math.min(4, Math.floor(((clientX - rect.left) / rect.width) * 5)));
-  }
-
-  function startLimitDrag(event: ReactPointerEvent<HTMLSpanElement>) { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setDragLimitIndex(limitIndexAt(event.clientX)); }
-  function moveLimitDrag(event: ReactPointerEvent<HTMLSpanElement>) { if (dragLimitIndex !== null) setDragLimitIndex(limitIndexAt(event.clientX)); }
-  function finishLimitDrag(event: ReactPointerEvent<HTMLSpanElement>) { if (dragLimitIndex === null) return; const index = limitIndexAt(event.clientX); void saveMaxPins(WINDOW_PIN_LIMITS[index]); setDragLimitIndex(null); event.currentTarget.releasePointerCapture(event.pointerId); }
-
   async function unpin(hwnd: number) {
     setSnapshot(await invoke<WindowPinnerSnapshot>("window_pinner_unpin", { hwnd }));
     pushToast("已取消窗口置顶");
@@ -2993,7 +3044,7 @@ function WindowPinnerToolPage({ appHotkeys, setAppSnapshot, tool, tools }: {
             setSnapshot={setAppSnapshot}
           />
         </span>
-        <div className="window-pinner-limit"><span>最大数量</span><div className="window-pinner-limit-stage"><div className="window-pinner-limit-picker" tabIndex={0} aria-label={`最大置顶数量，当前 ${snapshot?.maxPins ?? 10}`}><strong>{snapshot?.maxPins ?? 10}</strong><div className="window-pinner-limit-options" ref={limitOptionsRef}><span className={`window-pinner-limit-slider ${dragLimitIndex !== null ? "dragging" : ""}`} onPointerDown={startLimitDrag} onPointerMove={moveLimitDrag} onPointerUp={finishLimitDrag} onPointerCancel={() => setDragLimitIndex(null)} style={{ transform: `translateX(${(dragLimitIndex ?? WINDOW_PIN_LIMITS.indexOf((snapshot?.maxPins ?? 10) as typeof WINDOW_PIN_LIMITS[number])) * 100}%)` }}>{WINDOW_PIN_LIMITS[dragLimitIndex ?? WINDOW_PIN_LIMITS.indexOf((snapshot?.maxPins ?? 10) as typeof WINDOW_PIN_LIMITS[number])]}</span>{WINDOW_PIN_LIMITS.map((value) => <button aria-pressed={snapshot?.maxPins === value} className={snapshot?.maxPins === value ? "active" : ""} key={value} onClick={(event) => { event.currentTarget.blur(); void saveMaxPins(value); }} type="button">{value}</button>)}</div></div></div></div>
+        <div className="window-pinner-limit"><span>最大数量</span><CountPicker ariaLabel="最大置顶数量" limits={WINDOW_PIN_LIMITS} onChange={(value) => void saveMaxPins(value)} value={snapshot?.maxPins ?? 10} /></div>
         <button className="secondary-action danger" disabled={!snapshot?.windows.length} onClick={() => void unpinAll()} type="button"><Pin size={13} />全部取消</button>
       </div>
       <div className="window-pinner-list">

@@ -18,6 +18,7 @@
 - `src/App.tsx`：新增 `HotkeyRowTarget` / `HotkeyRowEditor`（录制、格式校验、冲突检查、`suspend/resume_tool_hotkeys`、保存与停用），`toHotkeyRowTarget` 供全局页转换条目；`HotkeySettings` 去掉剪贴板分组但保留它参与冲突检查；`ScreenshotToolPage` 与 `ClipboardToolPage` 均改用该组件。
 - `src/App.tsx` 剪贴板侧：`ClipboardToolPage` 新增 `appHotkeys`/`tools`/`setAppSnapshot` 入参、`hotkeyNotice` 提示与 `hotkeyTargets` 冲突列表、`currentHotkey` 从实时 `tools` 取值；`ClipboardSettingsDialog` 改为接收 `tool`/`hotkeyTargets`/`setSnapshot`/`onNotice`，内嵌快捷键行。
 - `src/App.tsx` 窗口置顶侧：`WindowPinnerToolPage` 改为接收 `appHotkeys`/`tools`/`setAppSnapshot`，工具栏「快捷键」后直接内嵌 `HotkeyRowEditor`（`hideTitle` 紧凑模式），删除跳转全局快捷键页的齿轮按钮；空状态文案改用实时 `currentHotkey`。`ToolPage` 不再需要 `onOpenSettingsTab`，已从签名与调用点移除。
+- 2026-11-19 新增 `CountPicker`（数量档位选择器）：显示当前值的胶囊 + 悬停/聚焦展开的档位轨道，支持拖动滑块与点选；窗口置顶「最大数量」与截图「历史保留数量」共用，档位 `WINDOW_PIN_LIMITS = [1,5,10,15,20]`；`align="end"` 用于贴近右缘时向左展开。截图侧原数字输入框与「张」后缀已删除，存储仍为 `screenshotPinHistory`。
 - `HotkeyRowEditor` 增加 `hideTitle?: boolean`：为 true 时只渲染 `.hotkey-inline-controls` 控件，不渲染标题与整行留白（供工具栏类紧凑位置使用）。
 - `HotkeyRowEditor` 录制 UI（2026-11-19 改版）：单一 `.hotkey-box`（高 30、`padding: 0 8px`、**不设 min-width**，宽度完全随内容），三态靠边框线型与颜色区分——有值=2px 深灰实线 `#8b98aa`，未配置=同色**虚线** + 次要文字色，录制中=主色实线 + 主色文字 + 3px 蓝色光晕；右侧**只有一个按钮**：常态铅笔（进入录制），录制态换成垃圾桶（删除快捷键）。保存/取消按钮已删除，录制框失焦即 `saveHotkey()` 自动校验保存，空草稿只退出不报错。
 - `src/App.css`：`.clipboard-settings-dialog` 保持固定 400px（不随内容增高）；`.clipboard-modal-body` 允许内部滚动但隐藏滚动条（`scrollbar-width: none` + `::-webkit-scrollbar` 0 宽）；`.clipboard-hotkey-section` 只留分隔线与间距，行本身与全局/截图页一致的横向单行；`.settings-section.hotkey-settings .hotkey-row` 上下 padding 收到 6px，消除「行很高但只有一行字」的空旷感（曾试过 `align-content: start` / `display: block`，实测该页不存在网格拉伸，已删除这两条死规则）；已删除 `.clipboard-settings-summary`。
@@ -38,6 +39,10 @@
 
 # Verification
 
+- 2026-11-19 截图「历史保留数量」改为档位选择器（本轮）：
+  - `CountPicker` 从窗口置顶的「最大数量」抽成共享组件，两处复用 `WINDOW_PIN_LIMITS = [1,5,10,15,20]`；截图侧原数字输入框与「张」后缀删除；
+  - 实机验证：贴图标签显示胶囊「20」，悬停后向左展开 1/5/10/15/20 五档；点击 10 档写入 `settings.json` 的 `screenshotPinHistory`，控件即时刷新；验证后已改回默认 20；
+  - 修复贴近窗口右缘时档位被裁切的问题：新增 `align="end"` 变体（`left:auto; right:0`），截图侧使用。
 - 2026-11-19 快捷键框外观定稿（本轮）：边框 2px `#8b98aa`（空态同色虚线）、`padding` 8px、**去掉 min-width** 让宽度真正随内容变化（`CTRL+Q` 明显短于 `CTRL+ALT+A`）；三态实机核对：有值实线 / 未配置虚线 / 录制蓝框+光晕，均清晰可辨。
   - `npm run build` 通过；开发版实机三态外观核对：有值（CTRL+ALT+T + 铅笔）、未配置（剪贴板弹窗「未配置快捷键」虚线边框 + 铅笔）、录制中（「按下快捷键」主色边框 + 垃圾桶）；
   - 录制 `CTRL+ALT+Y` 后点空白处失焦 → 自动保存并提示「窗口置顶 已更新为 CTRL+ALT+Y」，`settings.json` 同步；

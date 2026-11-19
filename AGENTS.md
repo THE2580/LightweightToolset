@@ -46,6 +46,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 默认最小改动：复用现有工具注册、`AppState`、`push_debug_log`、全局 Toast/Tooltip、`SegmentedControl` 等既有实现；不做无关重构。
 - 修 bug 先找共享入口与根因，同时检查同类 sibling 路径。
 - 前端只通过现有 Tauri command 取数；新增能力先加 Rust command 与 capability，再在前端调用。
+- 数量档位控件统一用 `CountPicker`（窗口置顶「最大数量」与截图「历史保留数量」共用）：档位由 `limits` 传入，靠近右缘时用 `align="end"` 向左展开；不要再为这类“几档数值”另写数字输入框。
 - Rust 错误统一转 `String` 返回给前端；日志走 `push_debug_log`，不要 `println!` 留生产噪声。
 
 ## 快捷键设置约定
