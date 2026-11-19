@@ -1,16 +1,27 @@
 # Scope
 
 - 工具集已含七个工具：**截图与贴图**（第一版，`v0.7.0` 发布）、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。
+- **快捷键入口迁移与录制 UI 改版已完成（2026-11-19，用户已验收）**：剪贴板、窗口置顶的快捷键都迁到各自设置页/工具页，全局设置只剩「呼出主窗口」；录制逻辑集中到 `HotkeyRowEditor`（四处在用，`hideTitle` 供工具栏）；录制框单框单按钮、失焦自动保存、外观按 2px 边框 / 宽度随内容 / 空态虚线 / 录制态主色 + 光晕定稿。
+- 开发版默认值：静默启动默认关闭（代码默认值 + 本机 `settings.json` 均为 false）。
 - 截图与贴图范围：区域截图（原生覆盖层/放大镜取色/辅助线/压暗）、12 种标注与二级栏、贴图窗口（拖动/缩放/锁定/穿透/阴影/右键图像处理）、贴图标注（窗口外伴生工具栏、文字与序号）、贴图文本选择（本地 OCR）、超级拖放与跟踪缩略图。
 - 明确不在本版：标注拖动/文本再编辑、贴图历史浏览界面（暂缓）、系统级 DragImage 缩略图。
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD **`b5775dc`**（`feat: release screenshot tool v0.7.0`），tag **`v0.7.0`** 已推送，Release 已发布；远程与本地一致，工作树只剩既有三项。
-- 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（纯 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）、`?? .codex/`。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD **`5397dc3`**（`docs: tidy project constraints and memory for v0.7.0`），发布提交 `b5775dc`，tag `v0.7.0` 已推送，远程与本地一致。
+- 本次改动已提交（HEAD，**未推送**）：`feat: move tool hotkeys into their own settings and rework recorder`。工作树只剩既有三项。
+- 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（rustfmt 重排，非逻辑改动）、`M src-tauri/src/window_pinner.rs`（CRLF 换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
 # Active Files
+
+- `src/App.tsx`：新增 `HotkeyRowTarget` / `HotkeyRowEditor`（录制、格式校验、冲突检查、`suspend/resume_tool_hotkeys`、保存与停用），`toHotkeyRowTarget` 供全局页转换条目；`HotkeySettings` 去掉剪贴板分组但保留它参与冲突检查；`ScreenshotToolPage` 与 `ClipboardToolPage` 均改用该组件。
+- `src/App.tsx` 剪贴板侧：`ClipboardToolPage` 新增 `appHotkeys`/`tools`/`setAppSnapshot` 入参、`hotkeyNotice` 提示与 `hotkeyTargets` 冲突列表、`currentHotkey` 从实时 `tools` 取值；`ClipboardSettingsDialog` 改为接收 `tool`/`hotkeyTargets`/`setSnapshot`/`onNotice`，内嵌快捷键行。
+- `src/App.tsx` 窗口置顶侧：`WindowPinnerToolPage` 改为接收 `appHotkeys`/`tools`/`setAppSnapshot`，工具栏「快捷键」后直接内嵌 `HotkeyRowEditor`（`hideTitle` 紧凑模式），删除跳转全局快捷键页的齿轮按钮；空状态文案改用实时 `currentHotkey`。`ToolPage` 不再需要 `onOpenSettingsTab`，已从签名与调用点移除。
+- `HotkeyRowEditor` 增加 `hideTitle?: boolean`：为 true 时只渲染 `.hotkey-inline-controls` 控件，不渲染标题与整行留白（供工具栏类紧凑位置使用）。
+- `HotkeyRowEditor` 录制 UI（2026-11-19 改版）：单一 `.hotkey-box`（高 30、`padding: 0 8px`、**不设 min-width**，宽度完全随内容），三态靠边框线型与颜色区分——有值=2px 深灰实线 `#8b98aa`，未配置=同色**虚线** + 次要文字色，录制中=主色实线 + 主色文字 + 3px 蓝色光晕；右侧**只有一个按钮**：常态铅笔（进入录制），录制态换成垃圾桶（删除快捷键）。保存/取消按钮已删除，录制框失焦即 `saveHotkey()` 自动校验保存，空草稿只退出不报错。
+- `src/App.css`：`.clipboard-settings-dialog` 保持固定 400px（不随内容增高）；`.clipboard-modal-body` 允许内部滚动但隐藏滚动条（`scrollbar-width: none` + `::-webkit-scrollbar` 0 宽）；`.clipboard-hotkey-section` 只留分隔线与间距，行本身与全局/截图页一致的横向单行；`.settings-section.hotkey-settings .hotkey-row` 上下 padding 收到 6px，消除「行很高但只有一行字」的空旷感（曾试过 `align-content: start` / `display: block`，实测该页不存在网格拉伸，已删除这两条死规则）；已删除 `.clipboard-settings-summary`。
+- `src/App.tsx` 快捷键行：`HotkeyRowTarget` 只保留 `id`/`name`/`hotkey`，组件不再渲染说明文字，`hotkeyDescription()` 已删除。
 
 - `src-tauri/src/screenshot/mod.rs`：模块装配、`capture_config`（返回 `PinOptions` + 历史数量）、`pin_from_hotkey` / `restore_pin` / `close_all_pins` / `toggle_pins_visible` / `toggle_pins_passthrough`、`pin_hotkey_text()`、`stop()`；`set_pin_auto_copy_text` / `set_pin_auto_copy_persist` 转发。
 - `src-tauri/src/screenshot/overlay.rs`：全屏覆盖层（三 DIB 段、脏区增量重绘、辅助线、放大镜、选区翻转、标注阶段与工具栏 `Mode::Screenshot`）；`OverlayOutcome.pin` 与 `request_pin()`。
@@ -27,6 +38,25 @@
 
 # Verification
 
+- 2026-11-19 快捷键框外观定稿（本轮）：边框 2px `#8b98aa`（空态同色虚线）、`padding` 8px、**去掉 min-width** 让宽度真正随内容变化（`CTRL+Q` 明显短于 `CTRL+ALT+A`）；三态实机核对：有值实线 / 未配置虚线 / 录制蓝框+光晕，均清晰可辨。
+  - `npm run build` 通过；开发版实机三态外观核对：有值（CTRL+ALT+T + 铅笔）、未配置（剪贴板弹窗「未配置快捷键」虚线边框 + 铅笔）、录制中（「按下快捷键」主色边框 + 垃圾桶）；
+  - 录制 `CTRL+ALT+Y` 后点空白处失焦 → 自动保存并提示「窗口置顶 已更新为 CTRL+ALT+Y」，`settings.json` 同步；
+  - 录制态点垃圾桶 → 提示「快捷键已停用」，`settings.json` 中该键清空、框回到「未配置快捷键」；
+  - 验证后已把窗口置顶快捷键改回默认 `CTRL+ALT+T`。
+- 2026-11-19 窗口置顶快捷键迁移（本轮）：
+  - `npm run build` 通过；开发版实机：工具栏显示「快捷键 CTRL+ALT+T ✎ 🗑 | 最大数量 | 全部取消」，录制 `CTRL+ALT+Y` 保存后提示「窗口置顶 已更新为 CTRL+ALT+Y」，`settings.json` 同步；
+  - 全局「设置 → 快捷键」只剩「软件 → 呼出主窗口」，窗口置顶分组已移除；
+  - 验证后已把窗口置顶快捷键改回默认 `CTRL+ALT+T`。
+- 2026-11-19 剪贴板快捷键入口迁移（本轮）：
+  - `npm run build` 通过（tsc + vite）。Rust 未改动，未跑 `cargo check`。
+  - 开发版实机：`npm run dev`(:1420) → 提权启动 `%TEMP%\lwt-dev` 副本（pid 14776，来自该目录）→ 页面正常加载。
+  - 剪贴板页「设置」弹窗：全局监听/四项设置后接「剪贴板快捷弹窗」行，摘要行与「快捷键设置」跳转按钮均已消失。
+  - **UI 返工（用户验收意见）**：弹窗恢复固定 400px、内容区可滚动但隐藏滚动条；快捷键行去掉说明文字、恢复横向单行（全局页/截图页/剪贴板弹窗三处一致）。
+  - 录制 `CTRL+ALT+U` → 保存 → 弹「快捷键已保存」提示（层级在设置弹窗之上）→ 行内即时刷新为新键，无需刷新页面；`settings.json` 中 `hotkeys.clipboard` 同步为 `CTRL+ALT+U`。
+  - 全局设置「快捷键」标签：只剩「软件」（呼出主窗口）与「窗口置顶」两组，剪贴板分组已移除。
+  - 截图工具页「快捷键」标签回归：截图/贴图/恢复/关闭全部/隐藏显示/鼠标穿透 6 行显示正常。
+  - 测试后已停用截图工具；开发版当前状态：剪贴板启用、快捷键 `CTRL+ALT+U`（测试值，非默认 `CTRL+ALT+V`）。
+- 2026-11-19 开发版静默启动默认关闭：`cargo build` 通过（仅既有 4 条 warning）；开发版数据目录内 `silentStart=false`；重启后**不借助任何 show 调用**探测到窗口 `visible=True`，页面正常。
 - 2026-11-11 `v0.7.0` 发版（已发布）：
   - 发布前：`npm run build` / `cargo check` / `cargo test --lib -- --test-threads=1`（48 passed / 2 ignored）；`npm run tauri build` 成功。
   - 安装验证：静默安装覆盖 `D:\轻量化工具集`；`ocr/ppocr_v6_small/{det,rec}/inference.onnx` 落位、exe 0.7.0（41,409,536 字节）；`Ctrl+Alt+A` 截图 → `Ctrl+Alt+P` 贴图 → OCR `ocr.ready chars=255 lines=15`、菜单恢复「选择所有文本」，证明 release 从安装目录加载模型成功。
@@ -40,5 +70,6 @@
 
 # Next Action
 
-- 当前无待办；等用户指定下一批。候选见 `progress.md`「待办」：标注拖动/文本再编辑（三档）、缩略图观感优化、其他工具快捷键迁移、贴图历史浏览（暂缓）。
-- 恢复开发：`npm run dev`（:1420）→ `cargo build` → 用 `%TEMP%\lwt-elevate.ps1`（内部 `lwt-dev-launch.ps1` 重建 `%TEMP%\lwt-dev` 并复制 `resources\ocr`）→ `%TEMP%\lwt-dev-shot8.ps1` 截图核对页面。
+- 快捷键这批已完成、已验收、已提交（HEAD，未推送）；等你决定是否推送。
+- 恢复开发：`npm run dev`（:1420）→ `cargo build`（改过 Rust 时）→ **直接** `powershell -Command "Start-Process powershell -Verb RunAs -ArgumentList ... -File %TEMP%\lwt-dev-launch.ps1"`（不要用 `cmd start` 包一层，见 `bugs.md`）→ `%TEMP%\lwt-ui.ps1` 注入点击并截图核对。
+- 未做的待办见 `progress.md`：静默启动托盘唤起失效（用户要求稍后）、标注拖动/文本再编辑、缩略图观感、贴图历史浏览（暂缓）。

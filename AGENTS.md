@@ -48,6 +48,14 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 前端只通过现有 Tauri command 取数；新增能力先加 Rust command 与 capability，再在前端调用。
 - Rust 错误统一转 `String` 返回给前端；日志走 `push_debug_log`，不要 `println!` 留生产噪声。
 
+## 快捷键设置约定
+
+- 工具快捷键的配置入口放在**该工具自己的页面/设置页里**，全局设置只保留软件级动作（目前只有「呼出主窗口」）。新增带快捷键的工具：后端在 `tools.rs` 注册 `supportsHotkey`，前端在其页面渲染一行 `HotkeyRowEditor`，不要复制录制逻辑；同时在全局 `HotkeySettings` 的分组里排除该工具，但**保留它参与冲突检查**。
+- `HotkeyRowEditor`（`src/App.tsx`）是唯一的快捷键录制实现，全局页、截图页、剪贴板设置弹窗、窗口置顶工具栏共用；工具栏这类紧凑位置用 `hideTitle` 只渲染控件部分。
+- 录制交互固定为「单框 + 单按钮」：常态显示当前键（或「未配置快捷键」）+ 铅笔，录制态显示「按下快捷键」+ 垃圾桶；**不设保存/取消按钮**，录制框失焦即自动校验保存，空草稿静默退出。
+- 录制框 `.hotkey-box` 的视觉口径：宽度随内容（不设 `min-width`）、2px 边框；有值实线、未配置虚线、录制中主色 + 光晕。
+- 工具页内保存快捷键后必须从实时 `tools` 读 `hotkey`：`activeTool` 是导航时的快照，不会随保存刷新。
+
 ## 硬性约束（禁止事项）
 
 - 未经用户明确要求：不提交、不推送、不发布。开发版除外：按「验证方式」的固定动作，每次改动完成即主动启动供用户测试，不需等待用户指示。
@@ -80,7 +88,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 | 项 | 正式版 | 开发版 |
 |---|---|---|
 | 开机自启 | 默认关闭，可开关 | 默认关闭，**开关锁定、不可点** |
-| 静默启动 | 默认关闭，可开关 | 默认**开启**，可开关 |
+| 静默启动 | 默认关闭，可开关 | 默认关闭，可开关 |
 | 主窗口始终置顶 | 默认关闭，可开关 | 默认**开启**，可开关 |
 | 开发者模式 | 默认关闭，可开关 | 默认**开启**，**开关锁定、不可点** |
 | 工具启用 | 剪贴板、快捷键提示默认开启 | **全部工具默认关闭** |
@@ -155,10 +163,11 @@ Remove-Item -Recurse -Force "$env:TEMP\lwt-dev" -ErrorAction SilentlyContinue
 - **启动开发版必须逐项自检（固定动作，禁止盲测）**：每次启动开发版前后都要核对：① `netstat` 确认 1420 在监听，并实际请求 `http://localhost:1420` 返回 200；② 结束所有 `%TEMP%\lwt-dev` 旧实例，确认 exe 复制成功（出现 Device busy 说明旧进程未退，不得继续）；③ 启动后核对进程路径确实来自 `%TEMP%\lwt-dev`；④ 确认窗口能正常加载页面——页面空白时先查 Vite/WebView，不得继续做热键或功能测试；⑤ 截图测试使用实际注册成功的热键；为排查临时改过热键，必须改回并重启；⑥ 不得凭“可能被安装版占用”臆测热键失效，要以实际注册结果/日志为准。
 
 - 前端/Build：`npm run build` 无 TS 错误与 Vite 构建错误。
+- 快捷键入口改动：确认全局设置不再列出该工具、工具页/设置页内能录制、失焦自动保存、删除可用、冲突提示正常。
 - Rust：`cargo check` 通过；改动模块的单测通过，全量用 `--test-threads=1`（`input_monitor` 等测试共享全局按键状态，并行会偶发失败）。
 - 运行时/UI 变更：需在 Windows 真机验证；应用为管理员权限，测试高完整性窗口按键时注意同 App ID 的已安装版干扰（开发版已隔离标识，两者可同时运行）。
 - 开机自启改动：需在正式版上真实验证一次「注销/重启 → 登录后自动启动」；可用 `schtasks /Query /TN LightweightToolset /XML` 核对 `HighestAvailable`、`InteractiveToken`、`ExecutionTimeLimit=PT0S`。注意运行中的安装版不要随意结束进程。
-- 开发版默认值改动：清空开发版数据目录后启动，核对 `settings.json` 中 `silentStart` / `mainWindowAlwaysOnTop` / `developerMode` 为 true、`autoStart` 为 false、`tools` 全部 false、`storagePath` 为空；窗口应隐藏、标题带「（开发版）」、托盘悬停为中文名。
+- 开发版默认值改动：清空开发版数据目录后启动，核对 `settings.json` 中 `silentStart` 为 false、`mainWindowAlwaysOnTop` / `developerMode` 为 true、`autoStart` 为 false、`tools` 全部 false、`storagePath` 为空；窗口应正常显示、标题带「（开发版）」、托盘悬停为中文名。
 - 静默启动改动：分别在「关闭/开启静默启动」下重启，确认窗口显示/隐藏正确，托盘、主窗口快捷键、再次启动三种方式都能唤起窗口，启动通知文案与当前快捷键一致。
 - 冷启动类改动：以 release 构建多次冷启动统计为准（正常退出或留足资源释放间隔），不以开发热重启为样本。
 

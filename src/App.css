@@ -212,18 +212,22 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .theme-segmented { width: 185px; }
 .settings-note { margin: 10px 0 0; color: var(--muted-text); font-size: 10px; line-height: 1.5; }
 .hotkey-group { display: grid; gap: 0; padding: 10px 0 3px; border-bottom: 1px solid var(--soft-border); }
+/* 快捷键分组按内容高度排布，避免行被网格拉伸成大片空白。 */
+/* 快捷键行比普通设置行更紧凑：内容只有标题与控件，不需要 12px 上下留白。 */
+.settings-section.hotkey-settings .hotkey-row { padding: 6px 0; }
 .hotkey-group + .hotkey-group { padding-top: 14px; }
 .hotkey-group-header { display: flex; align-items: center; justify-content: space-between; padding: 0 0 6px; }
 .hotkey-group-header h2 { margin: 0; color: var(--muted-text); font-size: 10px; font-weight: 700; }
 .hotkey-group-header p { margin: 2px 0 0; color: var(--muted-text); font-size: 9px; line-height: 1.35; }
 .hotkey-group .hotkey-row:last-child { border-bottom: 0; }
 .hotkey-row { align-items: center; }
+/* 紧凑工具栏里的快捷键控件：只有控件，没有标题与整行留白。 */
+.hotkey-inline-controls { display: inline-flex; align-items: center; gap: 5px; }
 .hotkey-controls { display: inline-flex; align-items: center; justify-content: flex-end; gap: 7px; white-space: nowrap; }
-.hotkey-capture { width: 134px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--panel-bg); cursor: text; font: inherit; font-size: 10px; outline: none; text-align: left; }
-.hotkey-capture.empty { color: var(--muted-text); }
-.hotkey-capture:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent); }
-.hotkey-preview { padding: 5px 10px; border: 1px solid color-mix(in srgb, var(--border) 78%, var(--primary)); border-radius: 5px; color: #425575; background: #f8fbff; font-size: 10px; font-weight: 700; line-height: 1.2; letter-spacing: 0; }
-.hotkey-disabled { min-width: 58px; color: #687896; font-size: 10px; font-weight: 600; text-align: right; }
+/* 快捷键录制框：常态/空态用 2px 深灰边框保证显眼，录制态主色 + 光晕；宽度完全随内容。 */
+.hotkey-box { display: inline-flex; height: 30px; align-items: center; justify-content: center; padding: 0 8px; border: 2px solid #8b98aa; border-radius: 6px; color: var(--text); background: var(--panel-bg); font: inherit; font-size: 10px; font-weight: 600; line-height: 1; outline: none; white-space: nowrap; cursor: default; }
+.hotkey-box.empty { border-style: dashed; color: var(--muted-text); }
+.hotkey-box.recording { border-color: var(--primary); color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent); cursor: text; }
 .hotkey-icon-action { display: inline-grid; place-items: center; width: 32px; min-width: 32px; height: 32px; padding: 0; border-radius: 8px; line-height: 0; }
 .hotkey-icon-action svg { display: block; }
 .tool-page { padding-top: 2px; }
@@ -598,13 +602,16 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .clipboard-settings-dialog .update-dialog-header,
 .clipboard-settings-dialog .update-dialog-actions { flex: 0 0 auto; }
 .clipboard-settings-dialog .clipboard-modal-body { flex: 1 1 auto; min-height: 0; max-height: none; }
-.clipboard-modal-body { display: grid; gap: 9px; max-height: min(420px, 70vh); overflow: auto; padding: 12px 14px; }
+.clipboard-modal-body { display: grid; gap: 9px; max-height: min(420px, 70vh); overflow: auto; padding: 12px 14px; scrollbar-width: none; }
+.clipboard-modal-body::-webkit-scrollbar { width: 0; height: 0; }
 .clipboard-modal-field { display: grid; gap: 5px; color: var(--muted-text); font-size: 9px; }
 .clipboard-modal-field input, .clipboard-modal-field textarea { width: 100%; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--panel-bg); font: inherit; font-size: 10px; outline: none; }
 .clipboard-modal-field input { height: 30px; padding: 0 9px; }
 .clipboard-modal-field textarea { min-height: 92px; resize: vertical; padding: 8px 9px; line-height: 1.45; }
 .clipboard-modal-field input:focus, .clipboard-modal-field textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent); }
-.clipboard-settings-summary { padding: 8px 9px; border: 1px solid var(--soft-border); border-radius: 7px; color: var(--muted-text); background: var(--muted-bg); font-size: 8px; line-height: 1.45; }
+.clipboard-hotkey-section { padding-top: 10px; border-top: 1px solid var(--soft-border); }
+.clipboard-hotkey-section .settings-row { gap: 10px; padding: 0; border-bottom: 0; }
+.clipboard-hotkey-section .hotkey-controls { gap: 5px; }
 .clipboard-settings-panel { display: grid; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--soft-border); animation: page-enter 150ms ease-out both; }
 .clipboard-setting-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .clipboard-setting-grid label { display: grid; gap: 5px; padding: 8px; border: 1px solid var(--soft-border); border-radius: 7px; color: var(--muted-text); font-size: 8px; }
@@ -790,8 +797,6 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .window-pinner-toolbar { position: relative; isolation: isolate; display: flex; min-height: 40px; align-items: center; gap: 14px; overflow: visible; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); font-size: 10px; }
 .window-pinner-toolbar > span { display: inline-flex; align-items: center; gap: 7px; }
 .window-pinner-toolbar > span, .window-pinner-limit > span { font-size: 11px; font-weight: 700; }
-.window-pinner-hotkey-link { display: grid; width: 25px; height: 25px; place-items: center; border: 0; border-radius: 5px; color: var(--primary); background: transparent; cursor: pointer; }
-.window-pinner-hotkey-link:hover { background: var(--primary-soft); }
 .window-pinner-toolbar kbd { padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--muted-bg); font-size: 10px; font-weight: 500; }
 .screenshot-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .screenshot-heading { display: flex; min-width: 0; align-items: center; gap: 9px; }
@@ -1058,8 +1063,8 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 :root[data-theme="dark"] .status-strip div { color: #c5cee0; }
 :root[data-theme="dark"] .tool-card:hover { border-color: #505c73; box-shadow: 0 12px 24px rgba(0, 0, 0, 0.26); }
 :root[data-theme="dark"] .setting-value.danger { color: var(--danger); background: var(--danger-bg); }
-:root[data-theme="dark"] .hotkey-preview { border-color: #505968; color: #d3d9e4; background: #252525; }
-:root[data-theme="dark"] .hotkey-disabled { color: #8c8c8c; }
+:root[data-theme="dark"] .hotkey-box { border-color: #8b98aa; background: #252525; }
+:root[data-theme="dark"] .hotkey-box.empty { color: #8c8c8c; }
 :root[data-theme="dark"] .window-pinner-limit-picker { border-color: #444; background: #2b2b2b; }
 :root[data-theme="dark"] .window-pinner-limit-picker:hover,
 :root[data-theme="dark"] .window-pinner-limit-picker:focus-within { border-color: #686868; box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34), 0 3px 8px rgba(0, 0, 0, 0.24); }

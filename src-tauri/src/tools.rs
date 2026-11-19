@@ -624,11 +624,11 @@ fn log_tool_lifecycle(app: &AppHandle, tool_id: &str, message: impl Into<String>
     push_debug_log(&state, level, message);
 }
 
-/// 开发版首次启动（数据目录全新）时的默认值：便于测试各类工具与静默启动。
+/// 开发版首次启动（数据目录全新）时的默认值：便于测试各类工具。
 /// 仅由 `cfg!(debug_assertions)` 分支调用，不影响正式版。
 pub fn apply_development_defaults(settings: &mut AppSettings) {
     settings.auto_start = false;
-    settings.silent_start = true;
+    settings.silent_start = false;
     settings.main_window_always_on_top = true;
     settings.developer_mode = true;
     for tool in TOOLS.iter() {

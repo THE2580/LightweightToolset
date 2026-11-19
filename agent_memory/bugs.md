@@ -1,5 +1,7 @@
 # 活跃风险与约束
 
+- **静默启动后托盘唤起主窗口偶发失效（待查，用户要求稍后再做，2026-11-19 记录）**：开启静默启动时，进程启动后隐藏窗口只留托盘，之后点托盘/快捷键/二次启动有时唤不出主窗口，托盘图标仍在。正式版 `v0.7.0` 与开发版都可复现，指向两版共用的 `show_main_window` 与窗口创建时序，而非开发版特有问题。未排查根因，本轮不动；复现时留意「启动后立刻点」还是「过一段时间点」、偶发还是稳定、以及 `push_debug_log` 里 `window` 级别记录。
+
 - **工作树常态**：`M src-tauri/src/window_service.rs`（既有 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）与 `?? .codex/`（Codex 遗留本地配置，DSH 不读取）长期存在；除非用户授权，不处理、不回滚、不提交。
 - **窗口置顶边界**：管理员目标受 UIPI 限制可能返回 Win32 5；监护不覆盖开发终端关闭、系统同时杀死监护进程、关机等场景。
 - **测试串行**：`input_monitor` 等测试共享全局按键状态，并行 `cargo test --lib` 会偶发失败；统一 `--test-threads=1`，并把 `TEMP`/`TMP` 指向 `src-tauri/target/test-tmp`（否则 `window_pinner` 三条测试因沙箱写 `%TEMP%` 失败）。
@@ -27,6 +29,10 @@
 
 # 已确认经验
 
+- 2026-11-19：注入测试的「点击录制框 → 发送组合键 → 点保存」必须在**同一次脚本运行**里连续完成；分两次运行会因为新进程的 `SetForegroundWindow` 让录制框失焦、触发 `onBlur` 收起，表现为「保存后说未填写/没变化」。
+- 2026-11-19：工具页里的 `tool` 来自 `activeTool`（导航时捕获的快照），只有 `setToolEnabled` 会刷新它；因此在工具页内改快捷键后，`tool.hotkey` 会滞后。读实时 `tools.find(...)?.hotkey` 才能即时刷新（截图页原本就这么做，剪贴板页与窗口置顶页本轮补上）。
+- 2026-11-19：提权启动开发版**不要**用 `cmd /c start ... powershell -Command "Start-Process -Verb RunAs ..."` 包一层——实测静默失败、`%TEMP%\lwt-dev` 都不生成；应从当前 shell 直接 `powershell -Command "Start-Process powershell -Verb RunAs -ArgumentList ..."`。启动后必须核对三件事：`%TEMP%\lwt-dev` 已生成、进程 `StartTime` 是新的、`kill` 旧实例目标来自该目录，否则容易把上一次的旧截图当成新结果（本轮曾误读 11-11 的旧日志与截图）。
+- 2026-11-19：固定高度弹窗（`.clipboard-settings-dialog`）里增内容会挤成滚动条并切掉底部说明；加内容时同步调 `height`（本轮 400→452px）。
 - 2026-11-11：OCR 模型必须外置并按需加载（`include_bytes!` 会让 30MB 映射页常驻，达不到「识别完回落基线」）；单工作线程串行识别，用完 drop 引擎 + `SetProcessWorkingSetSize` 归还工作集（实测测试进程 idle 7.6MB → 峰值 110–118MB → 释放后 1.6–2.2MB）。
 - 2026-11-11：改正式版配置做验证必须「先停进程 → 改文件 → 启动验证 → 再停 → 还原 → 启动」；运行中的实例退出时会回写内存里的设置，覆盖手工还原。验证产生的 `screenshot/` 数据也要清掉。
 - 2026-11-11：注入测试里按住 Ctrl 按 Esc 等于 `Ctrl+Esc`，会弹出开始菜单；取消拖放前先松开 Ctrl。`SetCursorPos` 后要等 ≥200ms 再 `mouse_event`。
