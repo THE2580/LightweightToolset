@@ -1,6 +1,6 @@
 # Scope
 
-- 工具集已含七个工具：**截图与贴图**（第一版，`v0.7.0` 发布）、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。
+- 工具集已含七个工具：**截图与贴图**（`v0.7.0` 首发，`v0.7.1` 跟随发版）、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。
 - **快捷键入口迁移与录制 UI 改版已完成（2026-11-19，用户已验收）**：剪贴板、窗口置顶的快捷键都迁到各自设置页/工具页，全局设置只剩「呼出主窗口」；录制逻辑集中到 `HotkeyRowEditor`（四处在用，`hideTitle` 供工具栏）；录制框单框单按钮、失焦自动保存、外观按 2px 边框 / 宽度随内容 / 空态虚线 / 录制态主色 + 光晕定稿。
 - 截图 UI 检测第一阶段已完成（提交 `a198249`，未推送）：UI 检测三档、进入即全屏预选、仅窗口模式跟随窗口（只排除覆盖层自身，本软件窗口/任务栏也可预选）、单击确认/拖拽自定义；UI 元素级检测用户明确暂缓，不再推进。
 - 开发版默认值：静默启动默认关闭（代码默认值 + 本机 `settings.json` 均为 false）。
@@ -9,8 +9,9 @@
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；**已与 `origin/master` 同步**（2026-11-20 推送，HEAD 以 `git log` 为准），发布提交 `b5775dc`，tag `v0.7.0` 已推送。
-- 本轮推送的 7 个提交：`20a3e3d`（快捷键入口迁移 + 录制 UI）、`fc2b2b4`（档位选择器）、`a198249`（截图窗口检测与预选）、`2b9772c`（记忆）、`c4d3207`（主窗口唤出加固 + 提示派发顺序）、`7fd2878`（快捷键外显统一 + 预设扩充）、`1146b18`（约束与记忆同步 + 取证文档）。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；**`v0.7.1` 已发布**（发布提交 `c1359bc`，tag `v0.7.1` 与 `master` 均已推送，工作树已与 `origin/master` 同步）。
+- 本轮发布包含的提交：`c02cd27`（截图设置页布局）、`c1359bc`（release v0.7.1）；此前 `20a3e3d`、`fc2b2b4`、`a198249`、`2b9772c`、`c4d3207`、`7fd2878` 等一并推送。
+- Release 资产 `LightweightToolset_0.7.1_x64-setup.exe`（33,856,072 字节，SHA-256 `5E875F6C6ECFE0EE1E32281888023AFD83C2DCB5535627110B220ED9FF00ECDE`），地址 `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.1`。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（rustfmt 重排，非逻辑改动）、`M src-tauri/src/window_pinner.rs`（CRLF 换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
@@ -49,7 +50,12 @@
 
 # Verification
 
-- 2026-11-20 快捷键提示预设扩充（本轮，未提交）：
+- 2026-11-20 `v0.7.1` 发版（本轮）：
+  - 发版前：`npm run build`、`cargo check`、`cargo test --lib -- --test-threads=1`（52 passed / 2 ignored）全部通过；已按固定清理项停掉开发版并删除 `%APPDATA%`/`%LOCALAPPDATA%` 开发版目录、开始菜单开发版快捷方式与 `%TEMP%\lwt-dev`。
+  - `npm run tauri build` 成功：release exe 41,460,224 字节，NSIS 产物 `轻量化工具集_0.7.1_x64-setup.exe` 33,856,072 字节；复制为 ASCII 名 `LightweightToolset_0.7.1_x64-setup.exe` 后上传，`gh release view` 核对资产名完整、digest 与本地 SHA-256 一致。
+  - 已建带注释 tag `v0.7.1` 并推送；`gh release create` 发布 `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.1`。
+- 2026-11-20 截图设置页调整（`c02cd27`，随 0.7.1 发布）：「UI 检测」独立成行；「显示辅助线」整行可点、箭头右置、默认收起、切「不显示」自动收起、切标签回来恢复折叠、去掉模式重置按钮；实机逐项截图核对。
+- 2026-11-20 快捷键提示预设扩充（`7fd2878`，随 0.7.1 发布）：
   - 新增固定预设 `Win+P`（投影/切换显示模式）、`Win+R`（运行）、`Win+T`（任务栏预览）、`Win+G`（打开 Game Bar）、`Alt+F4`（关闭当前窗口）；
   - 绑定设置的预设 3 → 9 条：新增截图 6 条（截图/贴图/恢复/关闭全部/隐藏显示/鼠标穿透）；`hotkey_owner_tool` 统一判定归属工具，`build_snapshot` 的可用状态与 `notify_app_hotkey` 的停用判断都改用它；
   - 实机：提示页 41 项（29 条固定预设 + 9 条绑定条目 + 3 条用户自定义），列表可见 `Win+G 打开 Game Bar`、`Win+T 任务栏预览`、`Win+P 投影/切换显示模式`、`Ctrl+Alt+T 窗口置顶`、`Ctrl+Alt+P 贴图`、`鼠标穿透 未设置`；
@@ -111,13 +117,11 @@
 
 # Blockers
 
-- 无阻塞。项目处于已发版稳定状态（v0.7.0）。
+- 无阻塞。项目处于已发版稳定状态（v0.7.1）。
 
 # Next Action
 
-- 开发环境在跑：Vite :1420（HTTP 200）+ `%TEMP%\lwt-dev` 实例；开发版 `silentStart=false`、`screenshotUiDetection = window`、快捷键恢复基线（`CTRL+ALT+.` / `CTRL+ALT+F9` / `CTRL+ALT+P` / `CTRL+Q` / `CTRL+ALT+X` / `CTRL+ALT+H` / `CTRL+ALT+T`，剪贴板 `CTRL+SUPER+/`）。
-- 本轮改动已提交（`c4d3207` 主窗口唤出加固 + 提示派发顺序、`7fd2878` 快捷键外显统一 + 预设扩充、`1146b18` 约束/记忆/取证文档）并推送到 `origin/master`；工作树只剩既有两项改动与 `.codex/`。
+- 开发环境已按发版要求清理（`%TEMP%\lwt-dev` 与开发版数据目录已删）；重新开发时按「验证方式」重建：`npm run dev`（:1420）→ `cargo build` → 复制 exe 到 `%TEMP%\lwt-dev\` → 提权启动。
+- 用户进入日常使用阶段，重点观察「静默启动后整个软件像死的」是否复现；复现时按 `docs/troubleshooting-main-window.md` 取 `logs/window.log` + 任务管理器现场 + 托盘菜单能否弹出，再决定下一步。
 - 等用户指定下一批功能；**UI 元素级检测已明确暂缓，不要主动做**。
-- 「静默启动后整个软件像死的」处于冻结状态：复现时按 `docs/troubleshooting-main-window.md` 取 `logs/window.log` + 任务管理器现场。
-- 恢复开发：`npm run dev`（:1420）→ `cargo build`（改过 Rust 时）→ **直接** `powershell -Command "Start-Process powershell -Verb RunAs -ArgumentList ... -File %TEMP%\lwt-dev-launch.ps1"`（不要用 `cmd start` 包一层，见 `bugs.md`）→ `%TEMP%\lwt-ui.ps1` 注入点击并截图核对。
 - 未做的待办见 `progress.md`：标注拖动/文本再编辑、缩略图观感、贴图历史浏览（暂缓）、静默启动唤出（冻结等证据）。
