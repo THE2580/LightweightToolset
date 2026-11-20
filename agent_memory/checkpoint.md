@@ -4,7 +4,7 @@
 
 # Current Focus
 
-- **2026-11-19 截图 UI 检测（第一阶段，已自测，待用户确认手感，未提交）**：截图页「UI 检测」三档（不检测/仅窗口/窗口和UI 置灰）；进入截图预选全屏，仅窗口模式下鼠标移动预选跟随窗口（DWM 外框、排除本进程、任务栏也算），单击预选进入标注、拖拽自定义松手确认，预选态不显示工具栏。
+- **2026-11-19/20 截图 UI 检测（第一阶段，已验收并提交 `a198249`，未推送）**：截图页「UI 检测」三档（不检测/仅窗口/窗口和UI 置灰）；进入截图预选全屏，仅窗口模式下鼠标移动预选跟随窗口（DWM 外框、只排除覆盖层自身、任务栏与本软件窗口也可预选），单击预选进入标注、拖拽自定义松手确认，预选态不显示工具栏。
 - **性能修复（当天最后一项）**：预选曾把每帧脏区撑成整屏，导致鼠标/放大镜像 60 帧；已改为预选态只重绘放大镜面板，预选切换/拖拽开始/进入标注时整屏重绘一次。
 - 开发环境已恢复（2026-11-20 11:09）：Vite(:1420) + `%TEMP%\lwt-dev` 实例（pid 4860）；开发版数据保留（截图快捷键 `CTRL+ALT+F9`、`screenshotUiDetection = window`）。
 - 待提交改动：`Cargo.toml`、`settings.rs`、`lib.rs`、`screenshot/{mod,overlay}.rs`、`App.tsx`、`App.css`、`AGENTS.md`、`agent_memory/*`。
@@ -31,7 +31,7 @@
 
 0. **开发环境已恢复**：Vite(:1420, 200) + `%TEMP%\lwt-dev` 实例（pid 4860）；重启流程：`npm run dev` → `cargo build`（Rust 有改动）→ 直接 `Start-Process -Verb RunAs ... -File %TEMP%\lwt-dev-launch.ps1`。
 1. 先让用户确认放大镜/鼠标跟手是否达标；若仍偏慢，下一步把放大镜面板自身的重绘再拆细（目前整块约 500×600）。
-2. 快捷键这批已验收并提交（HEAD，未推送）；UI 检测这批**未提交**，等用户验收后再提交。
+2. 快捷键这批已验收并提交（HEAD，未推送）；UI 检测这批也已验收并提交 `a198249`（未推送）。
 2. 重启开发环境：`npm run dev` →（改过 Rust 时）`cargo build` → **直接** `powershell -Command "Start-Process powershell -Verb RunAs -ArgumentList ... -File %TEMP%\lwt-dev-launch.ps1"`（不要用 `cmd start` 包一层）→ `%TEMP%\lwt-ui.ps1 -Steps 'c:x,y;s:ms' -Png ...` 注入点击并截图。
 3. 坑速查：
    - 改 `settings.json` 用 node（PS 5.1 会按 ANSI 解码并写 BOM）；改正式版配置要「先停进程」。

@@ -18,7 +18,7 @@
 - `src/App.tsx`：新增 `HotkeyRowTarget` / `HotkeyRowEditor`（录制、格式校验、冲突检查、`suspend/resume_tool_hotkeys`、保存与停用），`toHotkeyRowTarget` 供全局页转换条目；`HotkeySettings` 去掉剪贴板分组但保留它参与冲突检查；`ScreenshotToolPage` 与 `ClipboardToolPage` 均改用该组件。
 - `src/App.tsx` 剪贴板侧：`ClipboardToolPage` 新增 `appHotkeys`/`tools`/`setAppSnapshot` 入参、`hotkeyNotice` 提示与 `hotkeyTargets` 冲突列表、`currentHotkey` 从实时 `tools` 取值；`ClipboardSettingsDialog` 改为接收 `tool`/`hotkeyTargets`/`setSnapshot`/`onNotice`，内嵌快捷键行。
 - `src/App.tsx` 窗口置顶侧：`WindowPinnerToolPage` 改为接收 `appHotkeys`/`tools`/`setAppSnapshot`，工具栏「快捷键」后直接内嵌 `HotkeyRowEditor`（`hideTitle` 紧凑模式），删除跳转全局快捷键页的齿轮按钮；空状态文案改用实时 `currentHotkey`。`ToolPage` 不再需要 `onOpenSettingsTab`，已从签名与调用点移除。
-- 2026-11-19 截图 UI 检测（第一阶段，未提交）：
+- 2026-11-19 截图 UI 检测（第一阶段，已提交 `a198249`）：
   - `settings.rs`/`lib.rs`：新增 `screenshotUiDetection`（none/window/window_ui，默认 none，patch 只接受这三个值）；`Cargo.toml` 打开 `Win32_Graphics_Dwm`。
   - `overlay.rs`：`UiDetection` 枚举 + `OverlayOptions.ui_detection`；`OverlayState` 增加 `ui_detection`/`preselect`/`press`；进入截图预选全屏，`window` 模式鼠标移动用 `EnumWindows` 取光标下窗口（排除本进程、隐藏/遮蔽窗口，DWM 外框，任务栏也算）；`selecting_rect()` 统一绘制；LBUTTONDOWN 只记起点，移动超过 3px 才转拖拽，否则松手时若在预选内则确认进入标注；`WM_LBUTTONUP` 自定义选区路径保持原样。
   - `App.tsx`：新增 `UiDetectionMode`、设置类型字段、「UI 检测」行（SegmentedControl，`窗口和UI` 置灰）；`SegmentedControl` 支持 `disabled` 档位（点击/拖动都会回到当前值）。
@@ -88,7 +88,7 @@
 # Next Action
 
 - **开发环境已恢复**（2026-11-20 11:09）：Vite 监听 1420（HTTP 200），开发版实例 pid 4860，来自 `%TEMP%\lwt-dev`，窗口正常加载；截图快捷键 `CTRL+ALT+F9`、`screenshotUiDetection = window` 沿用昨天设置。
-- 待办：等用户确认放大镜/鼠标跟手是否达标；若仍慢则拆细放大镜面板重绘；UI 检测这批**未提交**（10 个文件 + 记忆），验收后再提交。
+- 待办：UI 元素级检测（`窗口和UI` 档位仍置灰）；放大镜若仍偏慢可继续拆细面板重绘。UI 检测这批已提交 `a198249`（未推送）。
 - 快捷键这批已验收并已提交（HEAD，未推送）；推送等你决定。
 - 恢复开发：`npm run dev`（:1420）→ `cargo build`（改过 Rust 时）→ **直接** `powershell -Command "Start-Process powershell -Verb RunAs -ArgumentList ... -File %TEMP%\lwt-dev-launch.ps1"`（不要用 `cmd start` 包一层，见 `bugs.md`）→ `%TEMP%\lwt-ui.ps1` 注入点击并截图核对。
 - 未做的待办见 `progress.md`：静默启动托盘唤起失效（用户要求稍后）、标注拖动/文本再编辑、缩略图观感、贴图历史浏览（暂缓）。
