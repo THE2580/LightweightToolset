@@ -1,11 +1,10 @@
 # 活跃风险与约束
 
-- **静默启动后主窗口「唤不出 / 整个软件像死的」（2026-11-20 冻结，等正式版实机证据）**：用户报「有概率静默启动后托盘图标、托盘菜单『显示主窗口』、呼出快捷键全都唤不出，且软件功能确实整体失效（连靠快捷键使用的工具也用不了），只剩托盘图标」；并确认**右键托盘能弹出「显示主窗口 / 退出」菜单**，据此排除「主线程卡死」，嫌疑转为 WebView2 被回收或窗口记录丢失。本机 9 次静默启动冷启动 + 3 秒探活（`SendMessageTimeout(WM_NULL)`）全部 `ping=OK`，未复现。已做加固（`lib.rs::show_main_window`，提交 `c4d3207`）：① 最小化先 `unminimize()`；② 窗口记录有界重试 + `FindWindowExW` 兜底还原；③ `show()` 后回读可见/最小化状态；④ 唤出事件与 `webview=alive/missing/no_window` 诊断落盘 `<存储目录>/logs/window.log`（256KB 重置）。**用户决定冻结，等正式版实机复现后按 `docs/troubleshooting-main-window.md` 取证**：
-  - `webview=alive` → WebView 活着，问题在窗口显示/焦点；
-  - `webview=missing` → WebView2 子窗口没了（对应 tauri#14088 那类「所有窗口隐藏后 webview 被回收、托盘还在」）；
-  - `webview=no_window` → 主窗口 HWND 都不在了，窗口被销毁；
-  - 只有 `show_requested` 没有后续 → 卡在 `show()`/`set_focus()`；一条都没有 → 点击事件没进主线程。
-  另外让用户顺手看任务管理器里该软件的 `msedgewebview2.exe` 是否还在，作为交叉验证。
+- ~~静默启动后主窗口「唤不出 / 整个软件像死的」~~ **已结案（`v0.7.2` 发布，`abe5441`）**：用户装完 `v0.7.1` 后第一次开机即复现——进程 `Responding=False`、所有窗口 `WM_NULL` 探测 HUNG、托盘菜单弹不出。抓主线程栈定位到**主线程嵌套建窗死锁**：
+  - 栈底 `window_service::open_clipboard_popup` → `WebviewWindowBuilder::build` → tauri 的 `send_user_message` 在主线程**就地执行** `handle_user_message` → 窗口消息派发期间把排队的 `shortcut_tip::build_window` 也执行了 → 内层建窗再去拿同一把窗口锁 → `std::sync::Mutex::lock_contended` 永久阻塞。
+  - 复现条件：剪贴板弹窗与快捷键提示浮窗**同时首次创建**（首次安装后第一次用剪贴板快捷键最易撞上）。
+  - 修复：`window_service::begin_window_build()` / `window_build_busy()` 占位，后到建窗让路（浮窗退避重试 5 次、弹窗交给独立线程排队），覆盖剪贴板弹窗、计时器自由/时钟窗口、提示浮窗；让路写 `logs/window.log`（`window_build.busy defer=...`）。开发版复现时日志确证让路两次、两窗正常出现、进程持续响应。
+  - 取证方法沉淀：`SendMessageTimeout(WM_NULL)` 探活 + `StackWalk64`/dbghelp 栈回溯（本机无 procdump/cdb，用 PowerShell 内嵌 C# 实现）。
 
 - **工作树常态**：`M src-tauri/src/window_service.rs`（既有 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）与 `?? .codex/`（Codex 遗留本地配置，DSH 不读取）长期存在；除非用户授权，不处理、不回滚、不提交。
 - **窗口置顶边界**：管理员目标受 UIPI 限制可能返回 Win32 5；监护不覆盖开发终端关闭、系统同时杀死监护进程、关机等场景。

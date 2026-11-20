@@ -80,3 +80,7 @@
 | `main_window.show_failed reason=window_not_found` | Tauri 的窗口记录丢了（会走原生兜底） |
 | `main_window.show_ineffective visible=... minimized=...` | `show()` 调用成功但窗口实际没出来 |
 | `main_window.show_recovered_by_hwnd` | 已用原生方式把窗口强行还原出来 |
+| `window_build.busy defer=shortcut_tip` | 主线程正在建别的窗口，快捷键提示浮窗主动让路后重试（`v0.7.2` 起；用于避免嵌套建窗死锁） |
+| `window_build.busy defer=clipboard_popup` | 同上，剪贴板弹窗让路 |
+
+> `v0.7.2` 已修复「主线程嵌套建窗」导致的整机卡死：若日志里只有一条 `window_build.busy` 且之后软件失去响应，请把整份日志发回（说明让路后仍出现新问题）。

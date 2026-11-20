@@ -2,7 +2,7 @@
 
 - LightweightToolset 是旧版 LightweightWindowsToolset 的独立 Tauri 2 / Rust / React / TypeScript 路线；旧 Electron 项目只作稳定参考与迁移对照，新功能不回写旧项目。
 - 已实现工具：截图与贴图（原生覆盖层 + 贴图窗口 + 标注 + 本地 OCR 文本选择，行为参照 `docs/pixpin-clone-analysis.md`）、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。后续候选：快捷翻译、桌宠。
-- 当前稳定发布为 `v0.7.1`，发布提交 `c1359bc`，仓库 `https://github.com/THE2580/LightweightToolset`。
+- 当前稳定发布为 `v0.7.2`，发布提交 `abe5441`，仓库 `https://github.com/THE2580/LightweightToolset`。
 
 # 协作环境
 
@@ -51,6 +51,7 @@
 
 # 发布索引
 
+- `v0.7.2` / `abe5441`：修复主线程嵌套建窗导致的整机卡死（剪贴板弹窗与快捷键提示浮窗同时首次创建时互相等锁 → 主线程永久死锁，表现为托盘菜单/快捷键/所有窗口无响应）。新增 `window_service::begin_window_build/window_build_busy` 占位，后到建窗让路并写 `logs/window.log`。安装包 `LightweightToolset_0.7.2_x64-setup.exe`（33,851,424 字节），SHA-256 `2C24A3B5CCB13795DF60414AB7803E161A1D2732CCAF1C01C01BCF4C7D43130E`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.2`。
 - `v0.7.1` / `c1359bc`：新增截图「UI 检测」（不检测 / 仅窗口，`窗口和UI` 置灰）与默认全屏预选（仅窗口下预选跟随光标窗口）；快捷键入口归位（剪贴板/窗口置顶迁入各自页面）与录制框改版；数量档位选择器；快捷键文案统一（`Win → Ctrl → Alt → Shift → 主键`、`SUPER` 不再外露）；快捷键提示预设扩充（新增 `Win+P/Win+R/Win+T/Win+G/Alt+F4`，截图 6 个快捷键纳入绑定预设）；贴图组快捷键恢复提示；主窗口最小化可唤出 + 唤出事件落盘 `logs/window.log`；截图设置页「UI 检测」独立与辅助线折叠分组。安装包 `LightweightToolset_0.7.1_x64-setup.exe`（33,856,072 字节），SHA-256 `5E875F6C6ECFE0EE1E32281888023AFD83C2DCB5535627110B220ED9FF00ECDE`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.1`。
 
 - `v0.7.0` / `b5775dc`：新增工具「截图与贴图」——区域截图（覆盖层、放大镜取色、辅助线、可配置压暗）、12 种标注与二级栏、贴图窗口（拖动/缩放/锁定/穿透/阴影/右键图像处理）、贴图标注（窗口外伴生工具栏）、本地 OCR 文本选择（PP-OCRv6，离线、用后释放内存、「选中后自动复制」可关）、超级拖放与跟随缩略图、锁定态金色阴影；安装包含 30MB 离线模型，体积增至 33,846,940 字节。资产 `LightweightToolset_0.7.0_x64-setup.exe`，SHA-256 `705D550D7330C54F6BAB7EC15C49F6294DF66FD007D87FF07706D9C0645AB4EE`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.0`。

@@ -4,15 +4,17 @@
 
 # Current Focus（2026-11-20）
 
-- **`v0.7.1` 已发布**（发布提交 `c1359bc`，tag 与 master 均已推送）：快捷键外显统一 `Win → Ctrl → Alt → Shift → 主键`、`SUPER` 不再外露；提示预设扩充（29 条系统 + 9 条绑定，含截图工具 6 条）；贴图组快捷键恢复提示；主窗口最小化可唤出 + 唤出事件落盘 `logs/window.log`；截图设置页「UI 检测」独立、辅助线改折叠分组。
-- **用户进入日常使用阶段**，重点观察「静默启动后整个软件像死的」是否复现；该问题已冻结，取证流程见 `docs/troubleshooting-main-window.md`（`window.log` + 任务管理器 + 托盘菜单能否弹出），复现后再定方案。
+- **`v0.7.2` 已发布**（发布提交 `abe5441`，tag 与 master 均已推送）：修复「静默启动后整个软件像死的」——主线程嵌套建窗死锁。修复方式：`window_service::begin_window_build/window_build_busy` 占位 + 后到建窗让路（浮窗退避重试、弹窗线程排队），让路写 `logs/window.log`。
+- **该卡死问题已结案**：现场用 `WM_NULL` 探活 + 主线程栈回溯（`StackWalk64`/dbghelp）定位到 `open_clipboard_popup` 与 `shortcut_tip::build_window` 嵌套建窗；复现修复后日志确证让路两次、两窗正常、进程持续响应。
 - **UI 元素级检测：用户明确暂缓，不做**（`窗口和UI` 保持置灰）。
-- 发版前已按固定清理项删除开发版数据与 `%TEMP%\lwt-dev`；重新开发需按「验证方式」重建环境。
+- 开发环境已按发版要求停掉并清理；安装版旧进程（含卡死的 0.7.1）已结束，用户升级到 0.7.2 后常驻。
 - 工作树只剩既有三项：`M src-tauri/src/window_pinner.rs`（CRLF 差异）、`M src-tauri/src/window_service.rs`（rustfmt 重排）、`?? .codex/`——不处理、不提交。
 
 # 最近验证（2026-11-20）
 
-- `v0.7.1` 发版：`npm run tauri build` 成功（release exe 41,460,224 字节，NSIS 33,856,072 字节）；资产 `LightweightToolset_0.7.1_x64-setup.exe` 名称完整、digest 与本地 SHA-256 一致；tag `v0.7.1` 与 Release 已发布。
+- `v0.7.2` 发版：`npm run tauri build` 成功（NSIS `轻量化工具集_0.7.2_x64-setup.exe` 33,851,424 字节）；资产 `LightweightToolset_0.7.2_x64-setup.exe` 名称完整、digest 与本地 SHA-256 一致；tag 与 Release 已发布。
+- 死锁修复验证：开发版按剪贴板快捷键时 `window.log` 记录 `window_build.busy defer=shortcut_tip` 两次，剪贴板弹窗与提示浮窗同时出现、主窗口保持隐藏、`ping=OK`、进程响应正常。
+- `cargo test --lib -- --test-threads=1` **52 passed / 0 failed / 2 ignored**。
 - 截图设置页：UI 检测独立、辅助线整行折叠（默认收起、切不显示自动收起、切标签重置、无模式重置按钮）均逐项截图核对。
 - `npm run build` 通过；`cargo check` 通过（4 条既有 warning）；`cargo test --lib -- --test-threads=1` **52 passed / 0 failed / 2 ignored**。
 - 实机：最小化 `SW_MINIMIZE` 后按 `CTRL+ALT+.` → `visible=True iconic=False`（修复前 `iconic=True`）；隐藏态唤出、`window.log` 落盘均正常。
