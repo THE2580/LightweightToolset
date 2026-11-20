@@ -1859,6 +1859,8 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
   const [templateDraft, setTemplateDraft] = useState(settings?.screenshotFileTemplate ?? "");
   const [notice, setNotice] = useState<HotkeyNotice | null>(null);
   const [noticeClosing, setNoticeClosing] = useState(false);
+  // 辅助线子设置默认收起，只影响可见性，不影响辅助线本身是否生效。
+  const [guidesExpanded, setGuidesExpanded] = useState(false);
 
   const manualDir = settings?.screenshotManualSaveDir ?? "";
   const quickDir = settings?.screenshotQuickSaveDir ?? "";
@@ -1897,6 +1899,11 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
   }, []);
 
   useEffect(() => setTemplateDraft(template), [template]);
+
+  // 每次切换标签（截图/贴图/保存/标注/快捷键）再回到「截图」，辅助线分组都回到默认收起。
+  useEffect(() => {
+    setGuidesExpanded(false);
+  }, [activeTab]);
 
   function showNotice(nextNotice: HotkeyNotice) {
     setNoticeClosing(false);
@@ -2061,36 +2068,52 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
                 ) : null}
               </div>
             </div>
-            <div className="settings-row">
+            <div
+              aria-expanded={guidesExpanded}
+              className="settings-row settings-row-toggle"
+              onClick={(event) => {
+                if ((event.target as HTMLElement).closest(".settings-controls")) {
+                  return;
+                }
+                setGuidesExpanded((value) => !value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setGuidesExpanded((value) => !value);
+                }
+              }}
+              role="button"
+              tabIndex={0}
+            >
               <div>
-                <h2>显示辅助线</h2>
+                <h2 className="settings-row-title">
+                  显示辅助线
+                  {guidesExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                </h2>
                 <p>灰色实线十字跟随光标；蓝色虚线为屏幕中心十字与选区边线/中心延长线</p>
               </div>
-              <div className="screenshot-color-row">
+              <div className="screenshot-color-row settings-controls">
                 <select
                   aria-label="显示辅助线"
                   className="settings-select"
-                  onChange={(event) => void updateSettings({ screenshotGuidesMode: event.currentTarget.value })}
+                  onChange={(event) => {
+                    const nextMode = event.currentTarget.value;
+                    // 切到「不显示」时若正展开，收起子设置，避免出现「箭头展开、下面空白」的错位。
+                    if (nextMode === "off") {
+                      setGuidesExpanded(false);
+                    }
+                    void updateSettings({ screenshotGuidesMode: nextMode });
+                  }}
                   value={guidesMode}
                 >
                   <option value="always">始终显示</option>
                   <option value="alt">按 Alt 显示</option>
                   <option value="off">不显示</option>
                 </select>
-                {defaults ? (
-                  <button
-                    aria-label="恢复默认辅助线模式"
-                    className="icon-action"
-                    disabled={guidesMode === defaults.guidesMode}
-                    onClick={() => void updateSettings({ screenshotGuidesMode: defaults.guidesMode })}
-                    type="button"
-                  >
-                    <RotateCcw size={13} />
-                  </button>
-                ) : null}
               </div>
             </div>
-            {guidesMode !== "off" ? (
+            {guidesExpanded ? (
               <>
             <div className="settings-row sub">
               <div>
@@ -2198,6 +2221,8 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
                 ) : null}
               </div>
             </div>
+              </>
+            ) : null}
             <div className="settings-row">
               <div>
                 <h2>UI 检测</h2>
@@ -2214,8 +2239,6 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
                 value={uiDetection}
               />
             </div>
-              </>
-            ) : null}
           </div>
         ) : null}
 

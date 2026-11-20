@@ -176,6 +176,12 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .settings-row.stack { display: grid; gap: 8px; justify-content: stretch; }
 .settings-row h2 { margin: 0; font-size: 12px; }
 .settings-row p { max-width: 430px; margin: 3px 0 0; color: var(--muted-text); font-size: 10px; line-height: 1.45; }
+/* 可折叠分组的行：整行可点，箭头跟在标题右侧。 */
+.settings-row-toggle { cursor: pointer; }
+.settings-row-toggle:hover h2, .settings-row-toggle:focus-visible h2 { color: var(--primary); }
+.settings-row-toggle:focus-visible { outline: none; }
+.settings-row-title { display: inline-flex; align-items: center; gap: 4px; }
+.settings-row-title svg { color: var(--muted-text); }
 /* 附属项：缩进 + 左侧引导线，表达从属于上一个总开关。 */
 .settings-row.sub { margin-left: 16px; padding-left: 14px; border-left: 2px solid var(--soft-border); }
 .settings-row.sub h2 { color: var(--muted-text); font-size: 11px; font-weight: 600; }
