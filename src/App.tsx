@@ -1568,7 +1568,7 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
                   className={`shortcut-tip-row ${tip.enabled && tip.available ? "" : "shortcut-tip-row-off"}`}
                   title={tip.available ? `已提示 ${tip.triggeredCount} 次` : "对应工具已停用，暂不触发"}
                 >
-                  <kbd className="shortcut-tip-keys">{tip.keys || "未设置"}</kbd>
+                  <kbd className="shortcut-tip-keys">{tip.keys ? formatHotkeyForDisplay(tip.keys) : "未设置"}</kbd>
                   <span className="shortcut-tip-label">
                     {tip.label}
                     {tip.available ? null : <em className="shortcut-tip-row-tag">工具已停用</em>}
@@ -1804,7 +1804,11 @@ function ToolPage({ appHotkeys, settings, setSnapshot, tool, tools, updateSettin
       <p>{tool.description}</p>
       <div className="tool-page-status">
         <span className={tool.workerRunning ? "state-running" : "state-stopped"}>{tool.workerRunning ? "后台 worker 已启动" : "后台 worker 已停止"}</span>
-        {tool.supportsHotkey ? <kbd>{tool.hotkey}</kbd> : <span className="state-stopped">无需快捷键</span>}
+        {tool.supportsHotkey ? (
+          <kbd>{tool.hotkey ? formatHotkeyForDisplay(tool.hotkey) : "未配置快捷键"}</kbd>
+        ) : (
+          <span className="state-stopped">无需快捷键</span>
+        )}
       </div>
     </section>
   );
@@ -2673,14 +2677,18 @@ function HotkeyRowEditor({
     if (!key) {
       return;
     }
-    const display = [
+    const parts = [
       event.ctrlKey ? "CTRL" : "",
       event.altKey ? "ALT" : "",
       event.shiftKey ? "SHIFT" : "",
       event.metaKey ? "WIN" : "",
       key,
-    ].filter(Boolean).join("+");
-    setDraft({ display, value: display.replace(/\bWIN\b/g, "SUPER") });
+    ].filter(Boolean);
+    // 录制态也走同一套外显口径（Ctrl+Alt+K），存储值仍是 normalize_hotkey 的大写形式。
+    setDraft({
+      display: formatHotkeyForDisplay(parts.join("+")),
+      value: parts.join("+").replace(/\bWIN\b/g, "SUPER"),
+    });
   }
 
   async function saveHotkey() {
@@ -3083,7 +3091,7 @@ function WindowPinnerToolPage({ appHotkeys, setAppSnapshot, tool, tools }: {
         <div className="window-pinner-list-body">
           {snapshot?.windows.length ? snapshot.windows.map((item) => (
             <article key={item.hwnd}><span className="window-pinner-item-icon"><Pin size={15} /></span><span title={item.title}>{item.title}</span><button title="取消置顶" onClick={() => void unpin(item.hwnd)} type="button"><X size={14} /></button></article>
-          )) : <div className="window-pinner-empty"><Pin size={30} /><strong>暂无置顶窗口</strong><span>切换到目标窗口后按 {currentHotkey || "已配置快捷键"}</span></div>}
+          )) : <div className="window-pinner-empty"><Pin size={30} /><strong>暂无置顶窗口</strong><span>切换到目标窗口后按 {currentHotkey ? formatHotkeyForDisplay(currentHotkey) : "已配置快捷键"}</span></div>}
         </div>
       </div>
       {hotkeyNotice ? <HotkeyNoticeDialog closing={hotkeyNoticeClosing} notice={hotkeyNotice} onClose={closeHotkeyNotice} /> : null}
@@ -6846,8 +6854,93 @@ function normalizeHotkeyDraft(value: string) {
   return value.split("+").map((part) => part.trim().toUpperCase()).filter(Boolean).join("+");
 }
 
+const HOTKEY_MODIFIER_LABELS: Record<string, string> = {
+  CTRL: "Ctrl",
+  CONTROL: "Ctrl",
+  ALT: "Alt",
+  SHIFT: "Shift",
+  WIN: "Win",
+  WINDOWS: "Win",
+  META: "Win",
+  SUPER: "Win",
+  CMD: "Win",
+  COMMAND: "Win",
+};
+
+const HOTKEY_KEY_LABELS: Record<string, string> = {
+  SPACE: "Space",
+  SPACEBAR: "Space",
+  TAB: "Tab",
+  ENTER: "Enter",
+  RETURN: "Enter",
+  ESC: "Esc",
+  ESCAPE: "Esc",
+  BACKSPACE: "Backspace",
+  DELETE: "Delete",
+  DEL: "Delete",
+  INSERT: "Insert",
+  INS: "Insert",
+  HOME: "Home",
+  END: "End",
+  PAGEUP: "PageUp",
+  PGUP: "PageUp",
+  PAGEDOWN: "PageDown",
+  PGDN: "PageDown",
+  UP: "Up",
+  ARROWUP: "Up",
+  DOWN: "Down",
+  ARROWDOWN: "Down",
+  LEFT: "Left",
+  ARROWLEFT: "Left",
+  RIGHT: "Right",
+  ARROWRIGHT: "Right",
+};
+
+// 修饰键外显顺序固定为 Win → Ctrl → Alt → Shift → 主键。
+const HOTKEY_MODIFIER_ORDER = ["WIN", "CTRL", "ALT", "SHIFT"] as const;
+
+function hotkeyModifierId(part: string): (typeof HOTKEY_MODIFIER_ORDER)[number] | null {
+  switch (part) {
+    case "WIN":
+    case "WINDOWS":
+    case "META":
+    case "SUPER":
+    case "CMD":
+    case "COMMAND":
+      return "WIN";
+    case "CTRL":
+    case "CONTROL":
+      return "CTRL";
+    case "ALT":
+      return "ALT";
+    case "SHIFT":
+      return "SHIFT";
+    default:
+      return null;
+  }
+}
+
+// 存储写法（`CTRL+SUPER+/`）→ 外显文案（`Win+Ctrl+/`）：只改写法与顺序，不改存储与判重。
 function formatHotkeyForDisplay(value: string) {
-  return normalizeHotkeyDraft(value).replace(/\bSUPER\b/g, "WIN");
+  const modifiers = new Set<string>();
+  const keys: string[] = [];
+  for (const raw of value.split("+")) {
+    const part = raw.trim();
+    if (!part) {
+      continue;
+    }
+    const upper = part.toUpperCase();
+    const modifier = hotkeyModifierId(upper);
+    if (modifier) {
+      modifiers.add(modifier);
+      continue;
+    }
+    keys.push(HOTKEY_KEY_LABELS[upper] ?? upper);
+  }
+  const ordered = HOTKEY_MODIFIER_ORDER.filter((modifier) => modifiers.has(modifier)).map(
+    (modifier) => HOTKEY_MODIFIER_LABELS[modifier],
+  );
+  return [...ordered, ...keys].join("+");
 }
 
 function validateHotkeyDraft(value: string) {

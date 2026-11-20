@@ -207,7 +207,7 @@ impl ToolRegistry {
 
     /// 供启动通知等文案使用：返回当前设置的软件级快捷键文本（含默认值回退）。
     pub fn app_hotkey_text(&self, hotkey_id: &str) -> String {
-        self.hotkey_for(hotkey_id)
+        format_hotkey_display(&self.hotkey_for(hotkey_id))
     }
 
     pub fn start_enabled(&mut self, app: &AppHandle) -> Result<(), String> {
@@ -726,6 +726,70 @@ fn normalize_hotkey(value: &str) -> Result<String, String> {
     Ok(normalized.join("+"))
 }
 
+/// 把存储写法（`CTRL+SUPER+/`）转成给用户看的文案（`Win+Ctrl+/`）。
+///
+/// 修饰键顺序固定 `Win` → `Ctrl` → `Alt` → `Shift` → 主键。只影响显示：存储值、冲突判重、
+/// 注册与匹配仍用 `normalize_hotkey` 的大写形式。
+pub fn format_hotkey_display(value: &str) -> String {
+    let mut win = false;
+    let mut ctrl = false;
+    let mut alt = false;
+    let mut shift = false;
+    let mut keys: Vec<String> = Vec::new();
+    for part in value.split('+').map(str::trim).filter(|part| !part.is_empty()) {
+        match part.to_uppercase().as_str() {
+            "WIN" | "WINDOWS" | "META" | "SUPER" | "CMD" | "COMMAND" => win = true,
+            "CTRL" | "CONTROL" => ctrl = true,
+            "ALT" => alt = true,
+            "SHIFT" => shift = true,
+            _ => keys.push(format_hotkey_display_part(part)),
+        }
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    if win {
+        parts.push("Win");
+    }
+    if ctrl {
+        parts.push("Ctrl");
+    }
+    if alt {
+        parts.push("Alt");
+    }
+    if shift {
+        parts.push("Shift");
+    }
+    let mut text = parts.join("+");
+    for key in keys {
+        if !text.is_empty() {
+            text.push('+');
+        }
+        text.push_str(&key);
+    }
+    text
+}
+
+fn format_hotkey_display_part(part: &str) -> String {
+    let upper = part.to_uppercase();
+    match upper.as_str() {
+        "SPACE" | "SPACEBAR" => "Space".to_owned(),
+        "TAB" => "Tab".to_owned(),
+        "ENTER" | "RETURN" => "Enter".to_owned(),
+        "ESC" | "ESCAPE" => "Esc".to_owned(),
+        "BACKSPACE" => "Backspace".to_owned(),
+        "DELETE" | "DEL" => "Delete".to_owned(),
+        "INSERT" | "INS" => "Insert".to_owned(),
+        "HOME" => "Home".to_owned(),
+        "END" => "End".to_owned(),
+        "PGUP" | "PAGEUP" => "PageUp".to_owned(),
+        "PGDN" | "PAGEDOWN" => "PageDown".to_owned(),
+        "UP" | "ARROWUP" => "Up".to_owned(),
+        "DOWN" | "ARROWDOWN" => "Down".to_owned(),
+        "LEFT" | "ARROWLEFT" => "Left".to_owned(),
+        "RIGHT" | "ARROWRIGHT" => "Right".to_owned(),
+        _ => upper,
+    }
+}
+
 fn normalize_hotkey_part(part: &str) -> String {
     let upper = part.trim().to_uppercase();
     if upper.len() == 4 && upper.starts_with("KEY") {
@@ -739,7 +803,18 @@ fn normalize_hotkey_part(part: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_hotkey;
+    use super::{format_hotkey_display, normalize_hotkey};
+
+    #[test]
+    fn formats_hotkey_for_display_with_titlecase_modifiers() {
+        assert_eq!(format_hotkey_display("CTRL+ALT+F9"), "Ctrl+Alt+F9");
+        assert_eq!(format_hotkey_display("CTRL+SUPER+/"), "Win+Ctrl+/");
+        assert_eq!(format_hotkey_display("SUPER+CTRL+ALT+M"), "Win+Ctrl+Alt+M");
+        assert_eq!(format_hotkey_display("WIN+SHIFT+S"), "Win+Shift+S");
+        assert_eq!(format_hotkey_display("CTRL+SPACE"), "Ctrl+Space");
+        assert_eq!(format_hotkey_display("Ctrl+Alt+T"), "Ctrl+Alt+T");
+        assert_eq!(format_hotkey_display(""), "");
+    }
 
     #[test]
     fn normalizes_tauri_shortcut_callback_text() {

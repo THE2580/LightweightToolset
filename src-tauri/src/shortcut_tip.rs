@@ -103,13 +103,31 @@ struct Preset {
     label: &'static str,
 }
 
-const APP_HOTKEY_PRESETS: [(&str, &str); 3] = [
+const APP_HOTKEY_PRESETS: &[(&str, &str)] = &[
     ("main_window", "呼出主窗口"),
     ("clipboard", "打开剪贴板弹窗"),
     ("window_pinner", "窗口置顶"),
+    ("screenshot", "截图"),
+    ("screenshot_pin", "贴图"),
+    ("pin_restore", "恢复上次关闭的贴图"),
+    ("pin_close_all", "关闭所有贴图窗口"),
+    ("pin_toggle_visible", "隐藏/显示所有贴图窗口"),
+    ("pin_passthrough", "鼠标穿透"),
 ];
 
-const PRESETS: [Preset; 24] = [
+/// 绑定设置类快捷键归属的工具；`None` 表示软件级入口（呼出主窗口），始终可用。
+fn hotkey_owner_tool(hotkey_id: &str) -> Option<&'static str> {
+    match hotkey_id {
+        "main_window" => None,
+        "clipboard" => Some("clipboard"),
+        "window_pinner" => Some("window_pinner"),
+        "screenshot" | "screenshot_pin" | "pin_restore" | "pin_close_all"
+        | "pin_toggle_visible" | "pin_passthrough" => Some("screenshot"),
+        _ => None,
+    }
+}
+
+const PRESETS: [Preset; 29] = [
     Preset { keys: "Ctrl+C", label: "复制" },
     Preset { keys: "Ctrl+V", label: "粘贴" },
     Preset { keys: "Ctrl+X", label: "剪切" },
@@ -122,12 +140,17 @@ const PRESETS: [Preset; 24] = [
     Preset { keys: "Ctrl+W", label: "关闭标签页" },
     Preset { keys: "Ctrl+Shift+T", label: "恢复标签页" },
     Preset { keys: "Alt+Tab", label: "切换窗口" },
+    Preset { keys: "Alt+F4", label: "关闭当前窗口" },
     Preset { keys: "Win+D", label: "显示桌面" },
     Preset { keys: "Win+E", label: "打开资源管理器" },
     Preset { keys: "Win+I", label: "打开设置" },
     Preset { keys: "Win+S", label: "搜索" },
     Preset { keys: "Win+V", label: "剪贴板历史" },
     Preset { keys: "Win+Tab", label: "任务视图" },
+    Preset { keys: "Win+P", label: "投影/切换显示模式" },
+    Preset { keys: "Win+R", label: "运行" },
+    Preset { keys: "Win+T", label: "任务栏预览" },
+    Preset { keys: "Win+G", label: "打开 Game Bar" },
     Preset { keys: "Win+Shift+S", label: "区域截图" },
     Preset { keys: "Win+Left", label: "窗口左分屏" },
     Preset { keys: "Win+Right", label: "窗口右分屏" },
@@ -327,7 +350,12 @@ fn build_snapshot(tips: Vec<ShortcutTipEntry>) -> ShortcutTipSnapshot {
             hotkeys = Some(registry.settings().hotkeys.clone());
             enabled = APP_HOTKEY_PRESETS
                 .iter()
-                .map(|(id, _)| ((*id).to_owned(), *id == "main_window" || registry.is_enabled(id)))
+                .map(|(id, _)| {
+                    (
+                        (*id).to_owned(),
+                        hotkey_owner_tool(id).map_or(true, |tool| registry.is_enabled(tool)),
+                    )
+                })
                 .collect();
         }
     }
@@ -339,7 +367,7 @@ fn build_snapshot(tips: Vec<ShortcutTipEntry>) -> ShortcutTipSnapshot {
                     .as_ref()
                     .and_then(|map| map.get(&id).cloned())
                     .unwrap_or_default();
-                tip.keys = canonical_chord(&raw).unwrap_or(raw);
+                tip.keys = crate::tools::format_hotkey_display(&raw);
                 tip.available = enabled
                     .iter()
                     .find(|(candidate, _)| *candidate == id)
@@ -383,12 +411,12 @@ pub fn notify_app_hotkey(hotkey_id: &str) {
     let Ok(registry) = state.registry.lock() else {
         return;
     };
-    if hotkey_id != "main_window" && !registry.is_enabled(hotkey_id) {
+    if hotkey_owner_tool(hotkey_id).is_some_and(|tool| !registry.is_enabled(tool)) {
         return;
     }
     let raw = registry.settings().hotkeys.get(hotkey_id).cloned().unwrap_or_default();
     drop(registry);
-    let keys = canonical_chord(&raw).unwrap_or(raw);
+    let keys = crate::tools::format_hotkey_display(&raw);
     if keys.is_empty() {
         return;
     }
@@ -1257,7 +1285,7 @@ pub fn canonical_chord(raw: &str) -> Option<String> {
             "ctrl" | "control" => ctrl = true,
             "alt" => alt = true,
             "shift" => shift = true,
-            "win" | "windows" | "meta" | "cmd" => win = true,
+            "win" | "windows" | "meta" | "super" | "cmd" | "command" => win = true,
             _ => {
                 if key.is_some() {
                     return None;
@@ -1316,3 +1344,25 @@ fn normalize_key_name(token: &str) -> Option<String> {
     Some(name)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::{canonical_chord, hotkey_owner_tool};
+
+    #[test]
+    fn canonical_chord_accepts_super_alias() {
+        assert_eq!(canonical_chord("CTRL+SUPER+/").as_deref(), Some("Win+Ctrl+/"));
+        assert_eq!(canonical_chord("SUPER+D").as_deref(), Some("Win+D"));
+        assert_eq!(canonical_chord("META+Shift+S").as_deref(), Some("Win+Shift+S"));
+    }
+
+    #[test]
+    fn app_hotkey_presets_map_to_owning_tools() {
+        assert_eq!(hotkey_owner_tool("main_window"), None);
+        assert_eq!(hotkey_owner_tool("clipboard"), Some("clipboard"));
+        assert_eq!(hotkey_owner_tool("window_pinner"), Some("window_pinner"));
+        assert_eq!(hotkey_owner_tool("screenshot"), Some("screenshot"));
+        assert_eq!(hotkey_owner_tool("screenshot_pin"), Some("screenshot"));
+        assert_eq!(hotkey_owner_tool("pin_passthrough"), Some("screenshot"));
+    }
+}
