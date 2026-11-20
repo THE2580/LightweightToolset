@@ -9,8 +9,8 @@
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD **`7fd2878`**（`feat: unify hotkey display and extend shortcut tip presets`），发布提交 `b5775dc`，tag `v0.7.0` 已推送。
-- 本地领先 `origin/master` **6 个提交**：`20a3e3d`（快捷键入口迁移 + 录制 UI）、`fc2b2b4`（档位选择器）、`a198249`（截图窗口检测与预选）、`2b9772c`（记忆）、`c4d3207`（主窗口唤出加固 + 提示派发顺序）、`7fd2878`（快捷键外显统一 + 预设扩充）。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD **`1146b18`**（`docs: sync constraints and memory after hotkey work`），**已推送到 `origin/master`**，发布提交 `b5775dc`，tag `v0.7.0` 已推送。
+- 本轮推送的 7 个提交：`20a3e3d`（快捷键入口迁移 + 录制 UI）、`fc2b2b4`（档位选择器）、`a198249`（截图窗口检测与预选）、`2b9772c`（记忆）、`c4d3207`（主窗口唤出加固 + 提示派发顺序）、`7fd2878`（快捷键外显统一 + 预设扩充）、`1146b18`（约束与记忆同步 + 取证文档）。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（rustfmt 重排，非逻辑改动）、`M src-tauri/src/window_pinner.rs`（CRLF 换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
@@ -116,7 +116,7 @@
 # Next Action
 
 - 开发环境在跑：Vite :1420（HTTP 200）+ `%TEMP%\lwt-dev` 实例；开发版 `silentStart=false`、`screenshotUiDetection = window`、快捷键恢复基线（`CTRL+ALT+.` / `CTRL+ALT+F9` / `CTRL+ALT+P` / `CTRL+Q` / `CTRL+ALT+X` / `CTRL+ALT+H` / `CTRL+ALT+T`，剪贴板 `CTRL+SUPER+/`）。
-- 本轮改动已提交为 `c4d3207`（主窗口唤出加固 + 提示派发顺序）与 `7fd2878`（快捷键外显统一 + 预设扩充），记忆/约束随后单独 `docs:` 提交并推送。
+- 本轮改动已提交（`c4d3207` 主窗口唤出加固 + 提示派发顺序、`7fd2878` 快捷键外显统一 + 预设扩充、`1146b18` 约束/记忆/取证文档）并推送到 `origin/master`；工作树只剩既有两项改动与 `.codex/`。
 - 等用户指定下一批功能；**UI 元素级检测已明确暂缓，不要主动做**。
 - 「静默启动后整个软件像死的」处于冻结状态：复现时按 `docs/troubleshooting-main-window.md` 取 `logs/window.log` + 任务管理器现场。
 - 恢复开发：`npm run dev`（:1420）→ `cargo build`（改过 Rust 时）→ **直接** `powershell -Command "Start-Process powershell -Verb RunAs -ArgumentList ... -File %TEMP%\lwt-dev-launch.ps1"`（不要用 `cmd start` 包一层，见 `bugs.md`）→ `%TEMP%\lwt-ui.ps1` 注入点击并截图核对。
