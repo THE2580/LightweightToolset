@@ -18,6 +18,10 @@
 - `src/App.tsx`：新增 `HotkeyRowTarget` / `HotkeyRowEditor`（录制、格式校验、冲突检查、`suspend/resume_tool_hotkeys`、保存与停用），`toHotkeyRowTarget` 供全局页转换条目；`HotkeySettings` 去掉剪贴板分组但保留它参与冲突检查；`ScreenshotToolPage` 与 `ClipboardToolPage` 均改用该组件。
 - `src/App.tsx` 剪贴板侧：`ClipboardToolPage` 新增 `appHotkeys`/`tools`/`setAppSnapshot` 入参、`hotkeyNotice` 提示与 `hotkeyTargets` 冲突列表、`currentHotkey` 从实时 `tools` 取值；`ClipboardSettingsDialog` 改为接收 `tool`/`hotkeyTargets`/`setSnapshot`/`onNotice`，内嵌快捷键行。
 - `src/App.tsx` 窗口置顶侧：`WindowPinnerToolPage` 改为接收 `appHotkeys`/`tools`/`setAppSnapshot`，工具栏「快捷键」后直接内嵌 `HotkeyRowEditor`（`hideTitle` 紧凑模式），删除跳转全局快捷键页的齿轮按钮；空状态文案改用实时 `currentHotkey`。`ToolPage` 不再需要 `onOpenSettingsTab`，已从签名与调用点移除。
+- 2026-11-19 截图 UI 检测（第一阶段，未提交）：
+  - `settings.rs`/`lib.rs`：新增 `screenshotUiDetection`（none/window/window_ui，默认 none，patch 只接受这三个值）；`Cargo.toml` 打开 `Win32_Graphics_Dwm`。
+  - `overlay.rs`：`UiDetection` 枚举 + `OverlayOptions.ui_detection`；`OverlayState` 增加 `ui_detection`/`preselect`/`press`；进入截图预选全屏，`window` 模式鼠标移动用 `EnumWindows` 取光标下窗口（排除本进程、隐藏/遮蔽窗口，DWM 外框，任务栏也算）；`selecting_rect()` 统一绘制；LBUTTONDOWN 只记起点，移动超过 3px 才转拖拽，否则松手时若在预选内则确认进入标注；`WM_LBUTTONUP` 自定义选区路径保持原样。
+  - `App.tsx`：新增 `UiDetectionMode`、设置类型字段、「UI 检测」行（SegmentedControl，`窗口和UI` 置灰）；`SegmentedControl` 支持 `disabled` 档位（点击/拖动都会回到当前值）。
 - 2026-11-19 新增 `CountPicker`（数量档位选择器）：显示当前值的胶囊 + 悬停/聚焦展开的档位轨道，支持拖动滑块与点选；窗口置顶「最大数量」与截图「历史保留数量」共用，档位 `WINDOW_PIN_LIMITS = [1,5,10,15,20]`；`align="end"` 用于贴近右缘时向左展开。截图侧原数字输入框与「张」后缀已删除，存储仍为 `screenshotPinHistory`。
 - `HotkeyRowEditor` 增加 `hideTitle?: boolean`：为 true 时只渲染 `.hotkey-inline-controls` 控件，不渲染标题与整行留白（供工具栏类紧凑位置使用）。
 - `HotkeyRowEditor` 录制 UI（2026-11-19 改版）：单一 `.hotkey-box`（高 30、`padding: 0 8px`、**不设 min-width**，宽度完全随内容），三态靠边框线型与颜色区分——有值=2px 深灰实线 `#8b98aa`，未配置=同色**虚线** + 次要文字色，录制中=主色实线 + 主色文字 + 3px 蓝色光晕；右侧**只有一个按钮**：常态铅笔（进入录制），录制态换成垃圾桶（删除快捷键）。保存/取消按钮已删除，录制框失焦即 `saveHotkey()` 自动校验保存，空草稿只退出不报错。
@@ -39,6 +43,14 @@
 
 # Verification
 
+- 2026-11-20 预选态「整屏压暗 / 放大镜亮痕」修复（本轮）：`band_needs_full_paint` 增加「脏区与 `selecting_rect()` 相交即完整绘制」，不再只靠预选变化触发整屏重绘。实机：光标停在全屏桌面处触发截图 → 覆盖层正常显示全屏预选（0,0–2560×1600 标签、无压暗、无亮痕）；`cargo check` 与 49 项单测通过。
+- 2026-11-19 截图 UI 检测实机验证：
+  - `cargo check` / `npm run build` 通过；单测 49 passed / 2 ignored（新增 `ui_detection_parses_modes`）；
+  - 进入截图即全屏预选（覆盖层 2560×1600，蓝色边框贴屏幕边缘）；
+  - 仅窗口模式：光标移到窗口上后预选切换成窗口矩形（截图对比可见）；
+  - 在预选内单击 → 进入标注阶段，工具栏出现、尺寸标签显示（实测量到 1470×1247 的窗口选区）；
+  - 「UI 检测」行三档：`不检测`/`仅窗口` 可点并写入 `settings.json`（none/window 互切验证过），`窗口和UI` 置灰不可点；
+  - 开发版截图快捷键临时改为 `CTRL+ALT+F9`（避开安装版占用的 A），测试后保留该值便于继续验证。
 - 2026-11-19 截图「历史保留数量」改为档位选择器（本轮）：
   - `CountPicker` 从窗口置顶的「最大数量」抽成共享组件，两处复用 `WINDOW_PIN_LIMITS = [1,5,10,15,20]`；截图侧原数字输入框与「张」后缀删除；
   - 实机验证：贴图标签显示胶囊「20」，悬停后向左展开 1/5/10/15/20 五档；点击 10 档写入 `settings.json` 的 `screenshotPinHistory`，控件即时刷新；验证后已改回默认 20；
@@ -75,6 +87,8 @@
 
 # Next Action
 
-- 快捷键这批已完成、已验收、已提交（HEAD，未推送）；等你决定是否推送。
+- **开发环境已恢复**（2026-11-20 11:09）：Vite 监听 1420（HTTP 200），开发版实例 pid 4860，来自 `%TEMP%\lwt-dev`，窗口正常加载；截图快捷键 `CTRL+ALT+F9`、`screenshotUiDetection = window` 沿用昨天设置。
+- 待办：等用户确认放大镜/鼠标跟手是否达标；若仍慢则拆细放大镜面板重绘；UI 检测这批**未提交**（10 个文件 + 记忆），验收后再提交。
+- 快捷键这批已验收并已提交（HEAD，未推送）；推送等你决定。
 - 恢复开发：`npm run dev`（:1420）→ `cargo build`（改过 Rust 时）→ **直接** `powershell -Command "Start-Process powershell -Verb RunAs -ArgumentList ... -File %TEMP%\lwt-dev-launch.ps1"`（不要用 `cmd start` 包一层，见 `bugs.md`）→ `%TEMP%\lwt-ui.ps1` 注入点击并截图核对。
 - 未做的待办见 `progress.md`：静默启动托盘唤起失效（用户要求稍后）、标注拖动/文本再编辑、缩略图观感、贴图历史浏览（暂缓）。

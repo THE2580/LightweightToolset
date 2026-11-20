@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 
 use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
+use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::Com::{
     CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
@@ -38,6 +39,8 @@ const WM_OVERLAY_PIN: u32 = WM_APP + 2;
 
 const BORDER: i32 = 2;
 const LABEL_HEIGHT: i32 = 24;
+/// 按下后移动超过该像素数才算“拖拽自定义”，否则视为单击确认预选。
+const DRAG_THRESHOLD: i32 = 3;
 
 /// 放大镜：15×15 像素，每格 16 px（与 PixPin 的放大倍率一致）。
 const MAG_CELLS: i32 = 15;
@@ -102,6 +105,24 @@ pub struct OverlayOptions {
     pub guides_width: i32,
     /// 光标十字线宽（1–5）。
     pub cursor_guide_width: i32,
+    /// UI 检测模式：本轮只实现「仅窗口」。
+    pub ui_detection: UiDetection,
+}
+
+/// 截图时的智能预选：不检测 / 仅窗口 / 窗口和 UI（后者本轮按仅窗口处理）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiDetection {
+    None,
+    Window,
+}
+
+impl UiDetection {
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "window" | "window_ui" => Self::Window,
+            _ => Self::None,
+        }
+    }
 }
 
 impl OverlayOptions {
@@ -120,6 +141,7 @@ impl OverlayOptions {
             cursor_guide_color: super::annotation::rgb(0x80, 0x80, 0x80),
             guides_width: 1,
             cursor_guide_width: 1,
+            ui_detection: UiDetection::None,
         }
     }
 }
@@ -177,6 +199,12 @@ struct OverlayState {
     label_brush: HBRUSH,
     phase: Phase,
     selection: Option<Selection>,
+    /// UI 检测模式。
+    ui_detection: UiDetection,
+    /// 选区阶段的预选矩形（全屏或光标下窗口）：单击即确认。
+    preselect: Option<Selection>,
+    /// 本次按下的起点，用于区分「单击确认」与「拖拽自定义」。
+    press: Option<(i32, i32)>,
     editing: Option<TextEdit>,
     caret_on: bool,
     adjust: Option<AdjustState>,
@@ -265,6 +293,14 @@ impl OverlayState {
         Some((left, top, right - left, bottom - top))
     }
 
+    /// 选区阶段实际展示的区域：拖拽中的矩形优先，否则用预选矩形。
+    fn selecting_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        if let Some(rect) = self.current_rect() {
+            return Some(rect);
+        }
+        self.preselect.map(|sel| (sel.x, sel.y, sel.width, sel.height))
+    }
+
     /// 放大镜面板位置：默认在光标右下，越界时翻到另一侧。
     fn panel_rect(&self, cursor: (i32, i32)) -> (i32, i32, i32, i32) {
         let (cx, cy) = cursor;
@@ -317,14 +353,20 @@ impl OverlayState {
             }
             return Some(frame);
         }
-        let mut rect = self.current_rect().map(|(x, y, w, h)| {
-            (
-                (x - BORDER - 1).clamp(0, self.width),
-                (y - LABEL_HEIGHT - BORDER).clamp(0, self.height),
-                (w + 2 * (BORDER + 1) + 1).clamp(0, self.width),
-                (h + LABEL_HEIGHT + 2 * BORDER + 1).clamp(0, self.height),
-            )
-        });
+        // 选区阶段：拖拽时按整框重绘；预选态只画放大镜，边框/压暗靠预选变化时的一次整屏重绘
+        // （painted_once=false）。否则全屏预选会变成每帧整屏 BitBlt，鼠标和放大镜明显掉帧。
+        let mut rect = if self.dragging {
+            self.current_rect().map(|(x, y, w, h)| {
+                (
+                    (x - BORDER - 1).clamp(0, self.width),
+                    (y - LABEL_HEIGHT - BORDER).clamp(0, self.height),
+                    (w + 2 * (BORDER + 1) + 1).clamp(0, self.width),
+                    (h + LABEL_HEIGHT + 2 * BORDER + 1).clamp(0, self.height),
+                )
+            })
+        } else {
+            None
+        };
         if self.magnifier_visible() {
             if let Some(cursor) = self.cursor {
                 rect = union_rect(rect, Some(self.panel_rect(cursor)));
@@ -348,6 +390,96 @@ impl OverlayState {
 
 fn rect_intersects(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
     a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+}
+
+/// 枚举窗口时用的查找上下文：覆盖层坐标 + 光标屏幕坐标 + 需要跳过的窗口。
+struct WindowLookup {
+    point: (i32, i32),
+    origin: (i32, i32),
+    width: i32,
+    height: i32,
+    /// 只跳过截图覆盖层自身；本软件的其它窗口（主窗口、贴图等）允许被预选。
+    exclude: HWND,
+    found: Option<Selection>,
+}
+
+unsafe extern "system" fn enum_window_for_point(hwnd: HWND, lp: LPARAM) -> i32 {
+    let lookup = &mut *(lp as *mut WindowLookup);
+    if lookup.found.is_some() {
+        return 0;
+    }
+    if IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+    // 跳过截图覆盖层自身，避免永远命中铺满屏幕的它。
+    if hwnd == lookup.exclude {
+        return 1;
+    }
+    let mut cloaked = 0u32;
+    if DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_CLOAKED as u32,
+        &mut cloaked as *mut u32 as *mut _,
+        std::mem::size_of::<u32>() as u32,
+    ) == 0
+        && cloaked != 0
+    {
+        return 1;
+    }
+    let mut rect: RECT = std::mem::zeroed();
+    let mut ok = DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+        &mut rect as *mut RECT as *mut _,
+        std::mem::size_of::<RECT>() as u32,
+    ) == 0;
+    if !ok {
+        ok = GetWindowRect(hwnd, &mut rect) != 0;
+    }
+    if !ok {
+        return 1;
+    }
+    let left = rect.left.max(lookup.origin.0);
+    let top = rect.top.max(lookup.origin.1);
+    let right = rect.right.min(lookup.origin.0 + lookup.width);
+    let bottom = rect.bottom.min(lookup.origin.1 + lookup.height);
+    if right <= left || bottom <= top {
+        return 1;
+    }
+    if lookup.point.0 < left
+        || lookup.point.0 >= right
+        || lookup.point.1 < top
+        || lookup.point.1 >= bottom
+    {
+        return 1;
+    }
+    lookup.found = Some(Selection {
+        x: left - lookup.origin.0,
+        y: top - lookup.origin.1,
+        width: right - left,
+        height: bottom - top,
+    });
+    0
+}
+
+/// 光标下的顶层窗口（按 z 序从上到下第一个命中），排除本进程窗口与隐藏/遮蔽窗口。
+fn window_under_cursor(
+    cursor: (i32, i32),
+    origin: (i32, i32),
+    size: (i32, i32),
+) -> Option<Selection> {
+    let mut lookup = WindowLookup {
+        point: (origin.0 + cursor.0, origin.1 + cursor.1),
+        origin,
+        width: size.0,
+        height: size.1,
+        exclude: OVERLAY_HWND.load(Ordering::SeqCst) as HWND,
+        found: None,
+    };
+    unsafe {
+        EnumWindows(Some(enum_window_for_point), &mut lookup as *mut WindowLookup as LPARAM);
+    }
+    lookup.found
 }
 
 /// 把辅助线画进某一块区域（调用方已保证内容已恢复）。
@@ -376,6 +508,15 @@ fn band_needs_full_paint(state: &OverlayState, band: (i32, i32, i32, i32)) -> bo
         );
         if rect_intersects(band, expanded) {
             return true;
+        }
+    }
+    // 选区阶段：脏区与预选相交就必须画原图与边框，否则首帧/放大镜会只剩压暗层
+    // （表现为整屏变暗、放大镜拖出亮痕）。
+    if state.phase == Phase::Selecting {
+        if let Some((x, y, w, h)) = state.selecting_rect() {
+            if rect_intersects(band, (x, y, w, h)) {
+                return true;
+            }
         }
     }
     if state.magnifier_visible() {
@@ -1173,7 +1314,7 @@ unsafe fn paint_rect(state: &mut OverlayState, hdc: HDC, dirty: (i32, i32, i32, 
                         toolbar::draw(state.back.dc(), &toolbar_state);
                     }
                 }
-            } else if let Some(w) = state.current_rect() {
+            } else if let Some(w) = state.selecting_rect() {
                 let (x, y, sw, sh) = w;
                 let rx = x.max(dx);
                 let ry = y.max(dy);
@@ -1495,8 +1636,30 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         }
                         return;
                     }
-                    if state.phase == Phase::Selecting && state.dragging {
-                        state.current = Some((cx, cy));
+                    if state.phase == Phase::Selecting {
+                        if state.dragging {
+                            state.current = Some((cx, cy));
+                        } else if let Some((px, py)) = state.press {
+                            if (cx - px).abs() >= DRAG_THRESHOLD || (cy - py).abs() >= DRAG_THRESHOLD {
+                                state.dragging = true;
+                                state.anchor = Some((px, py));
+                                state.current = Some((cx, cy));
+                                // 从预选切到自定义拖拽，旧预选的边框/压暗要整屏擦掉。
+                                state.painted_once = false;
+                            }
+                        } else if state.ui_detection == UiDetection::Window {
+                            if let Some(rect) = window_under_cursor(
+                                (cx, cy),
+                                (state.origin_x, state.origin_y),
+                                (state.width, state.height),
+                            ) {
+                                if state.preselect != Some(rect) {
+                                    state.preselect = Some(rect);
+                                    // 预选变化需要整屏重绘：压暗/边框/标签都要跟着换。
+                                    state.painted_once = false;
+                                }
+                            }
+                        }
                     }
                     if state.phase == Phase::Annotating
                         && matches!(state.doc.tool(), Some(Shape::Pencil | Shape::Highlighter))
@@ -1519,9 +1682,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 if let Some(state) = cell.borrow_mut().as_mut() {
                     match state.phase {
                         Phase::Selecting => {
-                            state.dragging = true;
-                            state.anchor = Some((cx, cy));
-                            state.current = Some((cx, cy));
+                            state.press = Some((cx, cy));
+                            state.dragging = false;
+                            state.anchor = None;
+                            state.current = None;
                             state.cursor = Some((cx, cy));
                         }
                         Phase::Annotating => {
@@ -1794,10 +1958,26 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                         repaint = true;
                                     }
                                 }
-                                state.dragging = false;
-                                state.anchor = None;
-                                state.current = None;
+                            } else if let (Some((px, py)), Some(preselect)) = (state.press, state.preselect) {
+                                // 单击预选区域：直接采用预选（全屏或光标下窗口）进入标注。
+                                let inside = px >= preselect.x
+                                    && px < preselect.x + preselect.width
+                                    && py >= preselect.y
+                                    && py < preselect.y + preselect.height;
+                                if inside {
+                                    state.selection = Some(preselect);
+                                    state.phase = Phase::Annotating;
+                                    repaint = true;
+                                }
                             }
+                            if repaint {
+                                // 进入标注阶段要整屏重绘：擦掉预选态的全屏边框/压暗。
+                                state.painted_once = false;
+                            }
+                            state.press = None;
+                            state.dragging = false;
+                            state.anchor = None;
+                            state.current = None;
                         }
                         Phase::Annotating => {
                             if state.adjust.is_some() {
@@ -2447,6 +2627,15 @@ pub fn select(width: i32, height: i32, options: OverlayOptions) -> Option<Overla
                     cursor: None,
                     phase: Phase::Selecting,
                     selection: None,
+                    ui_detection: options.ui_detection,
+                    // 进入截图即预选全屏；开启「仅窗口」后由鼠标移动切换成窗口。
+                    preselect: Some(Selection {
+                        x: 0,
+                        y: 0,
+                        width,
+                        height,
+                    }),
+                    press: None,
                     editing: None,
                     caret_on: false,
                     adjust: None,
@@ -2527,7 +2716,16 @@ pub fn abort() {
 
 #[cfg(test)]
 mod tests {
-    use super::{color_text, square_cursor, union_rect, Selection};
+    use super::{color_text, square_cursor, union_rect, Selection, UiDetection};
+
+    #[test]
+    fn ui_detection_parses_modes() {
+        assert_eq!(UiDetection::parse("none"), UiDetection::None);
+        assert_eq!(UiDetection::parse("WINDOW"), UiDetection::Window);
+        // 本轮 window_ui 先按「仅窗口」处理。
+        assert_eq!(UiDetection::parse("window_ui"), UiDetection::Window);
+        assert_eq!(UiDetection::parse("unknown"), UiDetection::None);
+    }
 
     #[test]
     fn union_rect_covers_both() {

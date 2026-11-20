@@ -116,6 +116,13 @@ pub struct AppSettings {
     /// 贴图划词后是否立即复制到剪贴板（默认关闭，只选中不复制）。
     #[serde(default)]
     pub screenshot_pin_auto_copy_text: bool,
+    /// 截图 UI 检测：`none` 不检测 / `window` 仅窗口 / `window_ui` 窗口和 UI（本轮未实现）。
+    #[serde(default = "default_ui_detection")]
+    pub screenshot_ui_detection: String,
+}
+
+fn default_ui_detection() -> String {
+    "none".to_owned()
 }
 
 fn default_pin_lock() -> String {
@@ -209,6 +216,7 @@ impl Default for AppSettings {
             screenshot_pin_shadow: default_pin_shadow(),
             screenshot_pin_history: default_pin_history(),
             screenshot_pin_auto_copy_text: false,
+            screenshot_ui_detection: default_ui_detection(),
         }
     }
 }

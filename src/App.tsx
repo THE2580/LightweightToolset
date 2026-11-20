@@ -370,6 +370,8 @@ type AppSettings = {
   screenshotPinShadow: boolean;
   screenshotPinHistory: number;
   screenshotPinAutoCopyText: boolean;
+  /** 截图 UI 检测：none / window / window_ui（后者本轮未实现）。 */
+  screenshotUiDetection: UiDetectionMode;
 };
 
 type SettingsPatch = Partial<Omit<AppSettings, "tools" | "autoStart">>;
@@ -478,7 +480,7 @@ const LOG_LEVEL_OPTIONS = [
   },
 ];
 
-type SegmentedOption<T extends string | number> = { label: ReactNode; value: T };
+type SegmentedOption<T extends string | number> = { label: ReactNode; value: T; disabled?: boolean };
 
 function SegmentedControl<T extends string | number>({
   ariaLabel,
@@ -518,6 +520,11 @@ function SegmentedControl<T extends string | number>({
   }, [options.length, selectedIndex]);
 
   function selectIndex(index: number) {
+    if (options[index]?.disabled) {
+      // 置灰档位不可选：拖到这里或点击都回到当前值。
+      setDisplayIndex(selectedIndex);
+      return;
+    }
     setAnimate(true);
     setDisplayIndex(index);
     if (options[index].value !== value) {
@@ -535,7 +542,9 @@ function SegmentedControl<T extends string | number>({
   }
 
   function moveDrag(event: ReactPointerEvent<HTMLSpanElement>) {
-    if (dragging) setDisplayIndex(indexAt(event.clientX));
+    if (!dragging) return;
+    const index = indexAt(event.clientX);
+    if (!options[index]?.disabled) setDisplayIndex(index);
   }
 
   function finishDrag(event: ReactPointerEvent<HTMLSpanElement>) {
@@ -565,10 +574,12 @@ function SegmentedControl<T extends string | number>({
       {options.map((option, index) => (
         <button
           aria-selected={index === selectedIndex}
-          className={index === selectedIndex ? "active" : ""}
+          className={`${index === selectedIndex ? "active" : ""} ${option.disabled ? "disabled" : ""}`.trim()}
+          disabled={option.disabled}
           key={String(option.value)}
           onClick={() => selectIndex(index)}
           role="tab"
+          title={option.disabled ? "后续版本支持" : undefined}
           type="button"
         >
           {option.label}
@@ -1824,6 +1835,9 @@ type ScreenshotDefaults = {
 
 type ScreenshotTab = "capture" | "pin" | "save" | "annotate" | "hotkey";
 
+/// 截图 UI 检测模式：本轮只实现「仅窗口」，「窗口和UI」置灰待后续。
+type UiDetectionMode = "none" | "window" | "window_ui";
+
 /// 贴图组快捷键：由截图工具页「快捷键」标签配置，不在全局设置里重复出现。
 const PIN_HOTKEY_IDS = ["screenshot_pin", "pin_restore", "pin_close_all", "pin_toggle_visible", "pin_passthrough"];
 
@@ -1861,6 +1875,7 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
   const pinShadow = settings?.screenshotPinShadow ?? true;
   const pinHistory = settings?.screenshotPinHistory ?? 20;
   const pinAutoCopyText = settings?.screenshotPinAutoCopyText ?? false;
+  const uiDetection: UiDetectionMode = (settings?.screenshotUiDetection ?? "none") as UiDetectionMode;
   const currentHotkey = tools.find((item) => item.id === "screenshot")?.hotkey ?? tool.hotkey;
   // 贴图组的快捷键与截图快捷键一样走工具页配置。
   const pinHotkeys = appHotkeys.filter((item) => item.supportsHotkey && PIN_HOTKEY_IDS.includes(item.id));
@@ -2178,6 +2193,22 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
                   </button>
                 ) : null}
               </div>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h2>UI 检测</h2>
+                <p>鼠标移到窗口上时预选该窗口；「窗口和UI」将在后续版本支持</p>
+              </div>
+              <SegmentedControl
+                ariaLabel="UI 检测"
+                onChange={(value) => void updateSettings({ screenshotUiDetection: value })}
+                options={[
+                  { value: "none" as UiDetectionMode, label: "不检测" },
+                  { value: "window" as UiDetectionMode, label: "仅窗口" },
+                  { value: "window_ui" as UiDetectionMode, label: "窗口和UI", disabled: true },
+                ]}
+                value={uiDetection}
+              />
             </div>
               </>
             ) : null}

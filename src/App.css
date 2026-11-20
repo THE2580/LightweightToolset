@@ -209,6 +209,8 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .segmented > button { position: relative; z-index: 2; display: inline-flex; min-width: 0; align-items: center; justify-content: center; gap: 3px; height: 26px; padding: 0 8px; border: 0; border-radius: 6px; color: var(--muted-text); background: transparent; cursor: pointer; font-size: 10px; white-space: nowrap; transition: color 150ms ease, font-weight 150ms ease; }
 .segmented > button:not(.active):hover { color: var(--text); background: var(--control-hover); }
 .segmented > button.active { color: var(--text); font-weight: 700; pointer-events: none; }
+.segmented > button:disabled { color: color-mix(in srgb, var(--muted-text) 55%, transparent); cursor: not-allowed; }
+.segmented > button:disabled:hover { background: transparent; color: color-mix(in srgb, var(--muted-text) 55%, transparent); }
 .theme-segmented { width: 185px; }
 .settings-note { margin: 10px 0 0; color: var(--muted-text); font-size: 10px; line-height: 1.5; }
 .hotkey-group { display: grid; gap: 0; padding: 10px 0 3px; border-bottom: 1px solid var(--soft-border); }

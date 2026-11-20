@@ -129,6 +129,7 @@ struct SettingsPatch {
     screenshot_pin_shadow: Option<bool>,
     screenshot_pin_history: Option<u8>,
     screenshot_pin_auto_copy_text: Option<bool>,
+    screenshot_ui_detection: Option<String>,
 }
 
 fn cold_start_ms(state: &AppState) -> Result<u128, String> {
@@ -1208,6 +1209,12 @@ fn update_app_settings(
     if let Some(auto_copy) = patch.screenshot_pin_auto_copy_text {
         settings.screenshot_pin_auto_copy_text = auto_copy;
         screenshot::set_pin_auto_copy_text(auto_copy);
+    }
+    if let Some(detection) = patch.screenshot_ui_detection {
+        // 本轮只实现「仅窗口」；`window_ui` 先落库，运行时按「仅窗口」处理。
+        if matches!(detection.as_str(), "none" | "window" | "window_ui") {
+            settings.screenshot_ui_detection = detection;
+        }
     }
     if let Some(window_title) = patch.window_title {
         let title = window_title.trim();

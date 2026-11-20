@@ -4,10 +4,10 @@
 
 # Current Focus
 
-- **2026-11-19 快捷键入口迁移 + 录制 UI 改版（已验收，待提交）**：剪贴板与窗口置顶的快捷键都迁到各自设置页/工具页，全局设置只剩「呼出主窗口」；`HotkeyRowEditor` 共享组件（`hideTitle` 支持工具栏），录制框单框单按钮、失焦自动保存，2px 边框 / 宽度随内容 / 空态虚线 / 录制态主色 + 光晕。
-- 开发版当前状态：`%TEMP%\lwt-dev` 副本运行中（pid 14776），**静默启动默认已改为关闭**；剪贴板/截图/窗口置顶三个工具启用，剪贴板快捷键为空（用户测试「停用」），窗口置顶为默认 `CTRL+ALT+T`。
-- 已记账待办（本轮不做）：静默启动后托盘唤起主窗口偶发失效，正式版与开发版均可复现，见 `bugs.md`「活跃风险与约束」。
-- 工作树：本次改动已提交（HEAD，未推送），工作树只剩既有三项（`window_service.rs`、`window_pinner.rs`、`.codex/`）。
+- **2026-11-19 截图 UI 检测（第一阶段，已自测，待用户确认手感，未提交）**：截图页「UI 检测」三档（不检测/仅窗口/窗口和UI 置灰）；进入截图预选全屏，仅窗口模式下鼠标移动预选跟随窗口（DWM 外框、排除本进程、任务栏也算），单击预选进入标注、拖拽自定义松手确认，预选态不显示工具栏。
+- **性能修复（当天最后一项）**：预选曾把每帧脏区撑成整屏，导致鼠标/放大镜像 60 帧；已改为预选态只重绘放大镜面板，预选切换/拖拽开始/进入标注时整屏重绘一次。
+- 开发环境已恢复（2026-11-20 11:09）：Vite(:1420) + `%TEMP%\lwt-dev` 实例（pid 4860）；开发版数据保留（截图快捷键 `CTRL+ALT+F9`、`screenshotUiDetection = window`）。
+- 待提交改动：`Cargo.toml`、`settings.rs`、`lib.rs`、`screenshot/{mod,overlay}.rs`、`App.tsx`、`App.css`、`AGENTS.md`、`agent_memory/*`。
 
 # 下一批候选（用户未定）
 
@@ -29,8 +29,9 @@
 
 # Resume Here
 
-0. **开发版在跑**：`npm run dev`(:1420) + `%TEMP%\lwt-dev` 副本（pid 14776）。改前端后 Vite 会热更，必要时 `Ctrl+R`。
-1. 快捷键这批已验收并提交（HEAD，未推送）；是否推送等用户明确指令。
+0. **开发环境已恢复**：Vite(:1420, 200) + `%TEMP%\lwt-dev` 实例（pid 4860）；重启流程：`npm run dev` → `cargo build`（Rust 有改动）→ 直接 `Start-Process -Verb RunAs ... -File %TEMP%\lwt-dev-launch.ps1`。
+1. 先让用户确认放大镜/鼠标跟手是否达标；若仍偏慢，下一步把放大镜面板自身的重绘再拆细（目前整块约 500×600）。
+2. 快捷键这批已验收并提交（HEAD，未推送）；UI 检测这批**未提交**，等用户验收后再提交。
 2. 重启开发环境：`npm run dev` →（改过 Rust 时）`cargo build` → **直接** `powershell -Command "Start-Process powershell -Verb RunAs -ArgumentList ... -File %TEMP%\lwt-dev-launch.ps1"`（不要用 `cmd start` 包一层）→ `%TEMP%\lwt-ui.ps1 -Steps 'c:x,y;s:ms' -Png ...` 注入点击并截图。
 3. 坑速查：
    - 改 `settings.json` 用 node（PS 5.1 会按 ANSI 解码并写 BOM）；改正式版配置要「先停进程」。

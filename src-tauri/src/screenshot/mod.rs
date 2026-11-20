@@ -148,6 +148,7 @@ fn capture_config(
             .unwrap_or(annotation::rgb(0x80, 0x80, 0x80)),
         guides_width: settings.screenshot_guides_width.clamp(1, 5) as i32,
         cursor_guide_width: settings.screenshot_cursor_guide_width.clamp(1, 5) as i32,
+        ui_detection: overlay::UiDetection::parse(&settings.screenshot_ui_detection),
     };
     let pin_options = pin::PinOptions {
         shadow: settings.screenshot_pin_shadow,
