@@ -9,7 +9,7 @@
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD **`1146b18`**（`docs: sync constraints and memory after hotkey work`），**已推送到 `origin/master`**，发布提交 `b5775dc`，tag `v0.7.0` 已推送。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；**已与 `origin/master` 同步**（2026-11-20 推送，HEAD 以 `git log` 为准），发布提交 `b5775dc`，tag `v0.7.0` 已推送。
 - 本轮推送的 7 个提交：`20a3e3d`（快捷键入口迁移 + 录制 UI）、`fc2b2b4`（档位选择器）、`a198249`（截图窗口检测与预选）、`2b9772c`（记忆）、`c4d3207`（主窗口唤出加固 + 提示派发顺序）、`7fd2878`（快捷键外显统一 + 预设扩充）、`1146b18`（约束与记忆同步 + 取证文档）。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（rustfmt 重排，非逻辑改动）、`M src-tauri/src/window_pinner.rs`（CRLF 换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
