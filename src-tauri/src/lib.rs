@@ -1343,7 +1343,7 @@ fn show_main_window(app: &AppHandle) {
 
 /// 主窗口唤出事件的落盘日志：内存日志在界面卡死时读不到，这里同时追加到存储目录下的
 /// `logs/window.log`（超过 256KB 时重置），用于事后定位「托盘/快捷键唤不出主窗口」的现场。
-fn log_main_window_event(app: &AppHandle, message: &str) {
+pub(crate) fn log_main_window_event(app: &AppHandle, message: &str) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };

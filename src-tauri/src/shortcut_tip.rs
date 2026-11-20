@@ -789,20 +789,42 @@ fn ensure_window(app: &AppHandle) -> Option<WebviewWindow> {
         return Some(window);
     }
     READY.store(false, Ordering::SeqCst);
-    let (tx, rx) = mpsc::channel();
-    let app_for_main = app.clone();
-    if app
-        .run_on_main_thread(move || {
-            let _ = tx.send(build_window(&app_for_main));
-        })
-        .is_err()
-    {
-        return None;
+    // 主线程可能正在创建别的窗口（例如剪贴板弹窗）：tauri 的建窗消息在主线程上就地执行，
+    // 两个建窗嵌套会互相等锁、永久卡死。这里改成有界重试，等主线程空闲了再建。
+    for attempt in 0..5 {
+        if crate::window_service::window_build_busy() {
+            crate::log_main_window_event(app, "window_build.busy defer=shortcut_tip");
+            std::thread::sleep(Duration::from_millis(60 * (attempt + 1)));
+            continue;
+        }
+        let (tx, rx) = mpsc::channel();
+        let app_for_main = app.clone();
+        if app
+            .run_on_main_thread(move || {
+                let result = if crate::window_service::window_build_busy() {
+                    None
+                } else {
+                    build_window(&app_for_main)
+                };
+                let _ = tx.send(result);
+            })
+            .is_err()
+        {
+            return None;
+        }
+        match rx.recv_timeout(Duration::from_millis(800)) {
+            Ok(Some(window)) => return Some(window),
+            _ => {
+                // 主线程忙或本次没建出来：退避后再试，最后一次仍失败就放弃这次提示。
+                std::thread::sleep(Duration::from_millis(60 * (attempt + 1)));
+            }
+        }
     }
-    rx.recv_timeout(Duration::from_secs(3)).ok().flatten()
+    None
 }
 
 fn build_window(app: &AppHandle) -> Option<WebviewWindow> {
+    let _build_guard = crate::window_service::begin_window_build();
     let window = WebviewWindowBuilder::new(app, NOTIFY_LABEL, WebviewUrl::App("notification.html".into()))
         .title("Shortcut tip")
         .inner_size(NOTIFY_WIDTH, NOTIFY_HEIGHT)

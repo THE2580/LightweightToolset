@@ -15,6 +15,31 @@ static CLIPBOARD_POPUP_PINNED: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_POPUP_DRAGGING: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_POPUP_AUTO_CLOSE_SUSPENDED: AtomicBool = AtomicBool::new(false);
 
+/// 主线程上是否正在创建窗口。
+///
+/// tauri 的窗口创建走 `send_user_message`，在主线程上会**就地执行**；而创建窗口时 Windows 会
+/// 派发窗口消息，期间可能执行另一个同样要建窗的任务（实测：剪贴板弹窗创建过程中执行了快捷键
+/// 提示浮窗的建窗任务）。两个创建嵌套执行会互相等 tauri 的窗口锁，主线程永久卡死——表现为
+/// 软件还在、托盘图标还在，但所有窗口和菜单都不响应。后到的建窗任务必须先检查这个标志让路。
+static WINDOW_BUILD_BUSY: AtomicBool = AtomicBool::new(false);
+
+pub struct WindowBuildGuard;
+
+pub fn window_build_busy() -> bool {
+    WINDOW_BUILD_BUSY.load(Ordering::SeqCst)
+}
+
+pub fn begin_window_build() -> WindowBuildGuard {
+    WINDOW_BUILD_BUSY.store(true, Ordering::SeqCst);
+    WindowBuildGuard
+}
+
+impl Drop for WindowBuildGuard {
+    fn drop(&mut self) {
+        WINDOW_BUILD_BUSY.store(false, Ordering::SeqCst);
+    }
+}
+
 pub enum ToolWindowKind {
     QuickPopup,
     FreeWindow,
@@ -39,24 +64,37 @@ pub fn open_timer_free_window(app: &AppHandle, timer_id: &str) -> Result<(), Str
     let label = timer_free_window_label(timer_id);
     if let Some(window) = app.get_webview_window(&label) {
         focus_window(&window);
-        log_window(app, "timer", format!("timer.free_window.focused id={timer_id}"));
+        log_window(
+            app,
+            "timer",
+            format!("timer.free_window.focused id={timer_id}"),
+        );
         return Ok(());
     }
 
     let url = WebviewUrl::App(format!("free.html?kind=timer&id={timer_id}").into());
-    let window = WebviewWindowBuilder::new(app, &label, url)
-        .title("计时器")
-        .inner_size(300.0, 186.0)
-        .min_inner_size(260.0, 160.0)
-        .resizable(true)
-        .maximizable(false)
-        .always_on_top(true)
-        .visible(false)
-        .build()
-        .map_err(|error| format!("打开计时器自由窗口失败: {error}"))?;
-    window.show().map_err(|error| format!("显示计时器自由窗口失败: {error}"))?;
+    let window = {
+        let _build_guard = begin_window_build();
+        WebviewWindowBuilder::new(app, &label, url)
+            .title("计时器")
+            .inner_size(300.0, 186.0)
+            .min_inner_size(260.0, 160.0)
+            .resizable(true)
+            .maximizable(false)
+            .always_on_top(true)
+            .visible(false)
+            .build()
+            .map_err(|error| format!("打开计时器自由窗口失败: {error}"))?
+    };
+    window
+        .show()
+        .map_err(|error| format!("显示计时器自由窗口失败: {error}"))?;
     focus_window(&window);
-    log_window(app, "timer", format!("timer.free_window.opened id={timer_id}"));
+    log_window(
+        app,
+        "timer",
+        format!("timer.free_window.opened id={timer_id}"),
+    );
     Ok(())
 }
 
@@ -68,17 +106,22 @@ pub fn open_timer_clock_window(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App("free.html?kind=clock".into()))
-        .title("本地时间")
-        .inner_size(300.0, 156.0)
-        .min_inner_size(260.0, 136.0)
-        .resizable(true)
-        .maximizable(false)
-        .always_on_top(true)
-        .visible(false)
-        .build()
-        .map_err(|error| format!("打开本地时间自由窗口失败: {error}"))?;
-    window.show().map_err(|error| format!("显示本地时间自由窗口失败: {error}"))?;
+    let window = {
+        let _build_guard = begin_window_build();
+        WebviewWindowBuilder::new(app, label, WebviewUrl::App("free.html?kind=clock".into()))
+            .title("本地时间")
+            .inner_size(300.0, 156.0)
+            .min_inner_size(260.0, 136.0)
+            .resizable(true)
+            .maximizable(false)
+            .always_on_top(true)
+            .visible(false)
+            .build()
+            .map_err(|error| format!("打开本地时间自由窗口失败: {error}"))?
+    };
+    window
+        .show()
+        .map_err(|error| format!("显示本地时间自由窗口失败: {error}"))?;
     focus_window(&window);
     log_window(app, "timer", "timer.clock_window.opened");
     Ok(())
@@ -107,7 +150,13 @@ fn close_timer_free_windows(app: &AppHandle) {
 fn timer_free_window_label(timer_id: &str) -> String {
     let safe_id: String = timer_id
         .chars()
-        .map(|character| if character.is_ascii_alphanumeric() || character == '-' { character } else { '_' })
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("tool-timer-free-{safe_id}")
 }
@@ -119,23 +168,50 @@ fn focus_window(window: &tauri::WebviewWindow) {
 }
 
 pub fn open_clipboard_popup(app: &AppHandle) -> Result<(), String> {
+    // 如果此刻主线程正在建另一个窗口（例如快捷键提示浮窗），直接建会嵌套、把主线程锁死。
+    // 改为丢到独立线程里等主线程空闲后重试。
+    if window_build_busy() {
+        log_popup(app, "info", "clipboard popup: window build busy, deferred");
+        crate::log_main_window_event(app, "window_build.busy defer=clipboard_popup");
+        let handle = app.clone();
+        thread::spawn(move || {
+            for attempt in 0..10u64 {
+                thread::sleep(Duration::from_millis(80 * (attempt + 1)));
+                if !window_build_busy() {
+                    let _ = open_clipboard_popup(&handle);
+                    return;
+                }
+            }
+        });
+        return Ok(());
+    }
     log_popup(app, "info", "clipboard popup: open requested");
     CLIPBOARD_POPUP_PINNED.store(false, Ordering::Relaxed);
     clipboard::remember_paste_target_window();
     let result = open_clipboard_popup_inner(app);
     match &result {
         Ok(()) => log_popup(app, "info", "clipboard popup: open flow finished"),
-        Err(error) => log_popup(app, "error", format!("clipboard popup: open failed: {error}")),
+        Err(error) => log_popup(
+            app,
+            "error",
+            format!("clipboard popup: open failed: {error}"),
+        ),
     }
     result
 }
 
 fn open_clipboard_popup_inner(app: &AppHandle) -> Result<(), String> {
+    // 整个建窗 + 显示过程都占用「主线程正在建窗」标志，避免期间被嵌套建窗。
+    let _build_guard = begin_window_build();
     let label = "tool-clipboard-popup";
     let (width, height) = clipboard::panel_size();
 
     if let Some(window) = app.get_webview_window(label) {
-        log_popup(app, "info", "clipboard popup: old window found, closing first");
+        log_popup(
+            app,
+            "info",
+            "clipboard popup: old window found, closing first",
+        );
         let _ = window.close();
     }
 
@@ -145,7 +221,11 @@ fn open_clipboard_popup_inner(app: &AppHandle) -> Result<(), String> {
     let monitor = app
         .monitor_from_point(cursor.x, cursor.y)
         .map_err(|error| format!("read monitor info failed: {error}"))?
-        .or_else(|| app.available_monitors().ok().and_then(|monitors| monitors.into_iter().next()))
+        .or_else(|| {
+            app.available_monitors()
+                .ok()
+                .and_then(|monitors| monitors.into_iter().next())
+        })
         .ok_or_else(|| "no available monitor".to_owned())?;
     let work_area = monitor.work_area();
     let margin = 10;
@@ -196,13 +276,19 @@ fn open_clipboard_popup_inner(app: &AppHandle) -> Result<(), String> {
         .map_err(|error| format!("set clipboard popup position failed: {error}"))?;
     log_popup(app, "info", "clipboard popup: size and position applied");
 
-    window.show().map_err(|error| format!("show clipboard popup failed: {error}"))?;
-    window.set_focus().map_err(|error| format!("focus clipboard popup failed: {error}"))?;
+    window
+        .show()
+        .map_err(|error| format!("show clipboard popup failed: {error}"))?;
+    window
+        .set_focus()
+        .map_err(|error| format!("focus clipboard popup failed: {error}"))?;
     log_popup(app, "info", "clipboard popup: shown and focused");
 
     let app_for_focus = app.clone();
     window.on_window_event(move |event| {
-        if matches!(event, WindowEvent::Focused(false)) && !CLIPBOARD_POPUP_DRAGGING.load(Ordering::Relaxed) {
+        if matches!(event, WindowEvent::Focused(false))
+            && !CLIPBOARD_POPUP_DRAGGING.load(Ordering::Relaxed)
+        {
             let app_for_close = app_for_focus.clone();
             thread::spawn(move || {
                 thread::sleep(Duration::from_millis(100));
@@ -211,12 +297,20 @@ fn open_clipboard_popup_inner(app: &AppHandle) -> Result<(), String> {
                         && !CLIPBOARD_POPUP_AUTO_CLOSE_SUSPENDED.load(Ordering::Relaxed)
                     {
                         clipboard::remember_paste_target_window();
-                        log_popup(&app_for_close, "info", "clipboard popup: paste target updated after pinned focus loss");
+                        log_popup(
+                            &app_for_close,
+                            "info",
+                            "clipboard popup: paste target updated after pinned focus loss",
+                        );
                     }
                 } else if !CLIPBOARD_POPUP_DRAGGING.load(Ordering::Relaxed)
                     && !CLIPBOARD_POPUP_AUTO_CLOSE_SUSPENDED.load(Ordering::Relaxed)
                 {
-                    log_popup(&app_for_close, "info", "clipboard popup: lost focus, closing");
+                    log_popup(
+                        &app_for_close,
+                        "info",
+                        "clipboard popup: lost focus, closing",
+                    );
                     close_clipboard_popup(&app_for_close);
                 }
             });
@@ -274,7 +368,11 @@ pub fn refocus_clipboard_popup_after_paste(app: &AppHandle) {
 
 fn log_popup(app: &AppHandle, level: &'static str, message: impl Into<String>) {
     if let Some(state) = app.try_state::<AppState>() {
-        let level = if level == "error" { "error" } else { "clipboard" };
+        let level = if level == "error" {
+            "error"
+        } else {
+            "clipboard"
+        };
         push_debug_log(&state, level, message);
     }
 }
