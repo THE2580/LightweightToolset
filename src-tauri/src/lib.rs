@@ -1271,14 +1271,106 @@ fn update_app_settings(
     app_snapshot(&state, &registry)
 }
 
+/// 主窗口的唤出入口（托盘、托盘菜单、快捷键、二次启动共用）。
+///
+/// 两条口径：
+/// 1. 最小化到任务栏（未隐藏到托盘）时，`show()` 只做 `SW_SHOW`，不会把窗口还原——必须先
+///    `unminimize()`，否则窗口会「显示但仍缩在任务栏」，表现为快捷键唤不出来。
+/// 2. 隐藏窗口刚被 `SW_HIDE` 时，运行时对 `main` 的窗口记录可能还在重挂载，`get_webview_window`
+///    会短暂返回 `None`；这里做有界重试，避免一次唤不出就彻底没反应。
 fn show_main_window(app: &AppHandle) {
-    if let Some(state) = app.try_state::<AppState>() {
-        push_debug_log(&state, "window", "main_window.show_requested");
+    #[cfg(windows)]
+    log_main_window_event(
+        app,
+        &format!(
+            "main_window.show_requested webview={}",
+            main_window_webview_state(app)
+        ),
+    );
+    #[cfg(not(windows))]
+    log_main_window_event(app, "main_window.show_requested");
+    let mut window = app.get_webview_window("main");
+    let mut attempts = 0;
+    while window.is_none() && attempts < 5 {
+        attempts += 1;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        window = app.get_webview_window("main");
     }
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.set_focus();
+    let Some(window) = window else {
+        log_main_window_event(app, "main_window.show_failed reason=window_not_found");
+        // 兜底：运行时记录缺失时按「本进程 + 窗口类 + 标题」找回 HWND 直接还原，避免只能重启软件。
+        #[cfg(windows)]
+        if force_show_main_window_native(app) {
+            log_main_window_event(app, "main_window.show_recovered_by_hwnd");
+        }
+        return;
+    };
+    if window.is_minimized().unwrap_or(false) {
+        if let Err(error) = window.unminimize() {
+            log_main_window_event(app, &format!("main_window.unminimize_failed error={error}"));
+        }
     }
+    if let Err(error) = window.show() {
+        log_main_window_event(app, &format!("main_window.show_failed error={error}"));
+    }
+    // show() 返回 Ok 不代表窗口真的出来了：隐藏窗口重新显示时可能被系统还原/焦点状态吞掉。
+    // 这里回读真实状态（给跨线程派发留几帧余量），没出来就走原生兜底，避免「点了没反应」。
+    let mut still_hidden = true;
+    let mut still_minimized = false;
+    for _ in 0..5 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        still_hidden = !window.is_visible().unwrap_or(true);
+        still_minimized = window.is_minimized().unwrap_or(false);
+        if !still_hidden && !still_minimized {
+            break;
+        }
+    }
+    if still_hidden || still_minimized {
+        log_main_window_event(
+            app,
+            &format!(
+                "main_window.show_ineffective visible={} minimized={}",
+                !still_hidden, still_minimized
+            ),
+        );
+        #[cfg(windows)]
+        if force_show_main_window_native(app) {
+            log_main_window_event(app, "main_window.show_recovered_by_hwnd");
+        }
+    }
+    let _ = window.set_focus();
+}
+
+/// 主窗口唤出事件的落盘日志：内存日志在界面卡死时读不到，这里同时追加到存储目录下的
+/// `logs/window.log`（超过 256KB 时重置），用于事后定位「托盘/快捷键唤不出主窗口」的现场。
+fn log_main_window_event(app: &AppHandle, message: &str) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    push_debug_log(&state, "window", message);
+    let dir = state.runtime_storage_dir.join("logs");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("window.log");
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let line = format!("{timestamp_ms} {message}\n");
+    let too_large = std::fs::metadata(&path)
+        .map(|metadata| metadata.len() > 256 * 1024)
+        .unwrap_or(false);
+    use std::io::Write;
+    let _ = if too_large {
+        std::fs::write(&path, line)
+    } else {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| file.write_all(line.as_bytes()))
+    };
 }
 
 /// 窗口标题的展示值：开发版在用户设置的标题后追加标识，存储值保持原文。
@@ -1288,6 +1380,118 @@ fn display_window_title(title: &str) -> String {
     } else {
         title.to_owned()
     }
+}
+
+/// 按「本进程 + `Tauri Window` 类 + 期望标题」找回主窗口 HWND：Tauri 的窗口记录不可信时用它兜底。
+#[cfg(windows)]
+fn find_main_window_hwnd(app: &AppHandle) -> Option<windows_sys::Win32::Foundation::HWND> {
+    use windows_sys::Win32::Foundation::{HWND, MAX_PATH};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowExW, GetWindowTextW, GetWindowThreadProcessId,
+    };
+
+    let expected_title = app
+        .try_state::<AppState>()
+        .and_then(|state| {
+            state
+                .registry
+                .lock()
+                .ok()
+                .map(|registry| display_window_title(&registry.settings().window_title))
+        })
+        .unwrap_or_default();
+
+    let class: Vec<u16> = "Tauri Window\0".encode_utf16().collect();
+    let mut previous: HWND = std::ptr::null_mut();
+    loop {
+        let hwnd = unsafe {
+            FindWindowExW(
+                std::ptr::null_mut(),
+                previous,
+                class.as_ptr(),
+                std::ptr::null(),
+            )
+        };
+        if hwnd.is_null() {
+            return None;
+        }
+        previous = hwnd;
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        if pid != std::process::id() {
+            continue;
+        }
+        if !expected_title.is_empty() {
+            let mut buffer = [0u16; MAX_PATH as usize];
+            let length = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+            let title = String::from_utf16_lossy(&buffer[..length.max(0) as usize]);
+            if title != expected_title {
+                continue;
+            }
+        }
+        return Some(hwnd);
+    }
+}
+
+/// 兜底唤出：Tauri 的窗口记录缺失或 `show()` 没生效时，直接按 HWND 还原并置前。
+#[cfg(windows)]
+fn force_show_main_window_native(app: &AppHandle) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
+
+    let Some(hwnd) = find_main_window_hwnd(app) else {
+        return false;
+    };
+    unsafe {
+        ShowWindow(hwnd, SW_RESTORE);
+        SetForegroundWindow(hwnd);
+    }
+    true
+}
+
+/// 主窗口里的 WebView2 子窗口还在不在（`alive` / `missing` / `no_window`）。
+///
+/// 用来区分「窗口显示失败」和「整个 WebView 进程没了」：后者表现为托盘菜单还能弹，
+/// 但窗口、快捷弹窗、所有界面功能都失效——正是「整个软件像死的」那种现场。
+#[cfg(windows)]
+fn main_window_webview_state(app: &AppHandle) -> &'static str {
+    use windows_sys::Win32::Foundation::LPARAM;
+    use windows_sys::Win32::UI::WindowsAndMessaging::EnumChildWindows;
+
+    let Some(hwnd) = find_main_window_hwnd(app) else {
+        return "no_window";
+    };
+    let mut found = false;
+    unsafe {
+        EnumChildWindows(
+            hwnd,
+            Some(probe_webview_child),
+            &mut found as *mut bool as LPARAM,
+        );
+    }
+    if found {
+        "alive"
+    } else {
+        "missing"
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn probe_webview_child(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> i32 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
+
+    let mut buffer = [0u16; 128];
+    let length = GetClassNameW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
+    if length > 0 {
+        let class = String::from_utf16_lossy(&buffer[..length as usize]);
+        if class.starts_with("Chrome_") {
+            *(lparam as *mut bool) = true;
+            return 0;
+        }
+    }
+    1
 }
 
 /// 托盘悬停等处的应用名：正式版用产品中文名，开发版追加标识。
@@ -1418,6 +1622,12 @@ pub fn run() {
                                     handled = true;
                                 }
                             }
+                            // 先派发快捷键提示，再执行动作：贴图组命令分支会直接 return，
+                            // 提示若排在后面就永远轮不到（截图/呼出主窗口等排在其后，因此此前只它们会提示）。
+                            if let Some(hotkey_id) = triggered_hotkey_id.clone() {
+                                // 快捷键回调在主线程上，提示放到独立线程，避免阻塞 UI 或与其他锁互相等待。
+                                std::thread::spawn(move || shortcut_tip::notify_app_hotkey(&hotkey_id));
+                            }
                             if let Some(command) = pin_command.clone() {
                                 match command.as_str() {
                                     "screenshot_pin" => screenshot::pin_from_hotkey(app),
@@ -1438,10 +1648,6 @@ pub fn run() {
                                     Err(error) => { let _ = app.emit("window-pinner-error", error); }
                                 }
                             }
-                        }
-                        if let Some(hotkey_id) = triggered_hotkey_id.clone() {
-                            // 快捷键回调在主线程上，提示放到独立线程，避免阻塞 UI 或与其他锁互相等待。
-                            std::thread::spawn(move || shortcut_tip::notify_app_hotkey(&hotkey_id));
                         }
                         if window_pinner_hotkey {
                             return;
