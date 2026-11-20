@@ -2,7 +2,12 @@
 
 基于 Tauri 2、Rust、React 和 TypeScript 的 Windows 轻量化桌面工具集。应用采用固定主窗口、单实例与单托盘设计，工具可独立启用或停用，设置与统计数据保存在本地。
 
-当前版本：`v0.7.1`。
+当前版本：`v0.7.2`。
+
+## 本版更新（v0.7.2）
+
+- 修复一处会把软件整体卡死的问题：剪贴板弹窗与快捷键提示浮窗在同一时刻首次创建时，两个建窗动作会嵌套执行并互相等锁，导致主线程永久卡死——表现为进程和托盘图标都还在，但托盘菜单、快捷键、所有窗口全部没有响应。现在后来者会让路（浮窗退避重试、弹窗排队重试），不再嵌套建窗；让路事件会记进 `<存储目录>/logs/window.log`，便于排查。
+- 该问题在 `v0.7.1` 首次安装后第一次使用剪贴板快捷键时最容易触发，升级到本版即可。
 
 ## 本版更新（v0.7.1）
 
@@ -17,7 +22,7 @@
 
 ## 下载与安装
 
-- 最新安装包见 [Releases](https://github.com/THE2580/LightweightToolset/releases/latest)，文件名形如 `LightweightToolset_0.7.1_x64-setup.exe`。
+- 最新安装包见 [Releases](https://github.com/THE2580/LightweightToolset/releases/latest)，文件名形如 `LightweightToolset_0.7.2_x64-setup.exe`。
 - 安装包内含离线 OCR 模型（约 30MB），因此体积比旧版本大（约 33MB），安装后识别全程本地完成、不需要联网。
 - 系统要求：Windows 10 / 11 x64，需要 WebView2 Runtime（系统一般已内置）。
 - 程序以管理员权限运行（启动时会走 UAC）：按键采集依赖低级键盘钩子，需要覆盖同等级及更低完整性的窗口；UAC 安全桌面与 System 完整性进程不可见。
