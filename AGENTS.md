@@ -56,6 +56,8 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 录制交互固定为「单框 + 单按钮」：常态显示当前键（或「未配置快捷键」）+ 铅笔，录制态显示「按下快捷键」+ 垃圾桶；**不设保存/取消按钮**，录制框失焦即自动校验保存，空草稿静默退出。
 - 录制框 `.hotkey-box` 的视觉口径：宽度随内容（不设 `min-width`）、2px 边框；有值实线、未配置虚线、录制中主色 + 光晕。
 - 工具页内保存快捷键后必须从实时 `tools` 读 `hotkey`：`activeTool` 是导航时的快照，不会随保存刷新。
+- **快捷键外显口径统一**：存储值仍是 `normalize_hotkey` 的大写形式（`CTRL+SUPER+X`，`SUPER` 是 `Win` 的存储别名），但任何展示给用户的文本都必须过格式化函数：前端 `formatHotkeyForDisplay`（`src/App.tsx`）、后端 `tools::format_hotkey_display`。规则：修饰键固定 `Win` → `Ctrl` → `Alt` → `Shift` → 主键 的顺序（首字母大写、`+` 连接），`SUPER` / `META` / `CMD` / `COMMAND` / `WINDOWS` 一律显示为 `Win`，功能键名 `Space` / `Esc` / `PageUp` 等也按此表转写。不要在 JSX 或通知文案里直接渲染 `hotkey` 原值，也不要在录制态另拼一套大写文案。
+- **快捷键提示预设要跟着工具走**：新增或调整带快捷键的工具时，同步在 `shortcut_tip.rs` 的 `APP_HOTKEY_PRESETS` 加条目，并在 `hotkey_owner_tool` 里登记它归属的工具 id；否则该快捷键在提示工具里没有条目、或会被当成「工具已停用」而永不提示。系统级固定预设加在 `PRESETS`（顺序即新装后的展示顺序，只在缺失时补入，不覆盖用户改过的条目）。快捷键回调里若新增「执行完就 return」的分支，必须把 `notify_app_hotkey` 的派发放在该分支之前。
 
 ## 硬性约束（禁止事项）
 
@@ -114,6 +116,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 
 - **开机自启必须用计划任务，不能用 Run 键**：`requireAdministrator` 的 exe 无法由 Explorer 从 `HKCU\...\Run` 拉起——Explorer 只做 CreateProcess，提权失败返回 `ERROR_ELEVATION_REQUIRED` 并被静默丢弃（证据：`Microsoft-Windows-Shell-Core/Operational` 事件 9708 PID 0，`Microsoft-Windows-UAC/Operational` 事件 1）。现实现为 `autostart.rs`：生成 UTF-16 任务 XML，`schtasks /Create /XML` 注册「登录触发 + `HighestAvailable` + `InteractiveToken`」任务，登录时由任务计划程序以完整令牌启动、不弹 UAC；必须显式 `<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>`，否则默认 72 小时会杀掉常驻进程；同时清理旧版写入的 Run 值。不要引入 `tauri-plugin-autostart`（它只会写 Run 键，正是本缺陷来源）。
 - **静默启动必须靠 `visible:false` + 条件 `show()`**：`tauri.conf.json` 主窗口固定 `"visible": false`，在 `setup` 里读设置：`silent_start` 为 false 才 `show()` + `set_focus()`，为 true 就保持隐藏、只留托盘。不要在启动后调 `hide()`（会先闪一帧窗口）；隐藏状态下 WebView 照常加载，快捷键/剪贴板/统计/计时器不受影响。任何唤起入口（托盘、主窗口快捷键、单实例二次启动）都必须走 `show_main_window`。设置说明与启动提示各发一条通知，文案里的快捷键取实际生效值。
+- **`show_main_window` 必须先还原再显示**：窗口只是最小化到任务栏（未隐藏到托盘）时，`show()` 只做 `SW_SHOW`，不会把窗口从最小化还原，表现就是「按快捷键没反应、窗口还缩在任务栏」。固定口径：`is_minimized()` 为真先 `unminimize()`，再 `show()`、`set_focus()`；`get_webview_window("main")` 允许有界重试（运行时对窗口记录的挂载存在竞态），最终仍取不到时用原生 `FindWindowExW` 按「本进程 + `Tauri Window` 类 + 窗口标题」找回 HWND 兜底还原。唤出事件同时写 `<存储目录>/logs/window.log`（超过 256KB 重置），因为「唤不出」卡死时内存里的调试日志读不到。
 - **版本号单一来源**：前端版本号从 `../package.json` 直接 `import`（`src/App.tsx` 的 `APP_VERSION`）。禁止用 Vite `define` 注入全局常量——打包时会替换、dev 服务器不替换，会直接白屏。`package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` 三处版本号发版时同步修改。
 - **采键通道与 Chromium 限制**：Chromium/WebView2 窗口在前台时，Windows 会间断地不给 `WH_KEYBOARD_LL` 派发按键；被系统或其他软件注册走的热键（`Win+D`、`Win+I`、`Win+Shift+S`、他软件全局热键）连 Raw Input 都收不到。现有的三条通道缺一不可：① 软件自身窗口的普通按键走页面 `keydown`（`src/shortcutNotify.ts` → `shortcut_tip_report`）；② 焦点在别处时走进程内钩子；③ 系统/他软件热键走独立采键子进程——复用同一个 exe，带 `--shortcut-tip-helper <port>` 启动，不初始化 Tauri/WebView（分叉要在进入 Tauri 之前），装钩子后经 `127.0.0.1` 回环 TCP 回传组合键；子进程继承提权、不加 UAC，连接断开或回传失败必须自行退出，工具停用时主程序负责结束它。三条通道共用节流与去重。
 - **已排除方案：Raw Input 兜底**。实测 Raw Input（`RIDEV_INPUTSINK`）收得到普通键，但收不到被系统/他软件注册走的 Win 组合键；A/B 对照（禁用/启用）现象完全一致。不要再为「系统热键收不到」接 Raw Input。

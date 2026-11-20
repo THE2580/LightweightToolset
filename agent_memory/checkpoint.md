@@ -1,40 +1,43 @@
 # Goal
 
-复刻 PixPin 截图工具（LightweightToolset 新工具）。**第一版已于 2026-11-11 随 `v0.7.0` 发布**：区域截图、12 种标注与二级栏、贴图窗口、贴图标注、本地 OCR 文本选择、超级拖放缩略图、锁定态金色阴影。后续候选见 `progress.md`「待办」。
+复刻 PixPin 截图工具（LightweightToolset 新工具）。`v0.7.0`（2026-11-11）已发布第一版；此后完成「设置入口归位」「截图 UI 检测第一阶段」「主窗口唤出加固与快捷键提示完善」三条线，均未发版。
 
-# Current Focus
+# Current Focus（2026-11-20）
 
-- **2026-11-19/20 截图 UI 检测（第一阶段，已验收并提交 `a198249`，未推送）**：截图页「UI 检测」三档（不检测/仅窗口/窗口和UI 置灰）；进入截图预选全屏，仅窗口模式下鼠标移动预选跟随窗口（DWM 外框、只排除覆盖层自身、任务栏与本软件窗口也可预选），单击预选进入标注、拖拽自定义松手确认，预选态不显示工具栏。
-- **性能修复（当天最后一项）**：预选曾把每帧脏区撑成整屏，导致鼠标/放大镜像 60 帧；已改为预选态只重绘放大镜面板，预选切换/拖拽开始/进入标注时整屏重绘一次。
-- 开发环境已恢复（2026-11-20 11:09）：Vite(:1420) + `%TEMP%\lwt-dev` 实例（pid 4860）；开发版数据保留（截图快捷键 `CTRL+ALT+F9`、`screenshotUiDetection = window`）。
-- 待提交改动：`Cargo.toml`、`settings.rs`、`lib.rs`、`screenshot/{mod,overlay}.rs`、`App.tsx`、`App.css`、`AGENTS.md`、`agent_memory/*`。
+- **快捷键体系收口（已提交 `7fd2878`，未推送）**：外显统一 `Win → Ctrl → Alt → Shift → 主键`，`SUPER` 不再外露；快捷键提示预设扩充到 9 条绑定条目（呼出主窗口、剪贴板、窗口置顶 + 截图工具 6 条）与 29 条系统预设（新增 `Win+P/Win+R/Win+T/Win+G/Alt+F4`）。
+- **主窗口唤出加固（已提交 `c4d3207`，未推送）**：最小化时先 `unminimize()`；窗口记录缺失时有界重试 + `FindWindowExW` 兜底；`show()` 后回读状态；唤出事件写 `<存储目录>/logs/window.log`；贴图组快捷键先派发提示再执行动作。
+- **冻结中**：「静默启动后整个软件像死的（托盘菜单能弹、其余全失效）」本机 9 次冷启动未复现，用户决定等正式版实机复现后按 `docs/troubleshooting-main-window.md` 取证再查，本轮不动。
+- **UI 元素级检测：用户明确暂缓，不做**（`窗口和UI` 保持置灰）。
+- 开发环境：Vite `:1420`（HTTP 200）；开发版实例来自 `%TEMP%\lwt-dev`，数据已复位为基线（剪贴板/截图/窗口置顶启用 + 快捷键提示启用，`silentStart=false`）。
+- 工作树只剩既有三项：`M src-tauri/src/window_pinner.rs`（CRLF 差异）、`M src-tauri/src/window_service.rs`（rustfmt 重排）、`?? .codex/`——不处理、不提交。
+
+# 最近验证（2026-11-20）
+
+- `npm run build` 通过；`cargo check` 通过（4 条既有 warning）；`cargo test --lib -- --test-threads=1` **52 passed / 0 failed / 2 ignored**。
+- 实机：最小化 `SW_MINIMIZE` 后按 `CTRL+ALT+.` → `visible=True iconic=False`（修复前 `iconic=True`）；隐藏态唤出、`window.log` 落盘均正常。
+- 实机：`Ctrl+Alt+P` / `Ctrl+Q` / `Ctrl+Alt+X` / `Ctrl+Alt+H` 按下后 `Shortcut tip` 窗口在 100ms 内可见（此前只有截图会提示）。
+- 实机：设置页 `Ctrl+Alt+.`、截图页 `Ctrl+Alt+F9` 等、剪贴板弹窗 `Win+Ctrl+/`、提示列表 `Win+Ctrl+/`、`Win+G`、`Win+T`、`Ctrl+Alt+P 贴图` 均按新口径显示。
 
 # 下一批候选（用户未定）
 
-1. 标注拖动 / 文本再编辑（后续扩展项）：建议三档——①选中 + 拖动平移；②文字双击再编辑（复用内联编辑器、提交替换原 item）；③控制点缩放（多点图形需重采样，最后做）。两处（`overlay.rs`、`pin.rs`）都要接；拖动只在标注模式下生效，避免与划词/拖窗口抢左键。
+1. 标注拖动 / 文本再编辑（三档：选中+拖动平移 → 文字双击再编辑 → 控制点缩放），两处 `overlay.rs`、`pin.rs` 都要接。
 2. 拖拽缩略图观感优化（真高斯阴影、长边可配、偏移微调）。
-3. ~~快捷键入口迁移~~ **已完成**：剪贴板与窗口置顶都已迁到各自工具页/设置页，全局设置只剩「呼出主窗口」。
-4. 贴图历史浏览界面（用户暂缓）。
-5. 系统 DragImage 崩溃根因（`778e0a4`，当前走自绘 ghost，不动也可）。
+3. 贴图历史浏览界面（用户暂缓）。
+4. 系统 DragImage 崩溃根因（`778e0a4`，当前自绘 ghost 稳定，不动也可）。
+5. 静默启动「整个软件像死的」——等正式版实机证据。
 
-# Remaining / 不做
+# 不做（用户已确认）
 
-- 不做：截图查看、GIF、UI 检测、多语言、主题/托盘图标自定义、托盘点击动作（详见 `progress.md`）。
-- 未测但用户已「直接通过」：双击动作=复制、关闭前确认弹窗、无覆盖层时按贴图键贴「最近一次截图」。
-
-# Verification（最近一次）
-
-- 2026-11-19 剪贴板迁移：`npm run build` 通过；开发版实机验证（弹窗内录制/保存/即时刷新、提示层级、全局设置无剪贴板分组、截图页快捷键标签无回归）。Rust 未改动。
-- 上一次发版（2026-11-11）：`npm run build` / `cargo check` / `cargo test --lib -- --test-threads=1` **48 passed / 0 failed / 2 ignored**；安装包 33,846,940 字节、`ocr/` 落位正确、OCR 实测通过。
+- 截图查看、GIF 动态截图、多语言、主题/托盘图标自定义、托盘点击动作、UI 元素级检测（暂缓）。
+- 未测但用户「直接通过」：双击动作=复制、关闭前确认弹窗、无覆盖层时按贴图键贴「最近一次截图」。
 
 # Resume Here
 
-0. **开发环境已恢复**：Vite(:1420, 200) + `%TEMP%\lwt-dev` 实例（pid 4860）；重启流程：`npm run dev` → `cargo build`（Rust 有改动）→ 直接 `Start-Process -Verb RunAs ... -File %TEMP%\lwt-dev-launch.ps1`。
-1. 先让用户确认放大镜/鼠标跟手是否达标；若仍偏慢，下一步把放大镜面板自身的重绘再拆细（目前整块约 500×600）。
-2. 快捷键这批已验收并提交（HEAD，未推送）；UI 检测这批也已验收并提交 `a198249`（未推送）。
-2. 重启开发环境：`npm run dev` →（改过 Rust 时）`cargo build` → **直接** `powershell -Command "Start-Process powershell -Verb RunAs -ArgumentList ... -File %TEMP%\lwt-dev-launch.ps1"`（不要用 `cmd start` 包一层）→ `%TEMP%\lwt-ui.ps1 -Steps 'c:x,y;s:ms' -Png ...` 注入点击并截图。
+0. 复现/开发：`npm run dev`（确认 :1420 返回 200）→ 改过 Rust 先 `cargo build` → 复制到 `%TEMP%\lwt-dev\` → **直接** `powershell -Command "Start-Process powershell -Verb RunAs -ArgumentList ... -File %TEMP%\lwt-dev-launch.ps1"`（不要用 `cmd start` 包一层）。
+1. 等用户指定下一批功能；UI 元素检测已暂缓，不要主动开工。
+2. 记忆与约束已随 `docs:` 提交同步；推送走代理 `127.0.0.1:7897`。
 3. 坑速查：
    - 改 `settings.json` 用 node（PS 5.1 会按 ANSI 解码并写 BOM）；改正式版配置要「先停进程」。
-   - 注入测试取消拖放前先松 Ctrl（`Ctrl+Esc` 会弹开始菜单）；`SetCursorPos` 后等 ≥200ms 再 `mouse_event`；`.ps1` 必须 ASCII-only 或带 BOM。
-   - 提权启动 GUI：**别**用 `cmd /c start` 包一层（会静默失败）；从当前 shell 直接 `Start-Process -Verb RunAs`，启动后核对 `%TEMP%\lwt-dev` 已生成 + 进程 StartTime 是新的。
+   - 注入测试：`.ps1` 必须 ASCII-only；`c:` 绝对坐标 / `r:` 窗口相对坐标；热键注入必须从**提权**进程发（普通权限的 `keybd_event` 打不到提权应用的 RegisterHotKey）。
+   - 弹窗类验证别依赖截图（易错过 1 秒窗口），改用窗口可见性轮询。
    - 提交时排除 `window_service.rs`、`window_pinner.rs`、`.codex/`。

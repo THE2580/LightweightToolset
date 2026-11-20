@@ -2,19 +2,25 @@
 
 - 工具集已含七个工具：**截图与贴图**（第一版，`v0.7.0` 发布）、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。
 - **快捷键入口迁移与录制 UI 改版已完成（2026-11-19，用户已验收）**：剪贴板、窗口置顶的快捷键都迁到各自设置页/工具页，全局设置只剩「呼出主窗口」；录制逻辑集中到 `HotkeyRowEditor`（四处在用，`hideTitle` 供工具栏）；录制框单框单按钮、失焦自动保存、外观按 2px 边框 / 宽度随内容 / 空态虚线 / 录制态主色 + 光晕定稿。
+- 截图 UI 检测第一阶段已完成（提交 `a198249`，未推送）：UI 检测三档、进入即全屏预选、仅窗口模式跟随窗口（只排除覆盖层自身，本软件窗口/任务栏也可预选）、单击确认/拖拽自定义；UI 元素级检测用户明确暂缓，不再推进。
 - 开发版默认值：静默启动默认关闭（代码默认值 + 本机 `settings.json` 均为 false）。
 - 截图与贴图范围：区域截图（原生覆盖层/放大镜取色/辅助线/压暗）、12 种标注与二级栏、贴图窗口（拖动/缩放/锁定/穿透/阴影/右键图像处理）、贴图标注（窗口外伴生工具栏、文字与序号）、贴图文本选择（本地 OCR）、超级拖放与跟踪缩略图。
 - 明确不在本版：标注拖动/文本再编辑、贴图历史浏览界面（暂缓）、系统级 DragImage 缩略图。
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD **`5397dc3`**（`docs: tidy project constraints and memory for v0.7.0`），发布提交 `b5775dc`，tag `v0.7.0` 已推送，远程与本地一致。
-- 本次改动已提交（HEAD，**未推送**）：`feat: move tool hotkeys into their own settings and rework recorder`。工作树只剩既有三项。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD **`7fd2878`**（`feat: unify hotkey display and extend shortcut tip presets`），发布提交 `b5775dc`，tag `v0.7.0` 已推送。
+- 本地领先 `origin/master` **6 个提交**：`20a3e3d`（快捷键入口迁移 + 录制 UI）、`fc2b2b4`（档位选择器）、`a198249`（截图窗口检测与预选）、`2b9772c`（记忆）、`c4d3207`（主窗口唤出加固 + 提示派发顺序）、`7fd2878`（快捷键外显统一 + 预设扩充）。
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（rustfmt 重排，非逻辑改动）、`M src-tauri/src/window_pinner.rs`（CRLF 换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
 # Active Files
 
+- 2026-11-20 快捷键体系与主窗口唤出（提交 `c4d3207` / `7fd2878`）：
+  - `src-tauri/src/lib.rs`：`show_main_window`（`unminimize` → `show` → 回读可见/最小化 → `FindWindowExW` 兜底）、`log_main_window_event`（写 `<存储目录>/logs/window.log`，256KB 重置）、`find_main_window_hwnd` / `main_window_webview_state`（诊断 `webview=alive/missing/no_window`）；快捷键回调里 `shortcut_tip::notify_app_hotkey` 派发提前到贴图组命令分支之前。
+  - `src/App.tsx`：`formatHotkeyForDisplay` 重写（修饰键归类 + 固定顺序 `Win→Ctrl→Alt→Shift`，录制态同口径），覆盖设置页、工具页、剪贴板弹窗、窗口置顶工具栏与空状态、提示列表。
+  - `src-tauri/src/tools.rs`：`format_hotkey_display`（同规则）与 `app_hotkey_text` 改用它；单测覆盖 `CTRL+SUPER+/ → Win+Ctrl+/`。
+  - `src-tauri/src/shortcut_tip.rs`：`APP_HOTKEY_PRESETS` 3 → 9 条（截图 6 条）、`hotkey_owner_tool` 归属判定、`PRESETS` 24 → 29 条、`canonical_chord` 补 `super`/`command` 别名、提示工具改用统一格式化。
 - `src/App.tsx`：新增 `HotkeyRowTarget` / `HotkeyRowEditor`（录制、格式校验、冲突检查、`suspend/resume_tool_hotkeys`、保存与停用），`toHotkeyRowTarget` 供全局页转换条目；`HotkeySettings` 去掉剪贴板分组但保留它参与冲突检查；`ScreenshotToolPage` 与 `ClipboardToolPage` 均改用该组件。
 - `src/App.tsx` 剪贴板侧：`ClipboardToolPage` 新增 `appHotkeys`/`tools`/`setAppSnapshot` 入参、`hotkeyNotice` 提示与 `hotkeyTargets` 冲突列表、`currentHotkey` 从实时 `tools` 取值；`ClipboardSettingsDialog` 改为接收 `tool`/`hotkeyTargets`/`setSnapshot`/`onNotice`，内嵌快捷键行。
 - `src/App.tsx` 窗口置顶侧：`WindowPinnerToolPage` 改为接收 `appHotkeys`/`tools`/`setAppSnapshot`，工具栏「快捷键」后直接内嵌 `HotkeyRowEditor`（`hideTitle` 紧凑模式），删除跳转全局快捷键页的齿轮按钮；空状态文案改用实时 `currentHotkey`。`ToolPage` 不再需要 `onOpenSettingsTab`，已从签名与调用点移除。
@@ -42,6 +48,28 @@
 - `src-tauri/tauri.conf.json`：`bundle.resources` 把 `resources/ocr` 映射到安装目录 `ocr/`。
 
 # Verification
+
+- 2026-11-20 快捷键提示预设扩充（本轮，未提交）：
+  - 新增固定预设 `Win+P`（投影/切换显示模式）、`Win+R`（运行）、`Win+T`（任务栏预览）、`Win+G`（打开 Game Bar）、`Alt+F4`（关闭当前窗口）；
+  - 绑定设置的预设 3 → 9 条：新增截图 6 条（截图/贴图/恢复/关闭全部/隐藏显示/鼠标穿透）；`hotkey_owner_tool` 统一判定归属工具，`build_snapshot` 的可用状态与 `notify_app_hotkey` 的停用判断都改用它；
+  - 实机：提示页 41 项（29 条固定预设 + 9 条绑定条目 + 3 条用户自定义），列表可见 `Win+G 打开 Game Bar`、`Win+T 任务栏预览`、`Win+P 投影/切换显示模式`、`Ctrl+Alt+T 窗口置顶`、`Ctrl+Alt+P 贴图`、`鼠标穿透 未设置`；
+  - `cargo test --lib -- --test-threads=1` **52 passed / 0 failed / 2 ignored**（新增 `app_hotkey_presets_map_to_owning_tools`）。
+- 2026-11-20 贴图组快捷键不提示修复（本轮，未提交）：`lib.rs` 回调里把 `shortcut_tip::notify_app_hotkey` 派发提前到贴图组命令分支之前（该分支会直接 `return`）。实机用「窗口出现即判」的方式逐条核对：`Ctrl+Alt+P`（贴图）、`Ctrl+Q`（恢复）、`Ctrl+Alt+X`（关闭全部）、`Ctrl+Alt+H`（隐藏/显示）按下后 `Shortcut tip` 窗口均在 100ms 内可见。
+
+- 2026-11-20 快捷键外显口径统一（本轮，未提交）：
+  - 前端 `formatHotkeyForDisplay` 重写（`App.tsx`）：修饰键 `Ctrl/Alt/Shift/Win`，`SUPER/META/CMD/COMMAND/WINDOWS` 一律 `Win`，功能键名转写（`Space/Esc/PageUp`…）；覆盖设置页、截图页、剪贴板设置弹窗、窗口置顶工具栏与空状态、快捷键提示列表、录制态。
+  - 后端新增 `tools::format_hotkey_display`，用于 `app_hotkey_text`（启动通知）、提示工具的本软件快捷键条目与浮窗；`canonical_chord` 补 `super` 别名（此前 `CTRL+SUPER+/` 解析失败，直接把原值弹到浮窗，这就是 `SUPER` 的来源）。
+  - 实机核对（顺序按要求最终定为 `Win` → `Ctrl` → `Alt` → `Shift` → 主键）：设置→快捷键 `Ctrl+Alt+.`；截图页 `Ctrl+Alt+F9 / Ctrl+Alt+P / Ctrl+Q / Ctrl+Alt+X / Ctrl+Alt+H`；剪贴板设置弹窗 **`Win+Ctrl+/`**；快捷键提示列表 `Win+Ctrl+/`、`Ctrl+Alt+T`、`Win+Down`；录制态实时显示 `Ctrl+Alt+K`。
+  - `npm run build` 通过；`cargo check` 通过；`cargo test --lib -- --test-threads=1` **51 passed / 0 failed / 2 ignored**（新增 `formats_hotkey_for_display_with_titlecase_modifiers`、`canonical_chord_accepts_super_alias`）。
+  - 测试用的 `pin_passthrough` 已清空，`shortcut_tip` 工具已恢复关闭，开发版重启后窗口尺寸恢复默认。
+
+- 2026-11-20 主窗口唤出加固（本轮，未提交）：
+  - `show_main_window`（`lib.rs`）改为：`log_main_window_event` 落盘 → `get_webview_window("main")` 有界重试（5×20ms）→ 取不到时 `FindWindowExW` 按「本进程 + `Tauri Window` + 窗口标题」找回 HWND → `is_minimized()` 先 `unminimize()` → `show()` → `set_focus()`。
+  - 实机：静默启动（`silentStart=true`）→ 隐藏态按 `CTRL+ALT+.` → 窗口出现；`SW_MINIMIZE` 最小化后按同一快捷键 → `visible=True iconic=False`（修复前是 `iconic=True`，即仍缩在任务栏）。
+  - `%APPDATA%\com.the.lightweight-toolset.dev\logs\window.log` 生成并记录 `main_window.show_requested`。
+  - `npm run build` 通过；`cargo check` 通过（4 条既有 warning）；`cargo test --lib -- --test-threads=1` **49 passed / 0 failed / 2 ignored**。
+  - 未能复现用户报的「静默启动后整个软件像死的」：9 次静默冷启动后 `SendMessageTimeout(WM_NULL)` 全部 `ping=OK`，窗口隐藏、快捷键可唤出。
+  - 测试后已把开发版 `silentStart` 改回 `false` 并重启开发版（pid 4456，窗口可见）。
 
 - 2026-11-20 预选态「整屏压暗 / 放大镜亮痕」修复（本轮）：`band_needs_full_paint` 增加「脏区与 `selecting_rect()` 相交即完整绘制」，不再只靠预选变化触发整屏重绘。实机：光标停在全屏桌面处触发截图 → 覆盖层正常显示全屏预选（0,0–2560×1600 标签、无压暗、无亮痕）；`cargo check` 与 49 项单测通过。
 - 2026-11-19 截图 UI 检测实机验证：
@@ -87,8 +115,9 @@
 
 # Next Action
 
-- **开发环境已恢复**（2026-11-20 11:09）：Vite 监听 1420（HTTP 200），开发版实例 pid 4860，来自 `%TEMP%\lwt-dev`，窗口正常加载；截图快捷键 `CTRL+ALT+F9`、`screenshotUiDetection = window` 沿用昨天设置。
-- 待办：UI 元素级检测（`窗口和UI` 档位仍置灰）；放大镜若仍偏慢可继续拆细面板重绘。UI 检测这批已提交 `a198249`（未推送）。
-- 快捷键这批已验收并已提交（HEAD，未推送）；推送等你决定。
+- 开发环境在跑：Vite :1420（HTTP 200）+ `%TEMP%\lwt-dev` 实例；开发版 `silentStart=false`、`screenshotUiDetection = window`、快捷键恢复基线（`CTRL+ALT+.` / `CTRL+ALT+F9` / `CTRL+ALT+P` / `CTRL+Q` / `CTRL+ALT+X` / `CTRL+ALT+H` / `CTRL+ALT+T`，剪贴板 `CTRL+SUPER+/`）。
+- 本轮改动已提交为 `c4d3207`（主窗口唤出加固 + 提示派发顺序）与 `7fd2878`（快捷键外显统一 + 预设扩充），记忆/约束随后单独 `docs:` 提交并推送。
+- 等用户指定下一批功能；**UI 元素级检测已明确暂缓，不要主动做**。
+- 「静默启动后整个软件像死的」处于冻结状态：复现时按 `docs/troubleshooting-main-window.md` 取 `logs/window.log` + 任务管理器现场。
 - 恢复开发：`npm run dev`（:1420）→ `cargo build`（改过 Rust 时）→ **直接** `powershell -Command "Start-Process powershell -Verb RunAs -ArgumentList ... -File %TEMP%\lwt-dev-launch.ps1"`（不要用 `cmd start` 包一层，见 `bugs.md`）→ `%TEMP%\lwt-ui.ps1` 注入点击并截图核对。
-- 未做的待办见 `progress.md`：静默启动托盘唤起失效（用户要求稍后）、标注拖动/文本再编辑、缩略图观感、贴图历史浏览（暂缓）。
+- 未做的待办见 `progress.md`：标注拖动/文本再编辑、缩略图观感、贴图历史浏览（暂缓）、静默启动唤出（冻结等证据）。
