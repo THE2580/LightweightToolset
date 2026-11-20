@@ -51,7 +51,7 @@
 
 # 发布索引
 
-- `v0.7.1` / `c1359bc`：快捷键文案统一（`Win → Ctrl → Alt → Shift → 主键`、`SUPER` 不再外露）、快捷键提示预设扩充（新增 `Win+P/Win+R/Win+T/Win+G/Alt+F4`，截图 6 个快捷键纳入绑定预设）、贴图组快捷键恢复提示、主窗口最小化可唤出 + 唤出事件落盘 `logs/window.log`、截图设置页「UI 检测」独立与辅助线折叠分组。安装包 `LightweightToolset_0.7.1_x64-setup.exe`（33,856,072 字节），SHA-256 `5E875F6C6ECFE0EE1E32281888023AFD83C2DCB5535627110B220ED9FF00ECDE`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.1`。
+- `v0.7.1` / `c1359bc`：新增截图「UI 检测」（不检测 / 仅窗口，`窗口和UI` 置灰）与默认全屏预选（仅窗口下预选跟随光标窗口）；快捷键入口归位（剪贴板/窗口置顶迁入各自页面）与录制框改版；数量档位选择器；快捷键文案统一（`Win → Ctrl → Alt → Shift → 主键`、`SUPER` 不再外露）；快捷键提示预设扩充（新增 `Win+P/Win+R/Win+T/Win+G/Alt+F4`，截图 6 个快捷键纳入绑定预设）；贴图组快捷键恢复提示；主窗口最小化可唤出 + 唤出事件落盘 `logs/window.log`；截图设置页「UI 检测」独立与辅助线折叠分组。安装包 `LightweightToolset_0.7.1_x64-setup.exe`（33,856,072 字节），SHA-256 `5E875F6C6ECFE0EE1E32281888023AFD83C2DCB5535627110B220ED9FF00ECDE`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.1`。
 
 - `v0.7.0` / `b5775dc`：新增工具「截图与贴图」——区域截图（覆盖层、放大镜取色、辅助线、可配置压暗）、12 种标注与二级栏、贴图窗口（拖动/缩放/锁定/穿透/阴影/右键图像处理）、贴图标注（窗口外伴生工具栏）、本地 OCR 文本选择（PP-OCRv6，离线、用后释放内存、「选中后自动复制」可关）、超级拖放与跟随缩略图、锁定态金色阴影；安装包含 30MB 离线模型，体积增至 33,846,940 字节。资产 `LightweightToolset_0.7.0_x64-setup.exe`，SHA-256 `705D550D7330C54F6BAB7EC15C49F6294DF66FD007D87FF07706D9C0645AB4EE`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.0`。
 - `v0.6.4` / `fa580e8`：「快捷键提示」改用专用图标（键盘 + 提示气泡），修复侧栏兜底扳手与页头键盘不一致；侧栏、工具页头部、编辑弹窗、空状态统一。资产 `轻量化工具集_0.6.4_x64-setup.exe`（2,677,923 字节），SHA-256 `34C167F700B288B40D0384718804265C2387F83981632FEB90EB0D4898FAB5CD`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.6.4`。
