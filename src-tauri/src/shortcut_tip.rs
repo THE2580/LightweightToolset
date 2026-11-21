@@ -11,25 +11,14 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
-    WebviewWindow, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::AppState;
 
-const NOTIFY_LABEL: &str = "tool-shortcut-tip";
 const STORE_DIR: &str = "shortcut_tip";
 const STORE_FILE: &str = "shortcut_tip.json";
-const NOTIFY_WIDTH: f64 = 560.0;
-const NOTIFY_HEIGHT: f64 = 56.0;
-const NOTIFY_GAP: f64 = 16.0;
-const DISPLAY_MS: u64 = 2000;
-const SLIDE_MS: u64 = 300;
-const KEEP_TOP_INTERVAL: Duration = Duration::from_millis(400);
 const DUPLICATE_MS: u128 = 400;
 const REPEAT_MS: u128 = 500;
-const ZONE_RATIO: f64 = 0.15;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
@@ -61,17 +50,52 @@ pub struct ShortcutTipEntry {
     pub available: bool,
 }
 
+/// 原生浮窗外观（迁移自「原生提示实验」的 DIY 参数）。
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutTipAppearance {
+    /// `auto` / `light` / `dark`
+    pub mode: String,
+    pub light_blur: u32,
+    pub light_tint: f32,
+    pub dark_blur: u32,
+    pub dark_tint: f32,
+    /// `fade` / `slide_up` / `slide_down`
+    pub animation: String,
+    pub duration_ms: u32,
+    /// 屏幕物理像素；None = 主屏底部居中。
+    pub position: Option<[i32; 2]>,
+}
+
+impl Default for ShortcutTipAppearance {
+    fn default() -> Self {
+        Self {
+            mode: "auto".to_owned(),
+            light_blur: 4,
+            light_tint: 0.92,
+            dark_blur: 4,
+            dark_tint: 0.78,
+            animation: "fade".to_owned(),
+            duration_ms: 2000,
+            position: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ShortcutTipStore {
     #[serde(default)]
     tips: Vec<ShortcutTipEntry>,
+    #[serde(default)]
+    appearance: ShortcutTipAppearance,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShortcutTipSnapshot {
     pub tips: Vec<ShortcutTipEntry>,
+    pub appearance: ShortcutTipAppearance,
 }
 
 #[derive(Deserialize)]
@@ -83,18 +107,13 @@ pub struct ShortcutTipInput {
     pub enabled: Option<bool>,
 }
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TipPayload {
-    title: String,
-    keys: Option<String>,
-    preset: bool,
-    count: u32,
-    side: &'static str,
+struct InputListener {
+    thread_id: u32,
+    thread: thread::JoinHandle<()>,
 }
 
 enum Command {
-    Show { title: String, keys: Option<String>, preset: bool },
+    Show { title: String, keys: Option<String> },
     Reset,
 }
 
@@ -322,14 +341,53 @@ pub fn relocate(config_dir: &Path) -> Result<(), String> {
 
 fn load_store(path: &Path) -> Result<ShortcutTipStore, String> {
     match fs::read_to_string(path) {
-        Ok(text) => Ok(serde_json::from_str(&text).unwrap_or_else(|_| ShortcutTipStore { tips: Vec::new() })),
-        Err(_) => Ok(ShortcutTipStore { tips: Vec::new() }),
+        Ok(text) => Ok(serde_json::from_str(&text).unwrap_or_else(|_| ShortcutTipStore {
+            tips: Vec::new(),
+            appearance: ShortcutTipAppearance::default(),
+        })),
+        Err(_) => Ok(ShortcutTipStore {
+            tips: Vec::new(),
+            appearance: ShortcutTipAppearance::default(),
+        }),
     }
 }
 
 fn save_store(path: &Path, store: &ShortcutTipStore) -> Result<(), String> {
     let text = serde_json::to_string_pretty(store).map_err(|error| format!("序列化快捷键提示失败: {error}"))?;
     fs::write(path, text).map_err(|error| format!("写入快捷键提示失败: {error}"))
+}
+
+/// 读取当前外观（不持锁跨调用）。
+pub fn appearance() -> ShortcutTipAppearance {
+    store_handle()
+        .map(|handle| handle.store.appearance.clone())
+        .unwrap_or_default()
+}
+
+/// 更新外观设置，返回最新快照。
+pub fn set_appearance(input: ShortcutTipAppearance) -> Result<ShortcutTipSnapshot, String> {
+    let tips = {
+        let mut handle = store_handle()?;
+        handle.store.appearance = ShortcutTipAppearance {
+            mode: match input.mode.as_str() {
+                "light" | "dark" => input.mode,
+                _ => "auto".to_owned(),
+            },
+            light_blur: input.light_blur.min(12),
+            light_tint: input.light_tint.clamp(0.4, 1.0),
+            dark_blur: input.dark_blur.min(12),
+            dark_tint: input.dark_tint.clamp(0.4, 1.0),
+            animation: match input.animation.as_str() {
+                "slide_up" | "slide_down" => input.animation,
+                _ => "fade".to_owned(),
+            },
+            duration_ms: input.duration_ms.clamp(800, 10_000),
+            position: input.position,
+        };
+        let _ = save_store(&handle.path, &handle.store);
+        handle.store.tips.clone()
+    };
+    Ok(build_snapshot(tips))
 }
 
 pub fn snapshot() -> Result<ShortcutTipSnapshot, String> {
@@ -379,7 +437,10 @@ fn build_snapshot(tips: Vec<ShortcutTipEntry>) -> ShortcutTipSnapshot {
             tip
         })
         .collect();
-    ShortcutTipSnapshot { tips }
+    ShortcutTipSnapshot {
+        tips,
+        appearance: appearance(),
+    }
 }
 
 /// 本软件全局快捷键被触发时通知提示工具（由快捷键回调调用，不依赖键盘钩子）。
@@ -625,7 +686,8 @@ fn report(
     if let Some(id) = bump_id {
         bump_triggered(&id);
     }
-    send(Command::Show { title, keys, preset });
+    let _ = preset;
+    send(Command::Show { title, keys });
 }
 
 fn claim_report(key: &str, origin: Origin) -> bool {
@@ -661,17 +723,6 @@ pub fn mark_ready() {
     READY.store(true, Ordering::SeqCst);
 }
 
-fn wait_ready(timeout: Duration) -> bool {
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        if READY.load(Ordering::SeqCst) {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    READY.load(Ordering::SeqCst)
-}
-
 fn start_worker() {
     if WORKER_STARTED.swap(true, Ordering::SeqCst) {
         return;
@@ -681,232 +732,111 @@ fn start_worker() {
     let _ = thread::Builder::new()
         .name("tool-shortcut-tip".to_owned())
         .spawn(move || {
-            let mut visible = false;
-            let mut hiding = false;
-            let mut deadline: Option<Instant> = None;
+            // 显示改由原生浮窗负责（`native_tip`），这里只维护"同一内容累加 ×N"的状态。
             let mut last: Option<(String, Option<String>)> = None;
             let mut count = 0u32;
-            loop {
-                let wait = deadline
-                    .map(|at| at.saturating_duration_since(Instant::now()).max(Duration::from_millis(5)))
-                    // 显示期间每 400ms 醒一次重新压顶，防止被其他置顶窗口盖住。
-                    .map(|wait| if visible { wait.min(KEEP_TOP_INTERVAL) } else { wait })
-                    .unwrap_or(Duration::from_secs(3600));
-                match rx.recv_timeout(wait) {
-                    Ok(Command::Reset) => {
-                        if let Some(app) = APP.get() {
-                            if let Some(window) = app.get_webview_window(NOTIFY_LABEL) {
-                                let _ = window.hide();
-                            }
-                        }
-                        visible = false;
-                        hiding = false;
-                        deadline = None;
-                        count = 0;
+            let mut visible_until: Option<Instant> = None;
+            while let Ok(command) = rx.recv() {
+                match command {
+                    Command::Reset => {
+                        crate::native_tip::hide();
                         last = None;
+                        count = 0;
+                        visible_until = None;
                     }
-                    Ok(Command::Show { title, keys, preset }) => {
+                    Command::Show { title, keys } => {
                         if !notifications_enabled() {
                             continue;
                         }
-                        let Some(app) = APP.get().cloned() else {
-                            continue;
-                        };
-                        let Some(window) = ensure_window(&app) else {
-                            continue;
-                        };
+                        let now = Instant::now();
                         let same = matches!(&last, Some((last_title, last_keys)) if *last_title == title && *last_keys == keys);
-                        if !visible {
-                            if !wait_ready(Duration::from_millis(1500)) {
-                                let _ = window.hide();
-                                continue;
-                            }
-                            count = 1;
-                            last = Some((title.clone(), keys.clone()));
-                        } else if same {
+                        let still_visible = visible_until.is_some_and(|at| now < at);
+                        if same && still_visible {
                             count = count.saturating_add(1);
                         } else {
                             count = 1;
-                            last = Some((title.clone(), keys.clone()));
                         }
-                        let side = position_window(&window, &app);
-
-                        if !visible {
-                            let _ = window.show();
-                            visible = true;
-                        }
-                        raise_to_top(&window);
-                        hiding = false;
-                        let _ = window.emit(
-                            "shortcut-tip-show",
-                            TipPayload { title, keys, preset, count, side },
-                        );
-                        deadline = Some(Instant::now() + Duration::from_millis(DISPLAY_MS));
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        let Some(at) = deadline else {
-                            continue;
-                        };
-                        if Instant::now() < at {
-                            if visible && !hiding {
-                                if let Some(app) = APP.get() {
-                                    if let Some(window) = app.get_webview_window(NOTIFY_LABEL) {
-                                        raise_to_top(&window);
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-                        if !hiding {
-                            if let Some(app) = APP.get() {
-                                if let Some(window) = app.get_webview_window(NOTIFY_LABEL) {
-                                    let _ = window.emit("shortcut-tip-hide", ());
-                                }
-                            }
-                            hiding = true;
-                            deadline = Some(Instant::now() + Duration::from_millis(SLIDE_MS));
+                        last = Some((title.clone(), keys.clone()));
+                        let appearance = appearance();
+                        let theme = resolve_theme(&appearance.mode);
+                        let (blur, tint) = if theme == "dark" {
+                            (appearance.dark_blur, appearance.dark_tint)
                         } else {
-                            if let Some(app) = APP.get() {
-                                if let Some(window) = app.get_webview_window(NOTIFY_LABEL) {
-                                    let _ = window.hide();
-                                }
-                            }
-                            visible = false;
-                            hiding = false;
-                            deadline = None;
-                            count = 0;
-                            last = None;
-                        }
+                            (appearance.light_blur, appearance.light_tint)
+                        };
+                        visible_until = Some(now + Duration::from_millis(u64::from(appearance.duration_ms)));
+                        let _ = crate::native_tip::show(crate::native_tip::NativeTipPayload {
+                            title,
+                            keys,
+                            count,
+                            theme: theme.to_owned(),
+                            blur_radius: Some(blur),
+                            tint_alpha: Some(tint),
+                            animation: Some(appearance.animation.clone()),
+                            position: appearance.position,
+                            persistent: None,
+                            duration_ms: Some(appearance.duration_ms),
+                            preview: None,
+                            icon: None,
+                        });
                     }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
         });
 }
 
-fn ensure_window(app: &AppHandle) -> Option<WebviewWindow> {
-    if let Some(window) = app.get_webview_window(NOTIFY_LABEL) {
-        return Some(window);
-    }
-    READY.store(false, Ordering::SeqCst);
-    // 主线程可能正在创建别的窗口（例如剪贴板弹窗）：tauri 的建窗消息在主线程上就地执行，
-    // 两个建窗嵌套会互相等锁、永久卡死。这里改成有界重试，等主线程空闲了再建。
-    for attempt in 0..5 {
-        if crate::window_service::window_build_busy() {
-            crate::log_main_window_event(app, "window_build.busy defer=shortcut_tip");
-            std::thread::sleep(Duration::from_millis(60 * (attempt + 1)));
-            continue;
-        }
-        let (tx, rx) = mpsc::channel();
-        let app_for_main = app.clone();
-        if app
-            .run_on_main_thread(move || {
-                let result = if crate::window_service::window_build_busy() {
-                    None
-                } else {
-                    build_window(&app_for_main)
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// 解析外观主题：`auto` 读系统「应用使用浅色主题」设置。
+fn resolve_theme(mode: &str) -> &'static str {
+    match mode {
+        "light" => "light",
+        "dark" => "dark",
+        _ => {
+            use windows_sys::Win32::System::Registry::{
+                RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ,
+                REG_DWORD,
+            };
+            let mut value: u32 = 1;
+            let mut size = std::mem::size_of::<u32>() as u32;
+            let mut key = std::ptr::null_mut();
+            let path = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+            let opened = unsafe {
+                RegOpenKeyExW(
+                    HKEY_CURRENT_USER,
+                    path.as_ptr(),
+                    0,
+                    KEY_READ,
+                    &mut key,
+                )
+            };
+            if opened == 0 {
+                let mut kind = 0;
+                let value_name = wide("AppsUseLightTheme");
+                let read = unsafe {
+                    RegQueryValueExW(
+                        key,
+                        value_name.as_ptr(),
+                        std::ptr::null_mut(),
+                        &mut kind,
+                        &mut value as *mut u32 as *mut u8,
+                        &mut size,
+                    )
                 };
-                let _ = tx.send(result);
-            })
-            .is_err()
-        {
-            return None;
-        }
-        match rx.recv_timeout(Duration::from_millis(800)) {
-            Ok(Some(window)) => return Some(window),
-            _ => {
-                // 主线程忙或本次没建出来：退避后再试，最后一次仍失败就放弃这次提示。
-                std::thread::sleep(Duration::from_millis(60 * (attempt + 1)));
+                unsafe {
+                    let _ = RegCloseKey(key);
+                }
+                if read == 0 && kind == REG_DWORD {
+                    return if value == 0 { "dark" } else { "light" };
+                }
             }
+            "light"
         }
     }
-    None
 }
 
-fn build_window(app: &AppHandle) -> Option<WebviewWindow> {
-    let _build_guard = crate::window_service::begin_window_build();
-    let window = WebviewWindowBuilder::new(app, NOTIFY_LABEL, WebviewUrl::App("notification.html".into()))
-        .title("Shortcut tip")
-        .inner_size(NOTIFY_WIDTH, NOTIFY_HEIGHT)
-        .decorations(false)
-        .transparent(true)
-        .resizable(false)
-        .maximizable(false)
-        .minimizable(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .focused(false)
-        .shadow(false)
-        .visible(false)
-        .build()
-        .ok()?;
-    let _ = window.set_ignore_cursor_events(true);
-    Some(window)
-}
-
-
-
-fn position_window(window: &WebviewWindow, app: &AppHandle) -> &'static str {
-    let Ok(Some(monitor)) = app.primary_monitor() else {
-        return "bottom";
-    };
-    let scale = monitor.scale_factor();
-    let work_area = monitor.work_area();
-    let width = (NOTIFY_WIDTH * scale).round() as u32;
-    let height = (NOTIFY_HEIGHT * scale).round() as u32;
-    let gap = (NOTIFY_GAP * scale).round() as i32;
-    let x = work_area.position.x + (work_area.size.width as i32 - width as i32) / 2;
-    let y = work_area.position.y + work_area.size.height as i32 - height as i32 - gap;
-    let _ = window.set_size(Size::Physical(PhysicalSize { width, height }));
-    let _ = window.set_position(Position::Physical(PhysicalPosition { x, y }));
-
-    let screen = monitor.size();
-    let center_x = x as f64 + width as f64 / 2.0;
-    let center_y = y as f64 + height as f64 / 2.0;
-    let zone_w = screen.width as f64 * ZONE_RATIO;
-    let zone_h = screen.height as f64 * ZONE_RATIO;
-    if center_x < zone_w {
-        "left"
-    } else if center_x > screen.width as f64 - zone_w {
-        "right"
-    } else if center_y < zone_h {
-        "top"
-    } else if center_y > screen.height as f64 - zone_h {
-        "bottom"
-    } else {
-        "bottom"
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn raise_to_top(window: &WebviewWindow) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    };
-    let Ok(hwnd) = window.hwnd() else {
-        return;
-    };
-    unsafe {
-        // 每次显示都重新压到置顶层，避免被同样置顶的窗口（含本软件）盖住。
-        SetWindowPos(
-            hwnd.0,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        );
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn raise_to_top(_window: &WebviewWindow) {}
-
-struct InputListener {
-    thread_id: u32,
-    thread: thread::JoinHandle<()>,
-}
 
 pub fn start() -> Result<(), String> {
     start_worker();

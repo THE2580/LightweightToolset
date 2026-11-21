@@ -53,6 +53,12 @@
 
 # Verification
 
+- 2026-11-21 外观弹窗排版定稿：分隔线分区、两列网格撑满（修 `align-items: center` 导致内容居中）、固定高度、编辑态 X/Y 两列、只显示当前生效主题的模糊/不透明度；开发版已重启。
+- 2026-11-21 外观弹窗交互调整：位置行放「编辑/重置」（重置仅编辑期间显示）、预览提示移到底栏、预览固定键盘图标（payload 新增 `icon` 覆盖）、滑块改本地草稿 + 180ms 去抖提交（拖动跟手）并右对齐；`cargo test` 54 passed / 3 ignored、`npm run build` 通过，开发版已重启（pid 26296）。
+- 2026-11-21 外观弹窗内容改为纵向分行（主题/动画各占一行、按钮单独一行、分段控件 `width: max-content` 不再压缩），弹窗图标改用设置图标；`npm run build` 通过，开发版已重启（pid 16256）。
+- 2026-11-21 外观弹窗改为项目标准弹窗：`createPortal` 到 `document.body` + `dialog-backdrop` 全窗遮盖（z-index 9999、模糊遮罩）+ 进退场动画 + 底部「完成」；`npm run build` 通过，开发版已重启（pid 21984）。
+- 2026-11-21 入正 UI 调整：外观设置从页面正文移入弹窗（header 右上角「设置」按钮 → `shortcut-tip-dialog`），页面只保留列表；`npm run build` 通过；开发版已重启（pid 7364 + 子进程 23104）。
+- 2026-11-21 入正（未提交）：原生浮窗接管「快捷键提示」，`native_tip` 实验工具与 WebView 浮窗文件删除；`cargo test` 54 passed / 3 ignored、`npm run build` 通过；开发版已重启（pid 25652 + 采键子进程 8384）。待用户验收。
 - 2026-11-21 第 3 轮收尾通过：回归（54 passed / 3 ignored，冒烟两次）、`npm run build`、`cargo check`（仅 4 条既有 warning）。工作树全部未提交，等待是否提交/转正的决定。
 - 2026-11-21 弹动加速：`POP_MS` 300→230ms（图标/徽标跳动更利落，进入/退出时长未动）。`cargo test` 54 passed / 3 ignored；开发版已重启（pid 17068）。
 - 2026-11-21 第 2 轮补丁 7：定位预览图标固定为键盘图标（不再按 Ctrl+C 推断成复制图标）。`cargo test` 54 passed / 3 ignored；开发版已重启（pid 6600）。第 2 轮至此全部通过用户验收。

@@ -41,6 +41,8 @@
 
 # 已确认经验
 
+- 2026-11-21（前端弹窗层级）：应用内弹窗必须 `createPortal(..., document.body)` + `.dialog-backdrop`（`position: fixed; inset: 0; z-index: 9999`、`backdrop-filter: blur(3px)`、`dialog-fade/dialog-pop` 进退场动画）。直接渲染在工具页 DOM 里时，遮罩只覆盖内容区、侧栏不被遮住、也没有淡入淡出——层级就不对。关闭要走 `closing` 状态 + 170ms 延迟卸载，才有退场动画。
+
 - 2026-11-21（分层窗口 / 显示顺序）：`UpdateLayeredWindow` 在窗口隐藏时也会更新内容，所以**必须先画再 `ShowWindow`**。先显示再画，用户会先看到上一次留在图层里的旧画面（本项目表现为"退出定位后第一次弹出闪一下示例"）。
 - 2026-11-21（原生提示实验 / 静态预览）：`preview` 必须同时关掉**动画定时器**和 `tick()` 里的弹动推进；只在 `start()` 里把 `pop` 置 1 是不够的，`Hold` 阶段会把 `pop` 重新从 0 推到 1（图标徽标照样弹）。
 

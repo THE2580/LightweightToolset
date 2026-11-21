@@ -37,7 +37,6 @@ export default defineConfig(async () => ({
         main: "index.html",
         popup: "popup.html",
         free: "free.html",
-        notification: "notification.html",
       },
     },
   },

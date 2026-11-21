@@ -403,7 +403,7 @@ struct NativeTipMetrics {
 /// 定位滑块需要的屏幕/窗口度量（物理像素）。
 #[tauri::command]
 fn native_tip_metrics(state: State<'_, AppState>) -> Result<NativeTipMetrics, String> {
-    ensure_tool_enabled(&state, "native_tip")?;
+    ensure_tool_enabled(&state, "shortcut_tip")?;
     let (work_left, work_top, work_right, work_bottom, window_width, window_height, default_x, default_y) =
         native_tip::metrics();
     Ok(NativeTipMetrics {
@@ -428,7 +428,7 @@ fn native_tip_set_positioning(active: bool) -> Result<(), String> {
 /// 收起提示窗（定位预览结束或关闭工具时）。
 #[tauri::command]
 fn native_tip_hide(state: State<'_, AppState>) -> Result<(), String> {
-    ensure_tool_enabled(&state, "native_tip")?;
+    ensure_tool_enabled(&state, "shortcut_tip")?;
     native_tip::hide();
     Ok(())
 }
@@ -945,6 +945,13 @@ fn shortcut_tip_report(keys: String) {
 }
 
 #[tauri::command]
+fn shortcut_tip_set_appearance(
+    appearance: shortcut_tip::ShortcutTipAppearance,
+) -> Result<ShortcutTipSnapshot, String> {
+    shortcut_tip::set_appearance(appearance)
+}
+
+#[tauri::command]
 fn shortcut_tip_snapshot() -> Result<ShortcutTipSnapshot, String> {
     shortcut_tip::snapshot()
 }
@@ -983,7 +990,7 @@ fn native_tip_show(
     state: State<'_, AppState>,
     payload: native_tip::NativeTipPayload,
 ) -> Result<(), String> {
-    ensure_tool_enabled(&state, "native_tip")?;
+    ensure_tool_enabled(&state, "shortcut_tip")?;
     log_main_window_event(
         &app,
         &format!(
@@ -1941,6 +1948,7 @@ pub fn run() {
             shortcut_tip_begin_capture,
             shortcut_tip_end_capture,
             shortcut_tip_report,
+            shortcut_tip_set_appearance,
             shortcut_tip_snapshot,
             shortcut_tip_upsert,
             shortcut_tip_delete,

@@ -13,8 +13,8 @@ LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻
 
 ## 目录结构
 
-- `src/`：React 前端。`App.tsx` 为主窗口（体量大，优先局部修改）；`popup.tsx` / `free.tsx` 为快捷弹窗与自由窗口；`notification.tsx` 为快捷键提示浮窗页；`shortcutNotify.ts` 是页面按键上报桥；样式集中在 `App.css`、`popup.css`、`free.css`、`notification.css`。
-- `src-tauri/src/`：Rust 后端。`lib.rs` 为应用装配与命令入口；`main.rs` 兼作采键子进程入口（`--shortcut-tip-helper`）；`autostart.rs` 开机自启（计划任务）；`tools.rs` 工具注册与生命周期；`clipboard.rs`、`shortcut_tip.rs`、`app_usage.rs`、`key_usage.rs`、`input_monitor.rs`、`timer.rs`、`window_pinner.rs`、`window_service.rs`、`windows_notification.rs`、`settings.rs` 按功能拆分。
+- `src/`：React 前端。`App.tsx` 为主窗口（体量大，优先局部修改）；`popup.tsx` / `free.tsx` 为快捷弹窗与自由窗口；`shortcutNotify.ts` 是页面按键上报桥。快捷键提示浮窗由原生实现绘制（见 `native_tip.rs`），已无 WebView 浮窗页；样式集中在 `App.css`、`popup.css`、`free.css`。
+- `src-tauri/src/`：Rust 后端。`lib.rs` 为应用装配与命令入口；`main.rs` 兼作采键子进程入口（`--shortcut-tip-helper`）；`autostart.rs` 开机自启（计划任务）；`tools.rs` 工具注册与生命周期；`clipboard.rs`、`shortcut_tip.rs`、`app_usage.rs`、`key_usage.rs`、`input_monitor.rs`、`timer.rs`、`window_pinner.rs`、`window_service.rs`、`windows_notification.rs`、`settings.rs` 按功能拆分；`native_tip.rs` 是快捷键提示的原生浮窗（Win32 分层窗口 + GDI 自绘）。
 - `src-tauri/src/screenshot/`：截图与贴图工具。`overlay.rs` 全屏覆盖层（选区/放大镜/辅助线/标注阶段）、`annotation.rs` 标注模型与绘制、`toolbar.rs` 工具栏两套布局（截图/贴图）、`pin.rs` 贴图窗口（含标注、文本选择、拖放缩略图、三态阴影）、`ocr.rs` 本地 OCR（PP-OCRv6 + pure-onnx-ocr）、`dib.rs` / `save.rs` / `clipboard_image.rs` 像素与落盘。
 - `src-tauri/resources/ocr/ppocr_v6_small/`：OCR 模型（det/rec 的 `inference.onnx` + `inference.yml`，约 30MB），由 `tauri.conf.json` 的 `bundle.resources` 放到安装目录 `ocr/`；运行时只认 exe 同级 `ocr/`。
 - `src-tauri/capabilities/default.json`：Tauri 权限清单；`src-tauri/tauri.conf.json`：窗口/打包配置。
@@ -48,6 +48,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 前端只通过现有 Tauri command 取数；新增能力先加 Rust command 与 capability，再在前端调用。
 - 数量档位控件统一用 `CountPicker`（窗口置顶「最大数量」与截图「历史保留数量」共用）：档位由 `limits` 传入，靠近右缘时用 `align="end"` 向左展开；不要再为这类“几档数值”另写数字输入框。
 - Rust 错误统一转 `String` 返回给前端；日志走 `push_debug_log`，不要 `println!` 留生产噪声。
+- **应用内弹窗统一走 `createPortal(document.body)` + `.dialog-backdrop` 规范**：遮罩必须盖住整个窗口（`position: fixed; inset: 0; z-index: 9999; backdrop-filter: blur(3px)`），内容用 `.update-dialog`（含 `.update-dialog-header` / body / `.update-dialog-actions`），进场 `dialog-fade` + `dialog-pop`、退场靠 `closing` class 再延迟 170ms 卸载。禁止把弹窗直接渲染在工具页 DOM 里（那样遮罩只盖内容区、侧栏不被遮住、也没有淡入淡出）。新弹窗复用这套 class 与开合写法，不另写遮罩/动画/CSS。
 - 设置项里的可折叠分组用 `.settings-row-toggle`：整行可点、箭头放在标题右侧、默认收起，点右侧控件不触发折叠；子设置不能挂在别的开关的条件渲染里（「UI 检测」曾被放进辅助线条件块，辅助线关掉时它一起消失）。
 
 ## 快捷键设置约定

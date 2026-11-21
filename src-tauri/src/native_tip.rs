@@ -87,6 +87,9 @@ pub struct NativeTipPayload {
     /// 停留时长（毫秒），缺省 2000，夹在 800–10000。
     #[serde(default)]
     pub duration_ms: Option<u32>,
+    /// 强制图标：`keyboard` / `copy` / `paste`；不给就按快捷键内容推断。
+    #[serde(default)]
+    pub icon: Option<String>,
     /// 定位预览：直接出现、不播进入动画，且不受「定位期间压制弹出」影响。
     #[serde(default)]
     pub preview: Option<bool>,
@@ -1339,11 +1342,13 @@ fn draw_icon(
 
     let unit = size / 24.0;
     let line = (2.0 * unit).max(1.0);
-    // 定位预览固定用键盘图标（示例内容不代表具体动作，用复制/粘贴图标会误导）。
-    let kind = if payload.preview == Some(true) {
-        IconKind::Keyboard
-    } else {
-        payload.keys.as_deref().map(icon_kind).unwrap_or(IconKind::Keyboard)
+    // 图标优先级：显式指定 > 定位预览固定键盘 > 按快捷键内容推断。
+    let kind = match payload.icon.as_deref() {
+        Some("keyboard") => IconKind::Keyboard,
+        Some("copy") => IconKind::Copy,
+        Some("paste") => IconKind::Paste,
+        _ if payload.preview == Some(true) => IconKind::Keyboard,
+        _ => payload.keys.as_deref().map(icon_kind).unwrap_or(IconKind::Keyboard),
     };
 
     // 各类图形的设计尺寸（单位 = unit），用于计算居中偏移。
@@ -1688,6 +1693,7 @@ mod tests {
                 persistent: None,
                 duration_ms: None,
                 preview: None,
+                icon: None,
             })
             .expect("show 应成功");
             std::thread::sleep(Duration::from_millis(500));

@@ -1095,7 +1095,20 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .shortcut-tip-page .secondary-action svg { flex: 0 0 auto; }
 .shortcut-tip-toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
 .native-tip-label { color: var(--muted-text); font-size: 12.5px; white-space: nowrap; }
-.native-tip-params { display: flex; margin-top: 8px; padding: 10px 14px; align-items: center; gap: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
+.native-tip-params { display: flex; margin-top: 8px; padding: 10px 14px; flex-wrap: wrap; align-items: center; gap: 14px 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
+.native-tip-stack { display: flex; flex-direction: column; gap: 10px; }
+.native-tip-field-row { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+.native-tip-field { display: flex; flex-direction: column; gap: 5px; }
+.native-tip-field-label { color: var(--muted-text); font-size: 11.5px; font-weight: 700; }
+.native-tip-field .segmented { width: max-content; max-width: 100%; }
+.native-tip-position-actions { display: flex; margin-left: auto; gap: 8px; }
+.shortcut-tip-appearance-dialog .native-tip-slider { display: grid; grid-template-columns: minmax(0, 1fr) 200px; align-items: center; gap: 12px; width: 100%; }
+.shortcut-tip-appearance-dialog .native-tip-slider span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.shortcut-tip-appearance-dialog .native-tip-slider input[type="range"] { width: 200px; margin-left: auto; }
+.shortcut-tip-dialog .native-tip-params { flex-direction: column; align-items: stretch; gap: 10px; }
+.shortcut-tip-dialog .native-tip-slider { justify-content: space-between; }
+.shortcut-tip-dialog .native-tip-slider input[type="range"] { flex: 1; max-width: 220px; }
+.shortcut-tip-header-actions { display: flex; align-items: center; gap: 12px; }
 .native-tip-slider { display: flex; align-items: center; gap: 10px; color: var(--muted-text); font-size: 12.5px; white-space: nowrap; }
 .native-tip-slider input[type="range"] { width: 150px; accent-color: var(--primary); cursor: pointer; }
 .shortcut-tip-disabled { padding: 18px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted-text); font-size: 13px; text-align: center; }
@@ -1126,6 +1139,24 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .shortcut-tip-empty strong { color: var(--text); font-size: 12.5px; }
 
 .shortcut-tip-dialog { width: min(340px, 100%); }
+.shortcut-tip-appearance-dialog { width: min(420px, calc(100vw - 48px)); }
+.shortcut-tip-appearance-dialog { display: flex; height: min(600px, calc(100vh - 110px)); flex-direction: column; }
+.shortcut-tip-appearance-dialog .shortcut-tip-dialog-body { flex: 1 1 auto; min-height: 0; padding: 8px 16px 4px; gap: 4px; overflow-y: auto; scrollbar-width: none; }
+.shortcut-tip-appearance-dialog .shortcut-tip-dialog-body::-webkit-scrollbar { width: 0; height: 0; }
+.shortcut-tip-appearance-dialog .native-tip-params { margin: 0; padding: 10px 0; gap: 8px; border: 0; border-radius: 0; background: transparent; }
+.shortcut-tip-appearance-dialog .native-tip-params + .native-tip-params { border-top: 1px solid var(--soft-border); }
+.shortcut-tip-appearance-dialog .native-tip-stack + .native-tip-params { border-top: 1px solid var(--soft-border); padding-top: 10px; }
+.native-tip-range { width: 100%; accent-color: var(--primary); cursor: pointer; }
+.native-tip-range:disabled { cursor: not-allowed; opacity: 0.45; }
+.shortcut-tip-appearance-dialog .native-tip-field.is-disabled .native-tip-field-label { opacity: 0.55; }
+.shortcut-tip-appearance-dialog .native-tip-field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; }
+.shortcut-tip-appearance-dialog .native-tip-params { display: flex; width: 100%; flex-direction: column; align-items: stretch; gap: 10px; }
+.shortcut-tip-appearance-dialog .native-tip-position-row { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; }
+.shortcut-tip-appearance-dialog .native-tip-position-row .native-tip-label { text-align: left; }
+.shortcut-tip-appearance-dialog .native-tip-field-row > .native-tip-field { text-align: left; }
+.shortcut-tip-appearance-dialog .native-tip-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.shortcut-tip-appearance-dialog .native-tip-slider input[type="range"] { max-width: none; }
+.shortcut-tip-appearance-dialog .update-dialog-actions { flex: 0 0 auto; padding: 10px 14px 13px; justify-content: flex-end; gap: 8px; display: flex; }
 .shortcut-tip-dialog-body { display: flex; flex-direction: column; gap: 9px; padding: 13px 14px 3px; }
 .shortcut-tip-dialog-body .shortcut-tip-capture { width: 100%; height: 42px; padding: 0 12px; font-size: 13px; }
 .shortcut-tip-dialog-body .shortcut-tip-label-input { flex: 0 0 auto; width: 100%; height: 42px; padding: 0 12px; border-radius: 8px; font-size: 13px; }
