@@ -1,12 +1,20 @@
 # 活跃风险与约束
 
+- **「符号键快捷键被当成呼出主窗口」已定位并修复（2026-11-21，提交 `f81a99e`，未推送；开发版实测通过、用户已确认）**：把剪贴板快捷键设成 `Ctrl+Win+/` 后按下去会弹出主窗口。根因是同一物理按键在两侧的名字不统一：
+  - 存储值来自前端 `KeyboardEvent.key`（符号原样保留 → `CTRL+SUPER+/`），`Shortcut::from_str` 能解析（`/` → `Code::Slash`），所以键**注册成功、回调也会来**；
+  - 回调文本来自 `Shortcut::to_string()`（`global-hotkey` 的 `into_string`，顺序 shift/control/alt/super + `Code` 的 Display），符号键输出 DOM code 名 → `control+super+Slash`，`normalize_hotkey` 后是 `CTRL+SUPER+SLASH`，与存储值 `CTRL+SUPER+/` 对不上；
+  - 匹配失败 → `handled` 保持 false → 旧兜底分支 `else { show_main_window(app) }` 直接呼出主窗口。
+  - 修复（共享入口）：`tools.rs` 新增 `canonical_hotkey` / `canonical_key_token`，`tool_for_shortcut` / `app_hotkey_for_shortcut` / `ensure_hotkey_available` 全部按规范化标识比较（符号 ↔ DOM code 名、`ESC/ESCAPE`、`UP/ARROWUP`、`PGUP/PAGEUP` 等），存储值与显示文案不变；`lib.rs` 兜底改为只在真正匹配到 `main_window` 时唤出主窗口，其余记 `hotkey.unmatched` 且不再弹窗。
+  - 影响面比报告的大：所有符号/别名键快捷键（`/ . , ; ' [ ] = - \``）此前都匹配不上；`Ctrl+Alt+.` 当主窗口快捷键时也是靠兜底「碰巧」生效，现在走显式匹配。
+  - 验证：`tools.rs` 两条新单测（含 `Shortcut::to_string()` 输出 `control+super+Slash` 的根因复现）；开发版注入 `Ctrl+Win+/` → `Clipboard` 弹窗出现、Esc 关闭；把主窗口快捷键设为 `CTRL+ALT+.`、关闭主窗口（隐藏到托盘）后按 `Ctrl+Alt+.` → 主窗口重新可见。
+
 - ~~静默启动后主窗口「唤不出 / 整个软件像死的」~~ **已结案（`v0.7.2` 发布，`abe5441`）**：用户装完 `v0.7.1` 后第一次开机即复现——进程 `Responding=False`、所有窗口 `WM_NULL` 探测 HUNG、托盘菜单弹不出。抓主线程栈定位到**主线程嵌套建窗死锁**：
   - 栈底 `window_service::open_clipboard_popup` → `WebviewWindowBuilder::build` → tauri 的 `send_user_message` 在主线程**就地执行** `handle_user_message` → 窗口消息派发期间把排队的 `shortcut_tip::build_window` 也执行了 → 内层建窗再去拿同一把窗口锁 → `std::sync::Mutex::lock_contended` 永久阻塞。
   - 复现条件：剪贴板弹窗与快捷键提示浮窗**同时首次创建**（首次安装后第一次用剪贴板快捷键最易撞上）。
   - 修复：`window_service::begin_window_build()` / `window_build_busy()` 占位，后到建窗让路（浮窗退避重试 5 次、弹窗交给独立线程排队），覆盖剪贴板弹窗、计时器自由/时钟窗口、提示浮窗；让路写 `logs/window.log`（`window_build.busy defer=...`）。开发版复现时日志确证让路两次、两窗正常出现、进程持续响应。
   - 取证方法沉淀：`SendMessageTimeout(WM_NULL)` 探活 + `StackWalk64`/dbghelp 栈回溯（本机无 procdump/cdb，用 PowerShell 内嵌 C# 实现）。
 
-- **工作树常态**：`M src-tauri/src/window_service.rs`（既有 rustfmt 噪声）、`M src-tauri/src/window_pinner.rs`（仅换行差异）与 `?? .codex/`（Codex 遗留本地配置，DSH 不读取）长期存在；除非用户授权，不处理、不回滚、不提交。
+- **工作树常态**：`M src-tauri/src/window_pinner.rs`（仅换行差异）与 `?? .codex/`（Codex 遗留本地配置，DSH 不读取）长期存在；除非用户授权，不处理、不回滚、不提交。（`window_service.rs` 已随 0.7.2 提交，不再是现场。）
 - **窗口置顶边界**：管理员目标受 UIPI 限制可能返回 Win32 5；监护不覆盖开发终端关闭、系统同时杀死监护进程、关机等场景。
 - **测试串行**：`input_monitor` 等测试共享全局按键状态，并行 `cargo test --lib` 会偶发失败；统一 `--test-threads=1`，并把 `TEMP`/`TMP` 指向 `src-tauri/target/test-tmp`（否则 `window_pinner` 三条测试因沙箱写 `%TEMP%` 失败）。
 - **格式化**：全仓 `cargo fmt --check` 与严格 clippy 有既有告警，不作为准入条件；不要对仓库 Rust 文件跑 `rustfmt`。
@@ -33,6 +41,7 @@
 
 # 已确认经验
 
+- 2026-11-21：快捷键匹配**必须比规范化后的按键标识**，不能拿存储原值直接和回调文本比：存储侧是前端 `KeyboardEvent.key`（`/`、`.` 原样），回调侧是 `Shortcut::to_string()` 的 `Code` 名（`Slash`、`Period`）。同时**快捷键回调的兜底分支绝不能默认「呼出主窗口」**——未匹配就只记录，否则任何匹配失败都会表现成「按了没设过的键却弹出主窗口」。新增按键别名时改 `canonical_key_token` 一处即可。
 - 2026-11-20：截图工具里「贴图 / 恢复 / 关闭全部 / 隐藏显示 / 鼠标穿透」这几个快捷键不弹提示，根因是全局快捷键回调里贴图组命令分支执行完直接 `return`，而「派发快捷键提示」那段排在它后面，永远轮不到（截图、呼出主窗口、窗口置顶排在后面处理，所以只有它们会提示）。修法：把 `notify_app_hotkey` 的派发提前到贴图组命令之前。教训：快捷键回调里任何新增的「早返回」分支之前，都要确认提示派发已经发生。
 - 2026-11-20：窗口预选最初按「同进程」排除，会连带把本软件主窗口排除掉；用户要求本软件窗口也能被预选，因此改为只跳过截图覆盖层自身的 HWND（`OVERLAY_HWND`），其余同进程窗口正常参与命中。
 - 2026-11-20：预选态「整屏压暗 + 放大镜拖出亮痕」的根因：首帧走 `band_needs_full_paint` 快速路径只画了压暗图；全屏窗口的预选矩形与初始全屏预选相等时不会触发“预选变化→整屏重绘”，于是永远停在压暗层。修复：脏区与 `selecting_rect()` 相交就强制完整绘制（原图 + 边框），不再只依赖预选变化这一个触发点。

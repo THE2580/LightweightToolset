@@ -9,13 +9,16 @@
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD `140f023`（`docs: record v0.7.2 deadlock fix and post-release state`）已推送，`v0.7.2` 为最新发布。
-- 本轮（2026-11-21）只做了文档与约束整理，未改代码。
-- 工作树只剩既有现场：`M src-tauri/src/window_pinner.rs`（换行差异）、`?? .codex/`——不处理、不提交。（`window_service.rs` 已随 0.7.2 修复一并提交，不再是待处理项。）
-- 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（rustfmt 重排，非逻辑改动）、`M src-tauri/src/window_pinner.rs`（CRLF 换行差异）、`?? .codex/`。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD `f81a99e`（`fix: match symbol-key hotkeys by canonical key name`）**已提交、未推送**；`v0.7.2` 为最新发布。
+- 本轮（2026-11-21）：修「符号键快捷键被当成呼出主窗口」，改了 `src-tauri/src/tools.rs` 与 `src-tauri/src/lib.rs`；用户确认通过后已提交 `f81a99e`。
+- 工作树只剩既有现场：`M src-tauri/src/window_pinner.rs`（换行差异）、`?? .codex/`——不处理、不提交。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
 # Active Files
+
+- 2026-11-21 符号键快捷键匹配修复（已提交 `f81a99e`，未推送）：
+  - `src-tauri/src/tools.rs`：新增 `canonical_hotkey` / `canonical_key_token`（符号 ↔ DOM code 名、`ESC/ESCAPE`、`UP/ARROWUP`、`PGUP/PAGEUP` 等别名收敛）；`tool_for_shortcut` / `app_hotkey_for_shortcut` / `ensure_hotkey_available` 改为比较规范化标识（存储值不变、显示文案不变）；`tests` 增 `canonical_hotkey_matches_symbol_keys_with_code_names`、`shortcut_callback_text_uses_code_names_for_symbol_keys`。
+  - `src-tauri/src/lib.rs`：快捷键回调把 `handled=false` 的 `main_window` 分支改成独立 `show_main_window_hotkey` 标记；兜底由 `else { show_main_window }` 改为「只有匹配到 main_window 才唤出，其余记 `hotkey.unmatched`」，贴图组快捷键在截图工具停用时不再误弹主窗口。
 
 - 2026-11-20 快捷键体系与主窗口唤出（提交 `c4d3207` / `7fd2878`）：
   - `src-tauri/src/lib.rs`：`show_main_window`（`unminimize` → `show` → 回读可见/最小化 → `FindWindowExW` 兜底）、`log_main_window_event`（写 `<存储目录>/logs/window.log`，256KB 重置）、`find_main_window_hwnd` / `main_window_webview_state`（诊断 `webview=alive/missing/no_window`）；快捷键回调里 `shortcut_tip::notify_app_hotkey` 派发提前到贴图组命令分支之前。
@@ -49,6 +52,14 @@
 - `src-tauri/tauri.conf.json`：`bundle.resources` 把 `resources/ocr` 映射到安装目录 `ocr/`。
 
 # Verification
+
+- 2026-11-21 符号键快捷键修复（本轮）：
+  - `cargo test --lib -- --test-threads=1`（`TEMP`/`TMP` 指向 `src-tauri/target/test-tmp`）**54 passed / 0 failed / 2 ignored**；`cargo check` 通过（4 条既有 warning）。
+  - 根因用单测固化：`"CTRL+SUPER+/".parse::<Shortcut>().unwrap().to_string()` == `control+super+Slash`（存储侧 `CTRL+SUPER+/`，回调侧 `CTRL+SUPER+SLASH`）。
+  - 开发版（`%TEMP%\lwt-dev`，提权）注入 `Ctrl+Win+/` → `Clipboard` 窗口可见；Esc 后消失。`%APPDATA%\com.the.lightweight-toolset.dev\settings.json` 预置 `tools.clipboard=true`、`hotkeys.clipboard=CTRL+SUPER+/`。
+  - 回归：主窗口快捷键临时设为 `CTRL+ALT+.`，`WM_CLOSE` 隐藏到托盘后按 `Ctrl+Alt+.` → 主窗口重新 `visible=True`（此前只靠兜底碰巧生效）。
+  - 观察（既有行为，非本轮引入）：`shortcut_tip` 工具未启用时，本软件快捷键仍会弹提示浮窗（`notify_app_hotkey` 只判断归属工具是否启用，不判断提示工具本身）。
+
 
 - 2026-11-21 环境核对：安装版 `D:\轻量化工具集\lightweight-toolset.exe` 为 `0.7.2`，两个进程（主进程 + 采键 helper）`Responding=True`；`%APPDATA%\com.the.lightweight-toolset\logs\window.log` 不存在（无建窗让路/唤出失败记录）；开发环境未运行（`:1420` 无监听、`%TEMP%\lwt-dev` 与开发版数据目录均已删除）。
 - 2026-11-20 `v0.7.2` 发版（上一轮）：
@@ -126,8 +137,10 @@
 
 # Next Action
 
-- **用户已安装并日常使用 `v0.7.2`**（`D:\轻量化工具集\`，主进程 + 采键 helper 常驻，响应正常）；升级后未再复现整机卡死，`logs/window.log` 尚未生成。
+- 本轮修复已提交 `f81a99e`，**未推送、未发版**；下次发版时随版本一起带上（版本规则：缺陷修复调第三位，即下一个 `v0.7.3`）。
+- 推送前必须先拿到明确指令，并让用户开代理 `127.0.0.1:7897`。
+- 用户已安装并日常使用 `v0.7.2`（`D:\轻量化工具集\`，主进程 + 采键 helper 常驻，响应正常）；升级后未再复现整机卡死。
 - 等用户指定下一批功能；**UI 元素级检测已明确暂缓，不要主动做**。
-- 已知未修的小问题（用户尚未要求处理）：开发版把剪贴板快捷键设成 `Ctrl+Win+/` 时，按键会被当成「呼出主窗口」处理（疑似该组合未被识别为剪贴板快捷键，需先确认注册是否成功）。
+
 - 需要重新开发时按「验证方式」重建环境：`npm run dev`（:1420）→ `cargo build` → 复制 exe 到 `%TEMP%\lwt-dev\` → 提权启动。
 - 未做的待办见 `progress.md`：标注拖动/文本再编辑、缩略图观感、贴图历史浏览（暂缓）。
