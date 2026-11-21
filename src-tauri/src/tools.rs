@@ -376,21 +376,25 @@ impl ToolRegistry {
     }
 
     pub fn tool_for_shortcut(&self, shortcut: &str) -> Option<String> {
-        let normalized = normalize_hotkey(shortcut).ok()?;
+        let normalized = canonical_hotkey(shortcut)?;
         TOOLS
             .iter()
             .find(|tool| {
                 self.is_enabled(tool.id)
-                    && self.hotkey_for(tool.id).eq_ignore_ascii_case(&normalized)
+                    && canonical_hotkey(&self.hotkey_for(tool.id)).as_deref()
+                        == Some(normalized.as_str())
             })
             .map(|tool| tool.id.to_owned())
     }
 
     pub fn app_hotkey_for_shortcut(&self, shortcut: &str) -> Option<String> {
-        let normalized = normalize_hotkey(shortcut).ok()?;
+        let normalized = canonical_hotkey(shortcut)?;
         APP_HOTKEYS
             .iter()
-            .find(|hotkey| self.hotkey_for(hotkey.id).eq_ignore_ascii_case(&normalized))
+            .find(|hotkey| {
+                canonical_hotkey(&self.hotkey_for(hotkey.id)).as_deref()
+                    == Some(normalized.as_str())
+            })
             .map(|hotkey| hotkey.id.to_owned())
     }
 
@@ -484,14 +488,22 @@ impl ToolRegistry {
     }
 
     fn ensure_hotkey_available(&self, tool_id: &str, hotkey: &str) -> Result<(), String> {
-        if TOOLS
+        let Some(candidate) = canonical_hotkey(hotkey) else {
+            return Ok(());
+        };
+        let conflict = TOOLS
             .iter()
-            .any(|tool| tool.id != tool_id && self.hotkey_for(tool.id).eq_ignore_ascii_case(hotkey))
+            .any(|tool| {
+                tool.id != tool_id
+                    && canonical_hotkey(&self.hotkey_for(tool.id)).as_deref()
+                        == Some(candidate.as_str())
+            })
             || APP_HOTKEYS.iter().any(|app_hotkey| {
                 app_hotkey.id != tool_id
-                    && self.hotkey_for(app_hotkey.id).eq_ignore_ascii_case(hotkey)
-            })
-        {
+                    && canonical_hotkey(&self.hotkey_for(app_hotkey.id)).as_deref()
+                        == Some(candidate.as_str())
+            });
+        if conflict {
             return Err("快捷键已被其他功能占用".to_owned());
         }
         Ok(())
@@ -726,6 +738,49 @@ fn normalize_hotkey(value: &str) -> Result<String, String> {
     Ok(normalized.join("+"))
 }
 
+/// 把「存储写法」和「快捷键回调文本」统一成同一个按键标识，只用于匹配与判重。
+///
+/// 两边的按键名来源不同：存储值来自前端 `KeyboardEvent.key`（符号保持原样，如 `/`、`.`），
+/// 回调文本来自 `Shortcut::to_string()`，用的是 DOM code 名（`Slash`、`Period`）。
+/// 不统一就会匹配失败——回调落进兜底分支，表现为「按这个键却呼出主窗口」。
+/// 显示仍走 `format_hotkey_display`，存储值不变。
+fn canonical_hotkey(value: &str) -> Option<String> {
+    let normalized = normalize_hotkey(value).ok()?;
+    let (modifiers, key) = normalized.rsplit_once('+')?;
+    Some(format!("{modifiers}+{}", canonical_key_token(key)))
+}
+
+/// 把同一个物理按键的各种写法收敛到一个标识（符号 → DOM code 名，短别名 → 全名）。
+fn canonical_key_token(part: &str) -> String {
+    let upper = part.trim().to_uppercase();
+    let token = match upper.as_str() {
+        "/" | "SLASH" => "SLASH",
+        "." | "PERIOD" => "PERIOD",
+        "," | "COMMA" => "COMMA",
+        ";" | "SEMICOLON" => "SEMICOLON",
+        "'" | "QUOTE" => "QUOTE",
+        "[" | "BRACKETLEFT" => "BRACKETLEFT",
+        "]" | "BRACKETRIGHT" => "BRACKETRIGHT",
+        "=" | "EQUAL" => "EQUAL",
+        "-" | "MINUS" => "MINUS",
+        "`" | "BACKQUOTE" => "BACKQUOTE",
+        "\\" | "BACKSLASH" => "BACKSLASH",
+        "ESC" | "ESCAPE" => "ESCAPE",
+        "DEL" | "DELETE" => "DELETE",
+        "INS" | "INSERT" => "INSERT",
+        "RETURN" | "ENTER" => "ENTER",
+        "SPACEBAR" | "SPACE" => "SPACE",
+        "PGUP" | "PAGEUP" => "PAGEUP",
+        "PGDN" | "PAGEDOWN" => "PAGEDOWN",
+        "UP" | "ARROWUP" => "ARROWUP",
+        "DOWN" | "ARROWDOWN" => "ARROWDOWN",
+        "LEFT" | "ARROWLEFT" => "ARROWLEFT",
+        "RIGHT" | "ARROWRIGHT" => "ARROWRIGHT",
+        other => other,
+    };
+    token.to_owned()
+}
+
 /// 把存储写法（`CTRL+SUPER+/`）转成给用户看的文案（`Win+Ctrl+/`）。
 ///
 /// 修饰键顺序固定 `Win` → `Ctrl` → `Alt` → `Shift` → 主键。只影响显示：存储值、冲突判重、
@@ -803,7 +858,8 @@ fn normalize_hotkey_part(part: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_hotkey_display, normalize_hotkey};
+    use super::{canonical_hotkey, format_hotkey_display, normalize_hotkey};
+    use tauri_plugin_global_shortcut::Shortcut;
 
     #[test]
     fn formats_hotkey_for_display_with_titlecase_modifiers() {
@@ -824,5 +880,49 @@ mod tests {
             normalize_hotkey("control+shift+Digit1").unwrap(),
             "CTRL+SHIFT+1"
         );
+    }
+
+    /// 符号键的存储写法（`KeyboardEvent.key`）与回调文本（DOM code 名）不同，
+    /// 匹配前必须收敛到同一个标识，否则会落进「呼出主窗口」的兜底分支。
+    #[test]
+    fn canonical_hotkey_matches_symbol_keys_with_code_names() {
+        assert_eq!(
+            canonical_hotkey("CTRL+SUPER+/").as_deref(),
+            Some("CTRL+SUPER+SLASH")
+        );
+        assert_eq!(
+            canonical_hotkey("control+super+Slash").as_deref(),
+            Some("CTRL+SUPER+SLASH")
+        );
+        assert_eq!(
+            canonical_hotkey("CTRL+ALT+.").as_deref(),
+            canonical_hotkey("control+alt+Period").as_deref()
+        );
+        assert_eq!(
+            canonical_hotkey("CTRL+ALT+,").as_deref(),
+            canonical_hotkey("control+alt+Comma").as_deref()
+        );
+        assert_eq!(
+            canonical_hotkey("CTRL+[").as_deref(),
+            canonical_hotkey("control+bracketLeft").as_deref()
+        );
+        assert_eq!(
+            canonical_hotkey("CTRL+ESC").as_deref(),
+            canonical_hotkey("control+Escape").as_deref()
+        );
+        assert_ne!(canonical_hotkey("CTRL+/"), canonical_hotkey("CTRL+."));
+        assert_ne!(
+            canonical_hotkey("CTRL+ALT+M"),
+            canonical_hotkey("CTRL+SUPER+M")
+        );
+    }
+
+    /// 记录根因：同一个快捷键注册成功，回调拿到的文本却是 `Slash` 而不是 `/`。
+    #[test]
+    fn shortcut_callback_text_uses_code_names_for_symbol_keys() {
+        let slash: Shortcut = "CTRL+SUPER+/".parse().expect("符号键应可解析");
+        assert_eq!(slash.to_string(), "control+super+Slash");
+        let period: Shortcut = "CTRL+ALT+.".parse().expect("符号键应可解析");
+        assert_eq!(period.to_string(), "control+alt+Period");
     }
 }

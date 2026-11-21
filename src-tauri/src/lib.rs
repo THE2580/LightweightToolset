@@ -1585,6 +1585,7 @@ pub fn run() {
                 .with_handler(|app, shortcut, event| {
                     if event.state() == ShortcutState::Pressed {
                         let mut handled = false;
+                        let mut show_main_window_hotkey = false;
                         let mut window_pinner_hotkey = false;
                         let mut screenshot_hotkey = false;
                         let mut pin_command: Option<String> = None;
@@ -1602,7 +1603,7 @@ pub fn run() {
                                     .clone()
                                     .or_else(|| registry.tool_for_shortcut(&shortcut_text));
                                 if app_hotkey.as_deref() == Some("main_window") {
-                                    handled = false;
+                                    show_main_window_hotkey = true;
                                 } else if registry.tool_for_shortcut(&shortcut_text).as_deref() == Some("window_pinner") {
                                     window_pinner_hotkey = true;
                                     handled = true;
@@ -1667,8 +1668,16 @@ pub fn run() {
                                     );
                                 }
                             }
-                        } else {
+                        } else if show_main_window_hotkey {
                             show_main_window(app);
+                        } else if let Some(state) = app.try_state::<AppState>() {
+                            // 兜底不再当成「呼出主窗口」：未匹配的键只记录，避免误触把主窗口弹出来
+                            // （历史缺陷：符号键的存储写法与回调文本不一致，落到这里就会弹主窗口）。
+                            push_debug_log(
+                                &state,
+                                "hotkey",
+                                format!("hotkey.unmatched shortcut={shortcut}"),
+                            );
                         }
                     }
                 })
