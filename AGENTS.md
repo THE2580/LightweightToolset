@@ -136,6 +136,12 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - **注入测试注意 `Ctrl+Esc`**：按住 Ctrl 时按 Esc 等于 `Ctrl+Esc`，会弹出开始菜单；模拟取消拖放前先松开 Ctrl。
 - **本机网络**：`git` 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 均失败，需先让用户开启代理，不要擅自清空代理配置直连。
 
+- **分层窗口（`UpdateLayeredWindow`）显示顺序固定为「先画后显」**：`UpdateLayeredWindow` 在窗口隐藏时也会更新图层内容，所以必须先把新内容画进图层再 `ShowWindow`。反过来（先显示再画）用户会先看到上一次留在图层里的旧画面，表现为「弹出时闪一下上一个内容」。
+- **原生浮窗动画的实现口径**：内容指纹不变时只换 `BLENDFUNCTION.SourceConstantAlpha` 重新合成，不重画整张卡片；动画进度一律按**真实时间**（`Instant`）计算，不按 tick 次数累加（否则帧率/窗口尺寸一变，时长就漂）。要顺滑还需把系统计时精度提到 1ms（`timeBeginPeriod(1)`，退出时 `timeEndPeriod(1)`），动画定时器用 8ms；`WM_TIMER` 默认约 15.6ms 且会被合并，直接用会一顿一顿。静态/预览态要显式**不启动动画定时器**且在 tick 里不推进动画——只在 `start()` 把进度置成终值会被下一帧覆盖。
+- **窗口显示/隐藏状态用「最新意图 + 单调递增序号」**，不要用「排队消息 + 缓存 `visible`」：显示与隐藏各发一条消息时，先发的隐藏可能后到并作用在刚弹出的窗口上（「瞬间出现又消失」）；缓存状态也会与真实窗口不同步（「该显示不显示」）。做法：命令线程只覆盖一个「待执行意图」槽并递增序号，窗口线程每次唤醒只取最新一条，序号不新就丢弃；显示入口无条件 `ShowWindow`。
+- **React 前端两条硬约束**：①`setState` 的 updater（`(current) => ...`）里**不能读合成事件**（`event.currentTarget.value/checked`）——React 延迟执行 updater，那时 `currentTarget` 已置空，会抛 `TypeError` 并让整棵树卸载成白屏；必须先在事件回调里取值。②`useEffect` 的 cleanup **不能「无条件注册 + 在里面读 ref 判断状态」**——状态由 false→true 时会先执行上一次 cleanup，而 ref 已是新值，清理动作会立刻发生（本项目表现为「刚进入定位态就把刚弹出的窗口收掉」）；正确写法是 `if (!state) return;` 只在状态成立时注册 cleanup。
+- **前端异常要能看见**：主入口 `src/main.tsx` 有错误边界（页面出错显示「页面出错了」而不是白屏），并把 `window.onerror`/`unhandledrejection`/渲染异常写入 `<存储目录>/logs/frontend.log`（命令 `frontend_error_log`）。排查白屏优先读这个文件。
+
 ## 分支、提交与发布
 
 - 主分支 `master`，远程 `origin`（https://github.com/THE2580/LightweightToolset.git）。当前为单人开发，提交直接落在 `master`；是否引入功能分支/PR 待确认。

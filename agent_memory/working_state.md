@@ -53,6 +53,31 @@
 
 # Verification
 
+- 2026-11-21 第 3 轮收尾通过：回归（54 passed / 3 ignored，冒烟两次）、`npm run build`、`cargo check`（仅 4 条既有 warning）。工作树全部未提交，等待是否提交/转正的决定。
+- 2026-11-21 弹动加速：`POP_MS` 300→230ms（图标/徽标跳动更利落，进入/退出时长未动）。`cargo test` 54 passed / 3 ignored；开发版已重启（pid 17068）。
+- 2026-11-21 第 2 轮补丁 7：定位预览图标固定为键盘图标（不再按 Ctrl+C 推断成复制图标）。`cargo test` 54 passed / 3 ignored；开发版已重启（pid 6600）。第 2 轮至此全部通过用户验收。
+- 2026-11-21 第 2 轮补丁 6：`start()` 改为「先 `paint()` 再 `ShowWindow`」（消除退出定位后闪旧画面）；`preview` 新增状态标记，静态预览时不开动画定时器且 `tick()` 不再推进 pop（修图标徽标仍弹动）。`cargo test` 54 passed / 3 ignored；开发版已重启（pid 16252）。
+- 2026-11-21 第 2 轮补丁 5：定位态"示例瞬间消失/不显示"的**真因**是前端 effect cleanup 误触发（进入时上一次 cleanup 先跑且 ref 已为 true，立刻 hide + 关压制）。改为 `if (!positioning) return;` 只在定位态注册 cleanup；退出定位只改状态、收起交给 cleanup 统一做。开发版已重启（pid 25308），window.log 已清空待验。
+- 2026-11-21 第 2 轮补丁 4（重构）：显示/隐藏/预览改为「最新意图 + 单调序号」状态机（`REQUEST`/`NEXT_SEQ`/`APPLIED_SEQ`），`start()` 无条件 ShowWindow，新增 `hide_now()`；删掉原 PENDING/WM_APP+3/HIDE_ACK。`cargo test` 54 passed / 3 ignored；开发版已重启（pid 12812）。
+- 2026-11-21 第 2 轮补丁 3：定位态生命周期闭合（后端拒绝迟到预览、前端 ref 拦截在途滑块请求、进入先收起再接管、退出先关压制再收起）；`cargo test` 54 passed / 3 ignored、`npm run build` 通过；开发版已重启（pid 25228）。
+- 2026-11-21 第 2 轮补丁 2：定位预览不播跳动（pop 直接 1）、hide() 等窗口线程确认（消除退出后首弹"闪一下"）、累加窗口跟随停留时长、预览标题改「示例提示」；`cargo test` 54 passed / 3 ignored、`npm run build` 通过；开发版已重启（pid 25416）。
+- 2026-11-21 第 2 轮补丁：定位预览不播进入动画、淡入中请求不重放（修"弹两次"）、后端 `POSITIONING` 全局压制普通弹出（`native_tip_set_positioning`）；`cargo test` 54 passed / 3 ignored、`npm run build` 通过；开发版已重启（pid 24796）。
+- 2026-11-21 第 2 轮完成（功能，未提交）：停留时间滑块、下线实时背景、X/Y 定位滑块 + 定位模式（`native_tip_metrics` / `native_tip_hide`）；拖动定位整段代码移除。`cargo test` 54 passed / 3 ignored、`npm run build` 通过；开发版已重启（pid 7012）。未做：长快捷键超宽时窗口自动加宽（记为后续小项）。
+- 2026-11-21 第 1 轮收尾：进入动画 260→200ms（用户确认"差不多了，可以快一点"），退出保持 300ms 未动；`cargo test` 54 passed / 3 ignored；开发版已重启（pid 19044）。第 1 轮功能项已完成，等待用户验收后进入第 2 轮。
+- 2026-11-21 第 1 轮补丁 3：淡入期间冻结内容（消除重绘抖动）、重触发改从当前 alpha 续上（修半透明卡住）、进入 260ms；`cargo test` 54 passed / 3 ignored；开发版已重启（pid 5192）。
+- 2026-11-21 第 1 轮补丁 2：窗口缩放配置取消（固定 1.00）、进入动画 320ms 缓入缓出、动画定时器 8ms + `timeBeginPeriod(1)`；`cargo test` 54 passed / 3 ignored、`npm run build` 通过；开发版已重启（pid 22436）。
+- 2026-11-21 第 1 轮补丁（性能）：帧缓存（内容指纹不变只换整体 alpha）+ 淡入 200ms/淡出 300ms；`cargo test` 54 passed / 3 ignored、`npm run build` 通过；开发版已重启（pid 20932）。
+- 2026-11-21 第 1 轮完成（视觉与动画，未提交）：标题 13.5→14.5、键帽 11.5→12.5 加粗并加大内边距、徽标 11.5/700，三处文字改用「墨迹居中」（`GetTextMetricsW` 推算大写字高，解决数字偏上）；滑入淡出改缓出曲线（`1-(1-t)^3`）；动画进度改**真实时间**驱动（缩放不再改变时长）；窗口尺寸改按 payload 现算（修刚缩放时阴影被裁）；阴影边距 9→11、扩散 0.75×radius。`cargo test` 54 passed / 3 ignored、`npm run build` 通过；开发版已重启（pid 16216）。
+- 2026-11-21 现场：原生提示实验源码**全部未提交**（新增 `src-tauri/src/native_tip.rs`；改 `Cargo.toml`/`lib.rs`/`tools.rs`/`App.tsx`/`App.css`/`main.tsx`）；HEAD 仍是 `3e9fde2`。开发版在跑（Vite + `%TEMP%\lwt-dev`）。下一轮从「第 1 轮：视觉与动画」开始。
+- 2026-11-21 白屏修复：滑块 `onChange` 在 state updater 里读 `event.currentTarget`，React 延迟执行时已置空 → 渲染期 TypeError 白屏。已改为事件内先取值；`npm run build` 通过，开发版已重启。前端错误落盘命令 `frontend_error_log` + 错误边界保留。
+- 2026-11-21 原生提示实验 v4（内容比例 1.20 固定并随窗口自适应，去掉内容缩放滑块；新增前端错误边界与 `logs/frontend.log` 落盘用于排查白屏，未提交）：`cargo test --lib -- --test-threads=1` 54 passed / 3 ignored、`npm run build` 通过；开发版已重启（pid 5808）。
+- 2026-11-21 原生提示实验 v3（DIY 面板：内容/窗口缩放、主题三档、动画、实时背景、拖动定位，未提交）：`cargo test --lib -- --test-threads=1` 54 passed / 3 ignored、`npm run build` 通过；开发版已重启（pid 19816）。
+- 2026-11-21 原生提示实验 v2（内容 1.10 + 主题三档 + 深浅参数各自可调，未提交）：`cargo test --lib -- --test-threads=1` 54 passed / 3 ignored、`npm run build` 通过；开发版已重启（pid 16604）。
+- 2026-11-21 原生提示实验（未提交）：`cargo test --lib -- --test-threads=1` 54 passed / 3 ignored；冒烟测试（`native_tip -- --ignored`）跑「显示→停用→再显示→再停用」两轮通过；`NATIVE_TIP_DUMP` 导出的深/浅主题帧已人工核对（亚克力底、圆角、图标胶囊、键帽、徽标）。开发版已用新构建重启（进程 23208）。
+
+- 2026-11-21 「隐藏即挂起」试验（已回退，不改代码）：新加 `window_service::set_webview_suspended`（`ICoreWebView2_3::TrySuspend/Resume`，依赖 `webview2-com 0.38`）接在主窗口隐藏/唤出；实测 主窗口可见→`WM_CLOSE` 隐藏后渲染进程 WS 94.1→91.0MB、Private 49.4→45.6MB，CPU 无可测变化，`logs/window.log` 无 `webview.power` 报错。收益在噪声内 → `git checkout` 还原 `Cargo.toml`/`Cargo.lock`/`lib.rs`/`window_service.rs`，`cargo check` 与 `cargo build` 恢复干净（4 条既有 warning）。
+- 2026-11-21 WebView2 占用基线：见 `progress.md` 待办 11（正式版单实例 WS ≈ 518MB / Private ≈ 338MB，8 进程明细齐全）。
+
 - 2026-11-21 符号键快捷键修复（本轮）：
   - `cargo test --lib -- --test-threads=1`（`TEMP`/`TMP` 指向 `src-tauri/target/test-tmp`）**54 passed / 0 failed / 2 ignored**；`cargo check` 通过（4 条既有 warning）。
   - 根因用单测固化：`"CTRL+SUPER+/".parse::<Shortcut>().unwrap().to_string()` == `control+super+Slash`（存储侧 `CTRL+SUPER+/`，回调侧 `CTRL+SUPER+SLASH`）。
@@ -137,8 +162,10 @@
 
 # Next Action
 
-- 本轮修复已提交 `f81a99e`，**未推送、未发版**；下次发版时随版本一起带上（版本规则：缺陷修复调第三位，即下一个 `v0.7.3`）。
+- 本轮修复已提交 `f81a99e` + 文档 `3e9fde2`，**未推送、未发版**；下次发版随 `v0.7.3` 带上（缺陷修复调第三位）。
+- **WebView2 占用优化**：基线数据与「挂起已试并回退」的结论见 `progress.md` 待办 11；下一步候选是「提示浮窗空闲销毁」与「提示浮窗原生化」（待办 12），都**未开工**，等用户拍板。
 - 推送前必须先拿到明确指令，并让用户开代理 `127.0.0.1:7897`。
+- 开发版仍在跑（Vite `:1420` + `%TEMP%\lwt-dev`，已还原为提交状态构建）。
 - 用户已安装并日常使用 `v0.7.2`（`D:\轻量化工具集\`，主进程 + 采键 helper 常驻，响应正常）；升级后未再复现整机卡死。
 - 等用户指定下一批功能；**UI 元素级检测已明确暂缓，不要主动做**。
 

@@ -3,6 +3,7 @@ mod autostart;
 mod clipboard;
 mod input_monitor;
 mod key_usage;
+mod native_tip;
 mod screenshot;
 mod settings;
 mod shortcut_tip;
@@ -384,6 +385,74 @@ fn clear_debug_logs(state: State<'_, AppState>) -> Result<(), String> {
 fn push_frontend_debug_log(state: State<'_, AppState>, level: String, message: String) {
     let level = normalize_debug_log_level(level);
     push_debug_log(&state, level, message);
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeTipMetrics {
+    work_left: i32,
+    work_top: i32,
+    work_right: i32,
+    work_bottom: i32,
+    window_width: i32,
+    window_height: i32,
+    default_x: i32,
+    default_y: i32,
+}
+
+/// 定位滑块需要的屏幕/窗口度量（物理像素）。
+#[tauri::command]
+fn native_tip_metrics(state: State<'_, AppState>) -> Result<NativeTipMetrics, String> {
+    ensure_tool_enabled(&state, "native_tip")?;
+    let (work_left, work_top, work_right, work_bottom, window_width, window_height, default_x, default_y) =
+        native_tip::metrics();
+    Ok(NativeTipMetrics {
+        work_left,
+        work_top,
+        work_right,
+        work_bottom,
+        window_width,
+        window_height,
+        default_x,
+        default_y,
+    })
+}
+
+/// 定位模式开关：开启期间后端直接丢弃普通弹出请求（不仅依赖前端禁用按钮）。
+#[tauri::command]
+fn native_tip_set_positioning(active: bool) -> Result<(), String> {
+    native_tip::set_positioning(active);
+    Ok(())
+}
+
+/// 收起提示窗（定位预览结束或关闭工具时）。
+#[tauri::command]
+fn native_tip_hide(state: State<'_, AppState>) -> Result<(), String> {
+    ensure_tool_enabled(&state, "native_tip")?;
+    native_tip::hide();
+    Ok(())
+}
+
+/// 前端运行时错误落盘：页面白屏后内存日志读不到，这里直接写
+/// `<存储目录>/logs/frontend.log`，便于事后定位（只记录，不影响功能）。
+#[tauri::command]
+fn frontend_error_log(state: State<'_, AppState>, message: String) {
+    let dir = state.runtime_storage_dir.join("logs");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("frontend.log");
+    if std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0) > 256 * 1024 {
+        let _ = std::fs::remove_file(&path);
+    }
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = writeln!(file, "{timestamp_ms} {message}");
+    }
 }
 
 fn normalize_debug_log_level(level: String) -> &'static str {
@@ -904,6 +973,33 @@ fn shortcut_tip_restore_presets(
 ) -> Result<ShortcutTipSnapshot, String> {
     ensure_tool_enabled(&state, "shortcut_tip")?;
     shortcut_tip::restore_presets()
+}
+
+/// 「原生提示实验」工具：在工具页点击测试按钮后弹出一次原生绘制的提示浮窗。
+/// 与 `shortcut_tip` 完全隔离：不接它的按键链路，也不写它的设置。
+#[tauri::command]
+fn native_tip_show(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    payload: native_tip::NativeTipPayload,
+) -> Result<(), String> {
+    ensure_tool_enabled(&state, "native_tip")?;
+    log_main_window_event(
+        &app,
+        &format!(
+            "native_tip.show_requested count={} theme={} persistent={}",
+            payload.count,
+            payload.theme,
+            payload.persistent.unwrap_or(false)
+        ),
+    );
+    match native_tip::show(payload) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            log_main_window_event(&app, &format!("native_tip.show_failed error={error}"));
+            Err(error)
+        }
+    }
 }
 
 
@@ -1797,6 +1893,7 @@ pub fn run() {
             get_debug_logs,
             clear_debug_logs,
             push_frontend_debug_log,
+            frontend_error_log,
             set_tool_enabled,
             set_tool_hotkey,
             clear_tool_hotkey,
@@ -1848,6 +1945,10 @@ pub fn run() {
             shortcut_tip_upsert,
             shortcut_tip_delete,
             shortcut_tip_restore_presets,
+            native_tip_show,
+            native_tip_metrics,
+            native_tip_set_positioning,
+            native_tip_hide,
             clipboard_clear_history,
             clipboard_open_panel,
             clipboard_close_panel,

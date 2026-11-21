@@ -1094,6 +1094,10 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .shortcut-tip-page .primary-action svg,
 .shortcut-tip-page .secondary-action svg { flex: 0 0 auto; }
 .shortcut-tip-toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
+.native-tip-label { color: var(--muted-text); font-size: 12.5px; white-space: nowrap; }
+.native-tip-params { display: flex; margin-top: 8px; padding: 10px 14px; align-items: center; gap: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
+.native-tip-slider { display: flex; align-items: center; gap: 10px; color: var(--muted-text); font-size: 12.5px; white-space: nowrap; }
+.native-tip-slider input[type="range"] { width: 150px; accent-color: var(--primary); cursor: pointer; }
 .shortcut-tip-disabled { padding: 18px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted-text); font-size: 13px; text-align: center; }
 .shortcut-tip-capture { display: flex; min-width: 168px; flex: 0 0 auto; padding: 7px 10px; align-items: center; justify-content: center; border: 1px dashed var(--field-border); border-radius: 8px; color: var(--muted-text); font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei", monospace; font-size: 12.5px; white-space: nowrap; cursor: pointer; outline: none; }
 .shortcut-tip-capture.active { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }

@@ -64,7 +64,7 @@ const APP_HOTKEYS: [AppHotkeyDefinition; 6] = [
     },
 ];
 
-const TOOLS: [ToolDefinition; 7] = [
+const TOOLS: [ToolDefinition; 8] = [
     ToolDefinition {
         id: "screenshot",
         name: "截图",
@@ -119,6 +119,16 @@ const TOOLS: [ToolDefinition; 7] = [
         description: "按下自己配置的快捷键时，在任务栏上方浮窗提示本次按键",
         default_hotkey: None,
         default_enabled: true,
+        implemented: true,
+    },
+    ToolDefinition {
+        // 实验工具：只为对比「原生绘制」与 WebView 版提示浮窗的观感，不接真实按键链路。
+        // 评估完可以整块删掉（tools.rs 这一项 + lib.rs 的 native_tip 模块/命令 + 前端入口）。
+        id: "native_tip",
+        name: "原生提示实验",
+        description: "用原生 Win32 绘制同样式提示浮窗，点击按钮预览并对比观感",
+        default_hotkey: None,
+        default_enabled: false,
         implemented: true,
     },
 ];
@@ -606,6 +616,9 @@ impl ToolRegistry {
         }
         if tool.id == "shortcut_tip" {
             shortcut_tip::stop();
+        }
+        if tool.id == "native_tip" {
+            crate::native_tip::stop();
         }
         if tool.id == "screenshot" {
             screenshot::stop();

@@ -49,6 +49,14 @@
 - `context.md`：长期背景和约束；`progress.md`：当前阶段、里程碑、待办；`bugs.md`：活跃问题、限制、修复线索；`working_state.md`：实时现场；`checkpoint.md`：当前任务恢复包。
 - 核心文件只保留当前有效信息；旧阶段摘要移入 `archive/`。实时工作树高于 checkpoint。
 
+# 原生提示浮窗（`native_tip`，实验形态）
+
+- 独立工具「原生提示实验」：用纯 Win32 分层窗口 + GDI 自绘快捷键提示浮窗，代码在 `src-tauri/src/native_tip.rs`（独立线程消息循环），与 `shortcut_tip`（WebView 版）并存、互不影响；注册在 `tools.rs`，默认关闭。
+- 既定设计口径：**窗口尺寸固定**（不提供缩放配置），内容（图标/文字/键帽/徽标）按固定 1.20 比例自适应；自绘亚克力为「显示那一刻抓屏快照 → 盒式模糊 → 主题色覆盖」，**不做实时刷新**；进入 200ms 缓入缓出、退出 300ms、图标/徽标弹动 230ms；停留时长可配 0.8–10s（默认 2s），且「同一示例累加 ×N」的时间窗跟随停留时长。
+- 定位模式：位置用 X/Y 两个滑块（屏幕物理像素）；进入后显示**常驻静态预览**（标题「示例提示」、键盘图标、不播任何动画），X/Y 实时移动、重置位置立即生效；期间后端用全局标志**压制所有普通弹出**（不是只禁用前端按钮），退出即失效并收起。
+- 显示/隐藏/预览走「最新意图 + 单调序号」状态机；`start()` 先 `paint()` 再 `ShowWindow`。
+- 状态：**实验形态**，尚未替换 WebView 版快捷键提示；是否转正待定。
+
 # 发布索引
 
 - `v0.7.2` / `abe5441`：修复主线程嵌套建窗导致的整机卡死（剪贴板弹窗与快捷键提示浮窗同时首次创建时互相等锁 → 主线程永久死锁，表现为托盘菜单/快捷键/所有窗口无响应）。新增 `window_service::begin_window_build/window_build_busy` 占位，后到建窗让路并写 `logs/window.log`。安装包 `LightweightToolset_0.7.2_x64-setup.exe`（33,851,424 字节），SHA-256 `2C24A3B5CCB13795DF60414AB7803E161A1D2732CCAF1C01C01BCF4C7D43130E`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.2`。

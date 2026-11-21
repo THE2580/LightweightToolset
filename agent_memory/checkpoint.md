@@ -4,13 +4,11 @@ LightweightToolset 持续迭代（Tauri 2 + Rust + React）：七个工具已全
 
 # Current Focus（2026-11-21）
 
-- **刚完成**：修「符号键快捷键被当成呼出主窗口」（用户真机复现的 `Ctrl+Win+/` 问题），提交 `f81a99e`（**未推送**），用户已确认通过。改动在 `src-tauri/src/tools.rs`（`canonical_hotkey`/`canonical_key_token` + 匹配/判重改用规范化比较）与 `src-tauri/src/lib.rs`（兜底只在匹配到 `main_window` 时唤出，其余记 `hotkey.unmatched`）。下次发版随 `v0.7.3` 带上。
-- **`v0.7.2` 已发布并在用**（发布提交 `abe5441`，tag 与 master 均已推送）：修复「静默启动后整个软件像死的」——主线程嵌套建窗死锁。修复方式：`window_service::begin_window_build/window_build_busy` 占位 + 后到建窗让路（浮窗退避重试、弹窗线程排队），让路写 `logs/window.log`。
-- **用户已升级到 0.7.2 日常使用**（`D:\轻量化工具集\`，进程响应正常）；升级后未再复现卡死，`logs/window.log` 尚未生成。
-- **UI 元素级检测：用户明确暂缓，不做**（`窗口和UI` 保持置灰）。
-- 开发环境已按「验证方式」重启：Vite `:1420` 在跑，开发版来自 `%TEMP%\lwt-dev`（剪贴板工具启用、快捷键 `Win+Ctrl+/`）。
-- 工作树：本轮修复已提交 `f81a99e`，只剩既有现场 `M src-tauri/src/window_pinner.rs`（换行差异）、`?? .codex/`——不处理、不提交。
-
+- **当前**：`native_tip`「原生提示实验」工具已完成三轮打磨（视觉/动画、功能、收尾回归），**代码全部未提交**；HEAD 仍是 `3e9fde2`。
+- **已验收的能力**：亚克力自绘（快照）、圆角+投影、深浅主题各一套模糊/不透明度、主题跟随/浅/暗、进入 200ms 缓入缓出 + 退出 300ms、弹动 230ms、窗口尺寸固定 1.00（内容 1.20 自适应）、停留时间 0.8–10s 且联动 ×N 累加窗口、X/Y 定位滑块 + 定位模式（静态预览「示例提示」+键盘图标、常驻、实时、重置即时、期间后端全局压制弹出）。
+- **机制**：显示/隐藏/预览走「最新意图 + 单调序号」状态机；`start()` 先 `paint()` 再 `ShowWindow`；预览不开动画定时器。
+- **待决定**：① 是否提交这批改动；② 是否把该工具转正（替换 WebView 版快捷键提示）；③ 长快捷键超宽自动加宽（已评估：暂不做）。
+- **现场**：工作树新增 `src-tauri/src/native_tip.rs`，修改 `Cargo.toml`/`lib.rs`/`tools.rs`/`App.tsx`/`App.css`/`main.tsx`/`agent_memory/*`；`window_pinner.rs` 与 `.codex/` 是既有现场，不要动。
 
 # 最近验证（2026-11-21）
 

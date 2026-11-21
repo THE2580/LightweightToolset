@@ -46,6 +46,7 @@ import {
   Scissors,
   Search,
   Settings,
+  Sparkles,
   Sun,
   Terminal,
   Trash2,
@@ -448,6 +449,7 @@ const toolIcons = {
   timer: Clock,
   window_pinner: Pin,
   shortcut_tip: ShortcutTipIcon,
+  native_tip: Sparkles,
 };
 const HOTKEY_MODIFIERS = new Set(["CTRL", "CONTROL", "ALT", "SHIFT", "META", "SUPER", "CMD", "COMMAND"]);
 const TOAST_DURATION_MS = 2400;
@@ -1768,6 +1770,414 @@ function formatLogTime(timestampMs: number) {
   return new Date(timestampMs).toLocaleTimeString("zh-CN", { hour12: false });
 }
 
+/// 「原生提示实验」样例：覆盖常规、长快捷键、无键帽三种版式，方便和 WebView 版对照。
+type NativeTipSampleId = "default" | "long" | "noKeys";
+type NativeTipThemeMode = "auto" | "light" | "dark";
+type NativeTipAnimation = "fade" | "slide_up" | "slide_down";
+type NativeTipThemeParams = { blur: number; tint: number };
+type NativeTipParams = {
+  mode: NativeTipThemeMode;
+  light: NativeTipThemeParams;
+  dark: NativeTipThemeParams;
+  animation: NativeTipAnimation;
+  /// 停留时长（毫秒）。
+  durationMs: number;
+  /// 屏幕坐标（物理像素，窗口左上角）；null = 默认位置（主屏底部居中）。
+  position: [number, number] | null;
+};
+
+type NativeTipMetrics = {
+  workLeft: number;
+  workTop: number;
+  workRight: number;
+  workBottom: number;
+  windowWidth: number;
+  windowHeight: number;
+  defaultX: number;
+  defaultY: number;
+};
+
+/// 定位预览固定用这条，标题明确写成「示例提示」。
+const NATIVE_TIP_PREVIEW_SAMPLE = { title: "示例提示", keys: "Ctrl+C" };
+
+const NATIVE_TIP_SAMPLES: Array<{ id: NativeTipSampleId; label: string; title: string; keys: string | null }> = [
+  { id: "default", label: "常规", title: "复制", keys: "Ctrl+C" },
+  { id: "long", label: "长快捷键", title: "关闭所有贴图窗口", keys: "Win+Ctrl+Alt+Shift+PageUp" },
+  { id: "noKeys", label: "无键帽", title: "隐藏所有贴图窗口并切换鼠标穿透", keys: null },
+];
+
+const NATIVE_TIP_PARAMS_KEY = "native-tip-params";
+
+const NATIVE_TIP_DEFAULTS: NativeTipParams = {
+  mode: "auto",
+  light: { blur: 4, tint: 0.92 },
+  dark: { blur: 4, tint: 0.78 },
+  animation: "fade",
+  durationMs: 2000,
+  position: null,
+};
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function loadNativeTipParams(): NativeTipParams {
+  try {
+    const raw = window.localStorage.getItem(NATIVE_TIP_PARAMS_KEY);
+    if (!raw) return NATIVE_TIP_DEFAULTS;
+    const parsed = JSON.parse(raw) as Partial<NativeTipParams>;
+    const position =
+      Array.isArray(parsed.position) && parsed.position.length === 2
+        ? ([Number(parsed.position[0]), Number(parsed.position[1])] as [number, number])
+        : null;
+    return {
+      mode: parsed.mode === "light" || parsed.mode === "dark" ? parsed.mode : "auto",
+      light: {
+        blur: clampNumber(parsed.light?.blur ?? NATIVE_TIP_DEFAULTS.light.blur, 0, 12),
+        tint: clampNumber(parsed.light?.tint ?? NATIVE_TIP_DEFAULTS.light.tint, 0.4, 1),
+      },
+      dark: {
+        blur: clampNumber(parsed.dark?.blur ?? NATIVE_TIP_DEFAULTS.dark.blur, 0, 12),
+        tint: clampNumber(parsed.dark?.tint ?? NATIVE_TIP_DEFAULTS.dark.tint, 0.4, 1),
+      },
+      animation:
+        parsed.animation === "slide_up" || parsed.animation === "slide_down" ? parsed.animation : "fade",
+      durationMs: clampNumber(parsed.durationMs ?? 2000, 800, 10000),
+      position,
+    };
+  } catch {
+    return NATIVE_TIP_DEFAULTS;
+  }
+}
+
+/// 原生提示实验页：只负责触发原生浮窗，不读写「快捷键提示」工具的任何数据。
+function NativeTipLabPage({ tool }: { tool: Tool }) {
+  const [sample, setSample] = useState<NativeTipSampleId>("default");
+  const [count, setCount] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [params, setParams] = useState<NativeTipParams>(loadNativeTipParams);
+  const [positioning, setPositioning] = useState(false);
+  const positioningRef = useRef(false);
+  const [metrics, setMetrics] = useState<NativeTipMetrics | null>(null);
+  const lastRef = useRef<{ id: NativeTipSampleId; at: number } | null>(null);
+  const { pushToast } = useToastQueue();
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      window.localStorage.setItem(NATIVE_TIP_PARAMS_KEY, JSON.stringify(params));
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [params]);
+
+  const resolveTheme = (): "light" | "dark" =>
+    params.mode === "auto"
+      ? document.documentElement.dataset.theme === "dark"
+        ? "dark"
+        : "light"
+      : params.mode;
+
+  async function invokeShow(options: {
+    payloadSample: { title: string; keys: string | null };
+    position: [number, number] | null;
+    persistent: boolean;
+    preview: boolean;
+    count: number;
+  }) {
+    const theme = resolveTheme();
+    const themeParams = params[theme];
+    await invoke("native_tip_show", {
+      payload: {
+        title: options.payloadSample.title,
+        keys: options.payloadSample.keys,
+        count: options.count,
+        theme,
+        blurRadius: themeParams.blur,
+        tintAlpha: themeParams.tint,
+        animation: params.animation,
+        position: options.position,
+        persistent: options.persistent,
+        preview: options.preview,
+        durationMs: params.durationMs,
+      },
+    });
+  }
+
+  async function show() {
+    const item = NATIVE_TIP_SAMPLES.find((entry) => entry.id === sample) ?? NATIVE_TIP_SAMPLES[0];
+    const now = Date.now();
+    // 累加窗口跟停留时长走：停留越久，同一示例的连点仍算累加。
+    const repeatWindow = params.durationMs + 200;
+    const repeated = lastRef.current?.id === sample && now - lastRef.current.at < repeatWindow;
+    const nextCount = repeated ? count + 1 : 1;
+    setBusy(true);
+    try {
+      await invokeShow({
+        payloadSample: item,
+        position: params.position,
+        persistent: false,
+        preview: false,
+        count: nextCount,
+      });
+      setCount(nextCount);
+      lastRef.current = { id: sample, at: now };
+    } catch (error) {
+      pushToast(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /// 定位模式：显示一条常驻的示例提示，X/Y 滑块实时移动它。
+  async function enterPositioning() {
+    setBusy(true);
+    try {
+      const next = await invoke<NativeTipMetrics>("native_tip_metrics");
+      setMetrics(next);
+      const position = params.position ?? [next.defaultX, next.defaultY];
+      setParams((current) => ({ ...current, position }));
+      // 顺序：先收起可能正在显示的正常提示，再打开后端压制，最后显示静态预览。
+      // 这样进入编辑态是"接管"而不是和正常提示叠加。
+      await invoke("native_tip_hide");
+      await invoke("native_tip_set_positioning", { active: true });
+      positioningRef.current = true;
+      setPositioning(true);
+      await invokeShow({
+        payloadSample: NATIVE_TIP_PREVIEW_SAMPLE,
+        position,
+        persistent: true,
+        preview: true,
+        count: 1,
+      });
+    } catch (error) {
+      pushToast(String(error));
+      positioningRef.current = false;
+      setPositioning(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function exitPositioning() {
+    // 状态一变，上面的 cleanup 会统一做「关压制 + 收起窗口」，这里不再重复调用。
+    setPositioning(false);
+  }
+
+  async function moveTo(position: [number, number] | null) {
+    setParams((current) => ({ ...current, position }));
+    if (!positioningRef.current) return;
+    try {
+      await invokeShow({
+        payloadSample: NATIVE_TIP_PREVIEW_SAMPLE,
+        position,
+        persistent: true,
+        preview: true,
+        count: 1,
+      });
+    } catch (error) {
+      pushToast(String(error));
+    }
+  }
+
+  useEffect(() => {
+    if (!positioning) return;
+    // 只在"确实处于定位态"时注册清理：退出定位或离开页面时收起窗口并解除压制。
+    // 注意不能无条件注册 cleanup 再去读 ref —— 进入定位态时上一次 cleanup 会先跑，
+    // 那时 ref 已是 true，会把刚弹出的示例立刻收掉（"示例闪一下就没了"）。
+    positioningRef.current = true;
+    return () => {
+      positioningRef.current = false;
+      void invoke("native_tip_set_positioning", { active: false }).catch(() => {});
+      void invoke("native_tip_hide").catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positioning]);
+
+  const maxX = metrics ? Math.max(metrics.workLeft, metrics.workRight - metrics.windowWidth) : 1920;
+  const minX = metrics ? metrics.workLeft : 0;
+  const maxY = metrics ? Math.max(metrics.workTop, metrics.workBottom - metrics.windowHeight) : 1080;
+  const minY = metrics ? metrics.workTop : 0;
+  const posX = params.position?.[0] ?? metrics?.defaultX ?? 0;
+  const posY = params.position?.[1] ?? metrics?.defaultY ?? 0;
+
+  return (
+    <section className="tool-page">
+      <header className="window-pinner-header">
+        <div className="window-pinner-heading">
+          <span className="window-pinner-title-icon"><Sparkles size={18} /></span>
+          <div>
+            <h1>{tool.name}</h1>
+            <p>用原生 Win32 分层窗口绘制同样式的提示浮窗，点按钮预览，用来对比它与 WebView 版的观感。</p>
+          </div>
+        </div>
+      </header>
+
+      <div className="shortcut-tip-toolbar">
+        <SegmentedControl
+          ariaLabel="提示样例"
+          onChange={(value) => setSample(value)}
+          options={NATIVE_TIP_SAMPLES.map((entry) => ({ label: entry.label, value: entry.id }))}
+          value={sample}
+        />
+        <button
+          className="primary-action"
+          disabled={busy || positioning}
+          onClick={() => void show()}
+          type="button"
+        >
+          <Sparkles size={14} />显示提示
+        </button>
+        {positioning ? (
+          <button className="secondary-action" disabled={busy} onClick={() => void exitPositioning()} type="button">
+            退出定位模式
+          </button>
+        ) : (
+          <button className="secondary-action" disabled={busy} onClick={() => void enterPositioning()} type="button">
+            进入定位模式
+          </button>
+        )}
+        <button className="secondary-action" onClick={() => setParams(NATIVE_TIP_DEFAULTS)} type="button">
+          <RotateCcw size={13} />重置默认
+        </button>
+      </div>
+
+      <div className="shortcut-tip-toolbar">
+        <span className="native-tip-label">主题</span>
+        <SegmentedControl
+          ariaLabel="提示主题"
+          onChange={(value) => setParams((current) => ({ ...current, mode: value }))}
+          options={[
+            { label: "跟随软件", value: "auto" },
+            { label: "浅色", value: "light" },
+            { label: "暗色", value: "dark" },
+          ]}
+          value={params.mode}
+        />
+        <span className="native-tip-label">动画</span>
+        <SegmentedControl
+          ariaLabel="提示动画"
+          onChange={(value) => setParams((current) => ({ ...current, animation: value }))}
+          options={[
+            { label: "淡入淡出", value: "fade" },
+            { label: "上滑", value: "slide_up" },
+            { label: "下滑", value: "slide_down" },
+          ]}
+          value={params.animation}
+        />
+      </div>
+
+      <div className="native-tip-params">
+        <label className="native-tip-slider">
+          <span>停留时间 {(params.durationMs / 1000).toFixed(1)}s</span>
+          <input
+            max={10}
+            min={0.8}
+            onChange={(event) => {
+              const seconds = Number(event.currentTarget.value);
+              setParams((current) => ({ ...current, durationMs: Math.round(seconds * 1000) }));
+            }}
+            step={0.2}
+            type="range"
+            value={params.durationMs / 1000}
+          />
+        </label>
+        <span className="native-tip-label">窗口尺寸固定（内容按 1.20 比例自适应）</span>
+      </div>
+
+      {(["light", "dark"] as const).map((theme) => (
+        <div className="native-tip-params" key={theme}>
+          <span className="native-tip-label">{theme === "light" ? "浅色参数" : "暗色参数"}</span>
+          <label className="native-tip-slider">
+            <span>模糊 {params[theme].blur}px</span>
+            <input
+              max={12}
+              min={0}
+              onChange={(event) => {
+                const blur = Number(event.currentTarget.value);
+                setParams((current) => ({ ...current, [theme]: { ...current[theme], blur } }));
+              }}
+              step={1}
+              type="range"
+              value={params[theme].blur}
+            />
+          </label>
+          <label className="native-tip-slider">
+            <span>不透明度 {params[theme].tint.toFixed(2)}</span>
+            <input
+              max={1}
+              min={0.4}
+              onChange={(event) => {
+                const tint = Number(event.currentTarget.value);
+                setParams((current) => ({ ...current, [theme]: { ...current[theme], tint } }));
+              }}
+              step={0.02}
+              type="range"
+              value={params[theme].tint}
+            />
+          </label>
+        </div>
+      ))}
+
+      {positioning ? (
+        <div className="native-tip-params">
+          <label className="native-tip-slider">
+            <span>X {Math.round(posX)}</span>
+            <input
+              max={maxX}
+              min={minX}
+              onChange={(event) => {
+                const x = Number(event.currentTarget.value);
+                void moveTo([Math.round(x), Math.round(posY)]);
+              }}
+              step={1}
+              type="range"
+              value={posX}
+            />
+          </label>
+          <label className="native-tip-slider">
+            <span>Y {Math.round(posY)}</span>
+            <input
+              max={maxY}
+              min={minY}
+              onChange={(event) => {
+                const y = Number(event.currentTarget.value);
+                void moveTo([Math.round(posX), Math.round(y)]);
+              }}
+              step={1}
+              type="range"
+              value={posY}
+            />
+          </label>
+          <button
+            className="secondary-action"
+            onClick={() => void moveTo(metrics ? [metrics.defaultX, metrics.defaultY] : null)}
+            type="button"
+          >
+            重置位置
+          </button>
+        </div>
+      ) : (
+        <div className="native-tip-params">
+          <span className="native-tip-label">
+            位置：{params.position ? `${params.position[0]}, ${params.position[1]}` : "默认（主屏底部居中）"}
+          </span>
+          <button
+            className="secondary-action"
+            onClick={() => setParams((current) => ({ ...current, position: null }))}
+            type="button"
+          >
+            恢复默认位置
+          </button>
+        </div>
+      )}
+
+      <div className="shortcut-tip-disabled">
+        <div>连续点击 2 秒内同一示例会累加 ×N；切换示例从 ×1 开始。停留时间只影响普通弹出，定位模式的示例常驻。</div>
+        <div style={{ marginTop: 6 }}>定位模式开启期间「显示提示」不可用；X/Y 为屏幕物理像素坐标，退出定位模式后提示窗立即收起。</div>
+      </div>
+    </section>
+  );
+}
+
 function ToolPage({ appHotkeys, settings, setSnapshot, tool, tools, updateSettings }: {
   appHotkeys: Tool[];
   settings?: AppSettings;
@@ -1796,6 +2206,9 @@ function ToolPage({ appHotkeys, settings, setSnapshot, tool, tools, updateSettin
   }
   if (tool.id === "window_pinner") {
     return <WindowPinnerToolPage appHotkeys={appHotkeys} setAppSnapshot={setSnapshot} tool={tool} tools={tools} />;
+  }
+  if (tool.id === "native_tip") {
+    return <NativeTipLabPage tool={tool} />;
   }
 
   return (
