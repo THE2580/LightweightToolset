@@ -2,13 +2,13 @@
 
 复刻 PixPin 截图工具（LightweightToolset 新工具）。`v0.7.0`（2026-11-11）发布第一版；`v0.7.1`（2026-11-20）发布快捷键体系收口、主窗口唤出加固与截图设置页调整，均已发版。
 
-# Current Focus（2026-11-20）
+# Current Focus（2026-11-21）
 
-- **`v0.7.2` 已发布**（发布提交 `abe5441`，tag 与 master 均已推送）：修复「静默启动后整个软件像死的」——主线程嵌套建窗死锁。修复方式：`window_service::begin_window_build/window_build_busy` 占位 + 后到建窗让路（浮窗退避重试、弹窗线程排队），让路写 `logs/window.log`。
-- **该卡死问题已结案**：现场用 `WM_NULL` 探活 + 主线程栈回溯（`StackWalk64`/dbghelp）定位到 `open_clipboard_popup` 与 `shortcut_tip::build_window` 嵌套建窗；复现修复后日志确证让路两次、两窗正常、进程持续响应。
+- **`v0.7.2` 已发布并在用**（发布提交 `abe5441`，tag 与 master 均已推送）：修复「静默启动后整个软件像死的」——主线程嵌套建窗死锁。修复方式：`window_service::begin_window_build/window_build_busy` 占位 + 后到建窗让路（浮窗退避重试、弹窗线程排队），让路写 `logs/window.log`。
+- **用户已升级到 0.7.2 日常使用**（`D:\轻量化工具集\`，进程响应正常）；升级后未再复现卡死，`logs/window.log` 尚未生成。
 - **UI 元素级检测：用户明确暂缓，不做**（`窗口和UI` 保持置灰）。
-- 开发环境已按发版要求停掉并清理；安装版旧进程（含卡死的 0.7.1）已结束，用户升级到 0.7.2 后常驻。
-- 工作树只剩既有三项：`M src-tauri/src/window_pinner.rs`（CRLF 差异）、`M src-tauri/src/window_service.rs`（rustfmt 重排）、`?? .codex/`——不处理、不提交。
+- 开发环境已停止（Vite 关闭、`%TEMP%\lwt-dev` 与开发版数据目录已删除）；重新开发需按「验证方式」重建。
+- 工作树只剩既有两项：`M src-tauri/src/window_pinner.rs`（换行差异）、`?? .codex/`——不处理、不提交。
 
 # 最近验证（2026-11-20）
 

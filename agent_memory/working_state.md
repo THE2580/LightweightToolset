@@ -9,9 +9,9 @@
 
 # Git / Working Tree
 
-- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；**`v0.7.2` 已发布**（发布提交 `abe5441`，tag `v0.7.2` 与 `master` 均已推送，工作树与 `origin/master` 同步）。
-- 本版发布包含：`c070c17`（嵌套建窗死锁修复）、`abe5441`（release v0.7.2）；上一版 `c02cd27`/`c1359bc` 等已在 0.7.1 发布。
-- Release 资产 `LightweightToolset_0.7.2_x64-setup.exe`（33,851,424 字节，SHA-256 `2C24A3B5CCB13795DF60414AB7803E161A1D2732CCAF1C01C01BCF4C7D43130E`），地址 `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.2`。
+- 工作目录：`E:\DeepSeek_Harness\Workspace\LightweightToolset`；分支 `master`；HEAD `140f023`（`docs: record v0.7.2 deadlock fix and post-release state`）已推送，`v0.7.2` 为最新发布。
+- 本轮（2026-11-21）只做了文档与约束整理，未改代码。
+- 工作树只剩既有现场：`M src-tauri/src/window_pinner.rs`（换行差异）、`?? .codex/`——不处理、不提交。（`window_service.rs` 已随 0.7.2 修复一并提交，不再是待处理项。）
 - 既有现场（不处理、不提交）：`M src-tauri/src/window_service.rs`（rustfmt 重排，非逻辑改动）、`M src-tauri/src/window_pinner.rs`（CRLF 换行差异）、`?? .codex/`。
 - 本机 git 走代理 `http://127.0.0.1:7897`；代理未启动时推送/gh 失败，需先让用户开启。
 
@@ -50,7 +50,8 @@
 
 # Verification
 
-- 2026-11-20 `v0.7.2` 发版（本轮）：
+- 2026-11-21 环境核对：安装版 `D:\轻量化工具集\lightweight-toolset.exe` 为 `0.7.2`，两个进程（主进程 + 采键 helper）`Responding=True`；`%APPDATA%\com.the.lightweight-toolset\logs\window.log` 不存在（无建窗让路/唤出失败记录）；开发环境未运行（`:1420` 无监听、`%TEMP%\lwt-dev` 与开发版数据目录均已删除）。
+- 2026-11-20 `v0.7.2` 发版（上一轮）：
   - 定位：正式版 `v0.7.1` 卡死进程 `11808`（`Responding=False`、所有窗口 `WM_NULL` HUNG）；用 `StackWalk64`+dbghelp 回溯主线程栈，确认「嵌套建窗互等窗口锁」死锁。
   - 修复后开发版复现同一路径：`window.log` 记录 `window_build.busy defer=shortcut_tip` 两次，剪贴板弹窗与提示浮窗均正常出现、主窗口保持隐藏、`ping=OK`、进程 `responding=True`；连按三次稳定。
   - `cargo test --lib -- --test-threads=1` 52 passed / 2 ignored；`npm run tauri build` 成功：release exe 41,463,808 字节量级、NSIS `轻量化工具集_0.7.2_x64-setup.exe` 33,851,424 字节；ASCII 资产名 `LightweightToolset_0.7.2_x64-setup.exe` 上传后核对名称与 digest 一致。
@@ -125,8 +126,8 @@
 
 # Next Action
 
-- **`v0.7.2` 已发布并推送**（tag `v0.7.2`、master 均同步）；开发环境已停止，安装版 `D:\轻量化工具集\` 的旧进程（含卡死的 0.7.1）均已结束，用户升级后由安装版常驻。
-- 用户继续日常使用；「静默启动后整个软件像死的」已修复结案，若仍出现异常，先看 `<存储目录>\logs\window.log` 里的 `window_build.busy` 与栈回溯方法（见 `bugs.md`）。
+- **用户已安装并日常使用 `v0.7.2`**（`D:\轻量化工具集\`，主进程 + 采键 helper 常驻，响应正常）；升级后未再复现整机卡死，`logs/window.log` 尚未生成。
 - 等用户指定下一批功能；**UI 元素级检测已明确暂缓，不要主动做**。
-- 需要重新开发时按「验证方式」重建：`npm run dev`（:1420）→ `cargo build` → 复制 exe 到 `%TEMP%\lwt-dev\` → 提权启动。
+- 已知未修的小问题（用户尚未要求处理）：开发版把剪贴板快捷键设成 `Ctrl+Win+/` 时，按键会被当成「呼出主窗口」处理（疑似该组合未被识别为剪贴板快捷键，需先确认注册是否成功）。
+- 需要重新开发时按「验证方式」重建环境：`npm run dev`（:1420）→ `cargo build` → 复制 exe 到 `%TEMP%\lwt-dev\` → 提权启动。
 - 未做的待办见 `progress.md`：标注拖动/文本再编辑、缩略图观感、贴图历史浏览（暂缓）。

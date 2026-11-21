@@ -64,7 +64,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 
 - 未经用户明确要求：不提交、不推送、不发布。开发版除外：按「验证方式」的固定动作，每次改动完成即主动启动供用户测试，不需等待用户指示。
 - 不提交 `node_modules/`、`dist/`、`src-tauri/target/`、QA 截图、日志或缓存；`agent_memory/` 必须入库，不要加回 `.gitignore`。
-- 不恢复用户主动删除的内容；不修改与本任务无关的既有工作树现场（如 `.codex/`、`window_service.rs` 的格式化改动）。
+- 不恢复用户主动删除的内容；不修改与本任务无关的既有工作树现场（当前只剩 `.codex/` 与 `window_pinner.rs` 的换行差异）。
 - 工具停用必须真正停止快捷键、worker、监听、计时器、关联窗口和 helper，不能只隐藏 UI。
 - 不做插件市场、远程插件、脚本扩展或运行时安装工具；只做编译期注册。
 - 不恢复 AI 聊天、API 设置、DeepSeek 或资源捕获入口。
@@ -125,6 +125,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - **浮窗尺寸与层级**：不要按字符估算宽度再动态改窗口（后续每次显示都会用估算值覆盖实测值，表现为闪一下又变窄）；用固定宽窗口 + 卡片 `width: max-content` 居中。只设一次 `always_on_top` 压不过同样置顶的窗口，显示时与显示期间（每 400ms）都要 `SetWindowPos(HWND_TOPMOST)` 重新压顶。
 - **锁顺序与死锁**：`AppState.registry` 与工具自有存储锁不能嵌套持有；快照类接口必须「先拷贝数据、释放存储锁，再查注册表」。快捷键回调运行在主线程，**禁止**在其中做加锁 + 窗口操作，一律丢到独立线程，否则会与前端 2 秒轮询的快照形成环形等待、整窗卡死。
 - **禁止在主线程上嵌套创建 WebviewWindow（`v0.7.1` 致命卡死的根因）**：tauri 的建窗消息走 `send_user_message`，在主线程上会**就地执行**；建窗期间 Windows 派发窗口消息，会把排队的另一个建窗任务也执行，两份建窗嵌套会互相等 tauri 的窗口锁 → 主线程永久死锁，表现为「进程和托盘图标都在，但托盘菜单、快捷键、所有窗口全部无响应」。固定口径：所有 `WebviewWindowBuilder::build()` 前先用 `window_service::begin_window_build()` 占位（已覆盖剪贴板弹窗、计时器自由窗口/时钟窗口、快捷键提示浮窗）；后到的建窗任务见 `window_build_busy()` 为真时必须让路——浮窗退避重试、弹窗交给独立线程排队，绝不嵌套建。让路行为会写 `<存储目录>/logs/window.log`（`window_build.busy defer=...`）。
+- **主线程卡死的取证方法（本机没有 procdump/cdb/windbg）**：先用 `SendMessageTimeout(HWND, WM_NULL, 2, 3000)` 给该进程每个顶层窗口发探活消息——返回 0 即主线程卡死（`Get-Process.Responding=False` 可交叉验证）；确认后从**提权** PowerShell 里用 `OpenProcess + CreateToolhelp32Snapshot + GetThreadContext + StackWalk64`（dbghelp）走主线程栈，再用 `SymInitialize(PDB 目录, invade=true) + SymFromAddrW` 解析符号。注意 `SYMBOL_INFOW` 的 `MaxNameLen` 在偏移 80、`Name` 在偏移 84，写错会只拿到空名字；本项目的 `target/release/*.pdb` 可匹配已安装的 release 产物。
 - **截图预选与窗口检测**：进入覆盖层即预选全屏（虚拟桌面并集）；`screenshotUiDetection = window` 时鼠标移动会把预选切换成光标下窗口（`EnumWindows` 按 z 序取第一个命中，只排除截图覆盖层自身窗口 `OVERLAY_HWND`——本软件的其它窗口（主窗口/贴图）也允许被预选；`DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS/CLOAKED)` 取真实外框并跳过隐藏窗口，任务栏也算窗口）。选区阶段用位移阈值区分「单击确认预选」与「拖拽自定义」（拖拽松手即确认），预选态不显示工具栏，进入标注才显示。`window_ui` 目前按 `window` 处理，UI 元素识别未实现。
 - **条目 id 必须唯一**：不要用毫秒时间戳单独做 id（同一毫秒批量生成会撞车，React `key` 重复会导致列表重复渲染、编辑/删除打错条目）；统一用「时间戳-自增序号」，并在加载时修复历史重复 id。
 - **弹窗退场状态要能复位**：带淡出动画的弹窗在提交失败（校验不过、后端拒绝）时必须把 `closing` 复位，否则遮罩停在透明却覆盖全屏的状态，界面表现为「卡死」。

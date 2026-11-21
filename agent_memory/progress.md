@@ -1,5 +1,6 @@
 # 当前阶段
 
+- **2026-11-21 状态**：用户已安装并日常使用 `v0.7.2`（安装路径 `D:\轻量化工具集\`，进程常驻、响应正常），升级后未再出现整机卡死；本机 `%APPDATA%\com.the.lightweight-toolset\logs\window.log` 尚不存在，说明还没有触发过建窗让路或唤出失败。
 - **`v0.7.2` 已发布（2026-11-20，发布提交 `abe5441`）**：修复「静默启动后整个软件像死的」——根因是剪贴板弹窗与快捷键提示浮窗同时首次创建时在主线程上嵌套建窗、互相等 tauri 窗口锁导致主线程永久死锁。安装包 33,851,424 字节，SHA-256 `2C24A3B5CCB13795DF60414AB7803E161A1D2732CCAF1C01C01BCF4C7D43130E`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.2`。
 - **该卡死问题已结案**：现场用 `SendMessageTimeout` 探活 + 主线程栈回溯定位（栈底 `open_clipboard_popup` → 顶层 `std::sync::Mutex::lock_contended`，中间夹 `shortcut_tip::build_window` 嵌套建窗）；修复后开发版复现时日志记录到 `window_build.busy defer=shortcut_tip`，两窗正常出现、进程持续响应。
 - **`v0.7.1` 已发布（2026-11-20，发布提交 `c1359bc`）**：新增截图「UI 检测」（不检测 / 仅窗口）与默认全屏预选、快捷键入口归位与录制框改版、数量档位选择器、快捷键文案统一 + 预设扩充、贴图组快捷键提示修复、主窗口最小化唤出与取证日志、截图设置页 UI 检测独立与辅助线折叠分组。安装包 33,856,072 字节，SHA-256 `5E875F6C6ECFE0EE1E32281888023AFD83C2DCB5535627110B220ED9FF00ECDE`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.1`。
