@@ -1,41 +1,41 @@
 # 当前现场
 
-- 2026-11-22：`0.8.0` 功能开发已收敛（快捷键提示原生浮窗 + 键帽 DIY + 截图缺陷修复），**代码全部已提交**，`origin/master` 尚未推送新提交。
-- 开发版在跑：`%TEMP%\lwt-dev\lightweight-toolset.exe`（Vite 1420 常驻）；安装版 `v0.7.2` 在 `D:\轻量化工具集\` 运行中，**不要结束**。
-- 本批（进行中，未提交）：图标托盘恢复、操作方向调校已提交（`2abed31` 之后）；新增「实验性功能」设置**独立标签页**，由「通用」页的「实验性功能」开关控制可见（开发版默认开启且锁定、正式版默认关闭可点）：路径数据驱动图标（24×24，M/L/H/V/C/Z），可编辑/预览/保存/恢复内置/复制 JSON；存储 `AppSettings.experimental_icons`，命令 `experimental_snapshot` / `experimental_set_icons`（正式版返回 unavailable 并拒绝写入）；`native_tip` 按 `icon_path` 优先绘制。
-- 历史：键盘图标保留原实心样式，其余图标线性描边（眼睛瞳孔也改描边、无线型填充）；`Ctrl+A`/`Ctrl+X` 等无专属图标的快捷键一律退回键盘图标；（键盘/复制/粘贴重画），新增 save/find/undo/redo/pin/pin_top/close_all/eye/pointer/window/clipboard/camera 共 15 种；软件级快捷键按 id 映射图标（`icon_for_hotkey`），自定义快捷键按快捷键内容推断（含 Ctrl+S/F/Z/Y 等）。
+- 2026-11-22：`v0.8.0` **已发布**（发布提交 `8d83b88`、tag `v0.8.0` 已推、Release 已建、仓库 About 已更新）；开发环境已关闭（开发版进程、Vite 1420、开发版数据目录、`%TEMP%\lwt-dev` 全部清理）。
+- 安装版 `v0.7.2` 仍在 `D:\轻量化工具集\` 运行（本次未动它）。
+- 工作树干净：只有既有的 `src-tauri/src/window_pinner.rs` 换行差异与 `.codex/`（都不要提交）。
+- 下一步：等待新需求；候选见 `progress.md` 待办（辅助线掉帧、标注拖动/文本再编辑、拖拽缩略图观感等）。
 
 # Scope
 
 - 工具集：截图与贴图、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示（共 7 个）。
-- 本阶段目标：`0.8.0`（快捷键提示浮窗改为原生绘制 + 键帽/外观 DIY + 截图与热键缺陷修复）。
+- 本阶段：`0.8.0` 已交付（快捷键提示浮窗原生化 + 外观 DIY + 线性语义图标 + 实验性图标绘制 + 截图/热键修复）。
 - 暂不修：截图覆盖层开启辅助线时的拖拽掉帧（见 `progress.md` 待办）。
 
 # Git / Working Tree
 
-- 分支 `master`；最近提交：`677d109`（键帽配色/字号/恢复默认）、`57a0566`（截图贴图快捷键与关闭确认等修复）、`91c7d3f`（工具生命周期热键注销）、`67a2a54`（原生浮窗入正）。
-- 工作树只剩既有现场：`src-tauri/src/window_pinner.rs` 换行差异、`.codex/`（都不要提交）。
-- 未推送：`57a0566`、`677d109`（推送前需确认代理 `127.0.0.1:7897`）。
+- 分支 `master`；最新提交 `8b5c44e docs: record v0.8.0 release and close dev environment`；已推送 `origin/master`。
+- tag `v0.8.0` 已推送；Release https://github.com/THE2580/LightweightToolset/releases/tag/v0.8.0 。
+- 安装包 `LightweightToolset_0.8.0_x64-setup.exe`：33,873,147 字节，SHA-256 `a1ba487dfc3aaeae49c364163723321c4c22adcbed3cf41fe16a9d269695e108`。
 
 # Active Files
 
-- `src-tauri/src/native_tip.rs`：原生提示浮窗（分层窗口 + GDI 自绘、帧缓存、真实时间动画、键帽配色覆盖、图标种类）。
-- `src-tauri/src/shortcut_tip.rs`：快捷键提示业务（预设/自定义、节流去重、`appearance` 设置、worker 调 `native_tip::show`）。
-- `src-tauri/src/screenshot/{mod,overlay,pin}.rs`：本轮截图修复（贴图快捷键作用域、关闭所有确认、穿透/隐藏状态复位、选区漏压暗）。
-- `src/App.tsx`：快捷键提示页与「提示外观」设置弹窗（`createPortal` 标准弹窗、颜色选择、恢复默认）。
+- `src-tauri/src/native_tip.rs`：原生提示浮窗（分层窗口 + GDI 自绘、帧缓存、真实时间动画、线性图标与路径数据绘制、键帽配色覆盖）。
+- `src-tauri/src/shortcut_tip.rs`：快捷键提示业务（预设/自定义、节流去重、`appearance`、软件级快捷键图标映射、实验性图标路径注入）。
+- `src-tauri/src/settings.rs`：`AppSettings`（含 `experimental_enabled` / `experimental_icons`）。
+- `src/App.tsx`：快捷键提示页与外观设置弹窗、设置页「实验性功能」标签与图标绘制编辑器。
 - `AGENTS.md` / `agent_memory/*`：约束与记忆。
 
 # Verification
 
-- `cargo test --lib -- --test-threads=1` → **55 passed / 3 ignored**；`npm run build` 通过；`cargo check` 仅剩仓库原有 4 条 warning。
-- 冒烟：`cargo test --lib native_tip -- --ignored`（显示→停用→再显示），渲染帧可用 `NATIVE_TIP_DUMP` 导出人工核对。
-- 开发版自检：1420 监听 + HTTP 200；exe 从 `%TEMP%\lwt-dev` 启动；页面正常加载；安装版进程不动。
+- `cargo test --lib -- --test-threads=1` → **55 passed / 3 ignored**；`npm run build` 通过；`cargo check` 仅 4 条既有 warning。
+- 发版：`npm run tauri build` 成功产出 NSIS 0.8.0；资产名完整、`sha256sum` 与 Release 记录一致。
 
 # Blockers
 
-- 无阻塞。发版前需用户授权并开代理。
+- 无。
 
 # Next Action
 
-1. 为快捷键提示的常用预设补充/配置图标（先复述口径，再实现）。
-2. 之后再走 `0.8.0` 发版流程（版本号三处、README + 仓库简介、清理开发版痕迹、ASCII 资产名 + SHA-256）。
+1. 下一轮需求来时先读 `progress.md` 待办与 `bugs.md` 经验。
+2. 若继续 0.8.x：优先处理「辅助线掉帧」（方案见 `progress.md`：标注图层跨帧缓存）。
+3. 开发调试时按 AGENTS「验证方式」启动开发版（`npm run dev` + 复制 exe 到 `%TEMP%\lwt-dev` + `Start-Process -Verb RunAs`）。
