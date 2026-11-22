@@ -48,6 +48,7 @@ import {
   Settings,
   Sun,
   Terminal,
+  FlaskConical,
   Trash2,
   Wrench,
   X,
@@ -60,7 +61,7 @@ import "./App.css";
 
 type ThemeMode = "system" | "light" | "dark";
 type CloseBehavior = "quit" | "tray";
-type SettingsTab = "general" | "hotkey" | "logs" | "about";
+type SettingsTab = "general" | "hotkey" | "logs" | "experimental" | "about";
 
 type Tool = {
   id: string;
@@ -368,6 +369,7 @@ type AppSettings = {
   windowTitle: string;
   closeBehavior: CloseBehavior;
   developerMode: boolean;
+  experimentalEnabled: boolean;
   storagePath: string;
   screenshotManualSaveDir: string;
   screenshotQuickSaveDir: string;
@@ -3036,6 +3038,7 @@ function SettingsView({
   updateSettings: (patch: SettingsPatch) => Promise<void>;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
+  const experimentalAvailable = devBuild || settings.experimentalEnabled;
   const [titleDraft, setTitleDraft] = useState(settings.windowTitle);
   const [storagePathDraft, setStoragePathDraft] = useState(settings.storagePath);
   const [defaultStoragePath, setDefaultStoragePath] = useState("");
@@ -3045,6 +3048,12 @@ function SettingsView({
   useEffect(() => setTitleDraft(settings.windowTitle), [settings.windowTitle]);
   useEffect(() => setStoragePathDraft(settings.storagePath), [settings.storagePath]);
   useEffect(() => setActiveTab(initialTab), [initialTab]);
+  useEffect(() => {
+    if (activeTab === "experimental" && !experimentalAvailable) {
+      setActiveTab("general");
+    }
+  }, [activeTab, experimentalAvailable]);
+
   useEffect(() => {
     if (activeTab === "logs" && !settings.developerMode) {
       setActiveTab("general");
@@ -3090,6 +3099,9 @@ function SettingsView({
         <SettingsTabButton active={activeTab === "hotkey"} icon={<Keyboard size={14} />} label="快捷键" onClick={() => setActiveTab("hotkey")} />
         {settings.developerMode ? (
           <SettingsTabButton active={activeTab === "logs"} icon={<Terminal size={14} />} label="控制台日志" onClick={() => setActiveTab("logs")} />
+        ) : null}
+        {experimentalAvailable ? (
+          <SettingsTabButton active={activeTab === "experimental"} icon={<FlaskConical size={14} />} label="实验性功能" onClick={() => setActiveTab("experimental")} />
         ) : null}
         <SettingsTabButton active={activeTab === "about"} icon={<Info size={14} />} label="关于" onClick={() => setActiveTab("about")} />
       </div>
@@ -3165,6 +3177,13 @@ function SettingsView({
               label="开发者模式"
               onChange={(value) => updateSettings({ developerMode: value })}
             />
+            <ToggleRow
+              checked={devBuild ? true : settings.experimentalEnabled}
+              description={devBuild ? "开发版固定开启，用于显示实验性功能标签页" : "开启后设置页会多出「实验性功能」标签页，用于试验中的功能"}
+              disabled={devBuild}
+              label="实验性功能"
+              onChange={(value) => updateSettings({ experimentalEnabled: value })}
+            />
             <div className={`settings-row stack${devBuild ? " is-locked" : ""}`}>
               <div>
                 <h2>存储路径</h2>
@@ -3179,6 +3198,7 @@ function SettingsView({
                 ) : null}
               </div>
             </div>
+
           </div>
         ) : null}
 
@@ -3188,11 +3208,350 @@ function SettingsView({
 
         {activeTab === "logs" ? <DebugLogPanel /> : null}
 
+        {activeTab === "experimental" ? <ExperimentalIconsPanel /> : null}
+
         {activeTab === "about" ? (
           <AboutSettingsPanel coldStartupMs={coldStartupMs} settings={settings} updateChecker={updateChecker} updateSettings={updateSettings} />
         ) : null}
       </section>
     </>
+  );
+}
+
+/// 实验性功能：图标绘制（路径数据），由「实验性功能」开关控制是否可见。
+const EXPERIMENTAL_ICON_NAMES: Array<[string, string]> = [
+  ["keyboard", "键盘"],
+  ["copy", "复制"],
+  ["paste", "粘贴"],
+  ["cut", "剪切"],
+  ["select_all", "全选"],
+  ["save", "保存"],
+  ["find", "查找"],
+  ["undo", "撤销"],
+  ["redo", "重做"],
+  ["pin", "贴图"],
+  ["pin_top", "窗口置顶"],
+  ["close_all", "关闭全部"],
+  ["eye", "隐藏/显示"],
+  ["pointer", "鼠标穿透"],
+  ["window", "主窗口"],
+  ["clipboard", "剪贴板"],
+  ["camera", "截图"],
+];
+
+type ExperimentalSnapshot = {
+  available: boolean;
+  icons: Record<string, string>;
+};
+
+/// 把路径数据采样成折线（与后端 `native_tip::sample_path` 同一套规则：M/L/H/V/C/Z，24×24 视图框）。
+function sampleIconPath(data: string): Array<Array<[number, number]>> {
+  const tokens: Array<string | number> = [];
+  let buffer = "";
+  const flush = () => {
+    const value = Number.parseFloat(buffer);
+    if (Number.isFinite(value)) {
+      tokens.push(value);
+    }
+    buffer = "";
+  };
+  for (const ch of data) {
+    if (/[a-zA-Z]/.test(ch)) {
+      flush();
+      tokens.push(ch);
+    } else if (/[0-9.+-]/.test(ch)) {
+      buffer += ch;
+    } else {
+      flush();
+    }
+  }
+  flush();
+
+  const polylines: Array<Array<[number, number]>> = [];
+  let current: Array<[number, number]> = [];
+  let x = 0;
+  let y = 0;
+  let startX = 0;
+  let startY = 0;
+  let command = "M";
+  let cursor = 0;
+  const num = (index: number) => {
+    const value = tokens[index];
+    return typeof value === "number" ? value : null;
+  };
+
+  let guard = 0;
+  while (cursor < tokens.length && guard < 4096) {
+    guard += 1;
+    const token = tokens[cursor];
+    if (typeof token === "string") {
+      command = token;
+      cursor += 1;
+    }
+    const relative = command === command.toLowerCase();
+    const upper = command.toUpperCase();
+    if (upper === "M") {
+      const nx = num(cursor);
+      const ny = num(cursor + 1);
+      if (nx === null || ny === null) {
+        break;
+      }
+      cursor += 2;
+      const px = relative ? x + nx : nx;
+      const py = relative ? y + ny : ny;
+      if (current.length) {
+        polylines.push(current);
+        current = [];
+      }
+      current.push([px, py]);
+      x = px;
+      y = py;
+      startX = px;
+      startY = py;
+      command = relative ? "l" : "L";
+    } else if (upper === "L") {
+      const nx = num(cursor);
+      const ny = num(cursor + 1);
+      if (nx === null || ny === null) {
+        break;
+      }
+      cursor += 2;
+      const px = relative ? x + nx : nx;
+      const py = relative ? y + ny : ny;
+      current.push([px, py]);
+      x = px;
+      y = py;
+    } else if (upper === "H") {
+      const nx = num(cursor);
+      if (nx === null) {
+        break;
+      }
+      cursor += 1;
+      x = relative ? x + nx : nx;
+      current.push([x, y]);
+    } else if (upper === "V") {
+      const ny = num(cursor);
+      if (ny === null) {
+        break;
+      }
+      cursor += 1;
+      y = relative ? y + ny : ny;
+      current.push([x, y]);
+    } else if (upper === "C") {
+      const values = [0, 1, 2, 3, 4, 5].map((offset) => num(cursor + offset));
+      if (values.some((value) => value === null)) {
+        break;
+      }
+      cursor += 6;
+      const [x1, y1, x2, y2, x3, y3] = values as number[];
+      const ax = relative ? x + x1 : x1;
+      const ay = relative ? y + y1 : y1;
+      const bx = relative ? x + x2 : x2;
+      const by = relative ? y + y2 : y2;
+      const cx2 = relative ? x + x3 : x3;
+      const cy2 = relative ? y + y3 : y3;
+      const steps = 16;
+      for (let step = 1; step <= steps; step += 1) {
+        const t = step / steps;
+        const mt = 1 - t;
+        current.push([
+          mt ** 3 * x + 3 * mt ** 2 * t * ax + 3 * mt * t ** 2 * bx + t ** 3 * cx2,
+          mt ** 3 * y + 3 * mt ** 2 * t * ay + 3 * mt * t ** 2 * by + t ** 3 * cy2,
+        ]);
+      }
+      x = cx2;
+      y = cy2;
+    } else if (upper === "Z") {
+      if (current.length) {
+        current.push([startX, startY]);
+        polylines.push(current);
+        current = [];
+      }
+      x = startX;
+      y = startY;
+    } else {
+      cursor += 1;
+    }
+  }
+  if (current.length) {
+    polylines.push(current);
+  }
+  return polylines;
+}
+
+function ExperimentalIconsPanel() {
+  const [snapshot, setSnapshot] = useState<ExperimentalSnapshot | null>(null);
+  const [name, setName] = useState("copy");
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    void invoke<ExperimentalSnapshot>("experimental_snapshot")
+      .then(setSnapshot)
+      .catch(() => setSnapshot({ available: false, icons: {} }));
+  }, []);
+
+  useEffect(() => {
+    if (!snapshot) {
+      return;
+    }
+    setDraft(snapshot.icons[name] ?? "");
+  }, [name, snapshot]);
+
+  // 预览：24×24 视图框，只描边不填充；配色跟随主题（底色、网格、线条都取 CSS 变量）。
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+    const styles = getComputedStyle(canvas);
+    const background = styles.getPropertyValue("--panel-bg").trim() || "#ffffff";
+    const gridColor = styles.getPropertyValue("--soft-border").trim() || "rgba(0,0,0,0.08)";
+    const ink = styles.getPropertyValue("--primary").trim() || "#2b63e8";
+    const size = canvas.width;
+    const scale = size / 24;
+    ctx.clearRect(0, 0, size, size);
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, size, size);
+    ctx.strokeStyle = gridColor;
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 24; i += 1) {
+      ctx.beginPath();
+      ctx.moveTo(i * scale, 0);
+      ctx.lineTo(i * scale, size);
+      ctx.moveTo(0, i * scale);
+      ctx.lineTo(size, i * scale);
+      ctx.stroke();
+    }
+    const polylines = sampleIconPath(draft);
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (const polyline of polylines) {
+      if (polyline.length < 2) {
+        continue;
+      }
+      ctx.beginPath();
+      polyline.forEach(([px, py], index) => {
+        if (index === 0) {
+          ctx.moveTo(px * scale, py * scale);
+        } else {
+          ctx.lineTo(px * scale, py * scale);
+        }
+      });
+      ctx.stroke();
+    }
+  }, [draft]);
+
+  if (!snapshot?.available) {
+    return null;
+  }
+
+  async function save(next: Record<string, string>) {
+    setBusy(true);
+    try {
+      const updated = await invoke<ExperimentalSnapshot>("experimental_set_icons", { icons: next });
+      setSnapshot(updated);
+      setMessage("已保存，下一次弹提示时生效");
+    } catch (error) {
+      setMessage(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="settings-row stack experimental-icons">
+      <div>
+        <h2>实验性功能 · 图标绘制</h2>
+        <p>用路径数据（24×24 视图框，支持 M/L/H/V/C/Z）自定义快捷键提示的图标；需先在「通用」里打开「实验性功能」。</p>
+      </div>
+      <div className="experimental-icons-body">
+        <div className="experimental-icons-side">
+          <select
+            className="settings-select"
+            onChange={(event) => setName(event.target.value)}
+            value={name}
+          >
+            {EXPERIMENTAL_ICON_NAMES.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}（{value}）{snapshot.icons[value] ? " · 已覆盖" : ""}
+              </option>
+            ))}
+          </select>
+          <textarea
+            className="settings-input mono experimental-icons-path"
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="例：M6 6 L18 6 L18 18 L6 18 Z"
+            spellCheck={false}
+            value={draft}
+          />
+          <div className="settings-inline">
+            <button
+              className="primary-action"
+              disabled={busy || !draft.trim()}
+              onClick={() => void save({ ...snapshot.icons, [name]: draft.trim() })}
+              type="button"
+            >
+              保存
+            </button>
+            <button
+              className="secondary-action"
+              disabled={busy || !snapshot.icons[name]}
+              onClick={() => {
+                const next = { ...snapshot.icons };
+                delete next[name];
+                void save(next);
+              }}
+              type="button"
+            >
+              恢复内置
+            </button>
+            <button
+              className="secondary-action"
+              disabled={busy}
+              onClick={() => {
+                const text = JSON.stringify(snapshot.icons, null, 2);
+                void navigator.clipboard.writeText(text).then(() => setMessage("已复制全部图标 JSON"));
+              }}
+              type="button"
+            >
+              复制全部
+            </button>
+          </div>
+          {message ? <p className="experimental-icons-message">{message}</p> : null}
+          <details className="experimental-icons-guide">
+            <summary>使用说明（怎么画路径）</summary>
+            <div className="experimental-icons-guide-body">
+              <p><strong>画布</strong>：24×24 视图框，左上角是 (0,0)，x 向右、y 向下。建议图形画在 4–20 之间，会自动缩放进图标托盘。</p>
+              <p><strong>命令</strong>（大写=绝对坐标，小写=相对上一个点）：</p>
+              <ul>
+                <li><code>M x y</code> 起点（开始新的一段）</li>
+                <li><code>L x y</code> 直线到该点</li>
+                <li><code>H x</code> 水平线、<code>V y</code> 垂直线</li>
+                <li><code>C x1 y1 x2 y2 x y</code> 三次贝塞尔（画曲线/圆用）</li>
+                <li><code>Z</code> 闭合回起点</li>
+              </ul>
+              <p><strong>规则</strong>：只描边不填充；线宽由软件统一控制；颜色跟随主题；不支持弧线 <code>A</code> 与二次曲线 <code>Q</code>。</p>
+              <p><strong>示例</strong>（直接粘进输入框）：</p>
+              <pre>{`方框：M6 6 L18 6 L18 18 L6 18 Z
+勾：M6 12 L10 16 L18 7
+箭头：M5 12 H19 M13 6 L19 12 L13 18
+圆：M12 5 C15.9 5 19 8.1 19 12 C19 15.9 15.9 19 12 19 C8.1 19 5 15.9 5 12 C5 8.1 8.1 5 12 5 Z`}</pre>
+              <p><strong>生效</strong>：点「保存」后，下一次弹出快捷键提示时使用；「恢复内置」退回原图标。</p>
+            </div>
+          </details>
+        </div>
+        <canvas className="experimental-icons-preview" height={240} ref={canvasRef} width={240} />
+      </div>
+    </div>
   );
 }
 

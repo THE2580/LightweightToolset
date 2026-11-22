@@ -87,6 +87,9 @@ pub struct NativeTipPayload {
     /// 停留时长（毫秒），缺省 2000，夹在 800–10000。
     #[serde(default)]
     pub duration_ms: Option<u32>,
+    /// 实验性图标：路径数据（24×24，M/L/H/V/C/Z）；给了就优先按它绘制。
+    #[serde(default)]
+    pub icon_path: Option<String>,
     /// 键帽配色覆盖（0xRRGGBB）：底色 / 描边 / 文字；不给就用主题内置配色。
     #[serde(default)]
     pub chip_bg: Option<u32>,
@@ -1466,6 +1469,197 @@ fn outline_ellipse(
     }
 }
 
+/// 把路径数据（24×24 视图框，支持 `M/L/H/V/C/Z`，大小写表示绝对/相对）采样成折线。
+///
+/// 这是实验性图标绘制的最小实现：只支持直线与三次贝塞尔，弧线（`A`）等暂不支持，
+/// 遇到未知命令会跳过该段而不是整段失败。
+fn sample_path(data: &str) -> Vec<Vec<(f32, f32)>> {
+    let tokens = tokenize_path(data);
+    let mut polylines: Vec<Vec<(f32, f32)>> = Vec::new();
+    let mut current: Vec<(f32, f32)> = Vec::new();
+    let (mut x, mut y) = (0.0f32, 0.0f32);
+    let (mut start_x, mut start_y) = (0.0f32, 0.0f32);
+    let mut index = 0usize;
+    let mut command = 'M';
+    let mut cursor = 0usize;
+
+    while cursor < tokens.len() {
+        if let PathToken::Command(ch) = tokens[cursor] {
+            command = ch;
+            cursor += 1;
+        }
+        let relative = command.is_ascii_lowercase();
+        match command.to_ascii_uppercase() {
+            'M' => {
+                let (Some(nx), Some(ny)) = (number(&tokens, cursor), number(&tokens, cursor + 1)) else {
+                    break;
+                };
+                cursor += 2;
+                index += 1;
+                let (px, py) = if relative { (x + nx, y + ny) } else { (nx, ny) };
+                if !current.is_empty() {
+                    polylines.push(std::mem::take(&mut current));
+                }
+                current.push((px, py));
+                (x, y) = (px, py);
+                (start_x, start_y) = (px, py);
+                // 连续的 M 之后按 L 处理。
+                command = if relative { 'l' } else { 'L' };
+            }
+            'L' => {
+                let (Some(nx), Some(ny)) = (number(&tokens, cursor), number(&tokens, cursor + 1)) else {
+                    break;
+                };
+                cursor += 2;
+                let (px, py) = if relative { (x + nx, y + ny) } else { (nx, ny) };
+                current.push((px, py));
+                (x, y) = (px, py);
+            }
+            'H' => {
+                let Some(nx) = number(&tokens, cursor) else { break };
+                cursor += 1;
+                let px = if relative { x + nx } else { nx };
+                current.push((px, y));
+                x = px;
+            }
+            'V' => {
+                let Some(ny) = number(&tokens, cursor) else { break };
+                cursor += 1;
+                let py = if relative { y + ny } else { ny };
+                current.push((x, py));
+                y = py;
+            }
+            'C' => {
+                let Some(values) = numbers(&tokens, cursor, 6) else {
+                    break;
+                };
+                cursor += 6;
+                let (x1, y1, x2, y2, x3, y3) = if relative {
+                    (
+                        x + values[0],
+                        y + values[1],
+                        x + values[2],
+                        y + values[3],
+                        x + values[4],
+                        y + values[5],
+                    )
+                } else {
+                    (
+                        values[0], values[1], values[2], values[3], values[4], values[5],
+                    )
+                };
+                const STEPS: usize = 16;
+                for step in 1..=STEPS {
+                    let t = step as f32 / STEPS as f32;
+                    let mt = 1.0 - t;
+                    let px = mt * mt * mt * x + 3.0 * mt * mt * t * x1 + 3.0 * mt * t * t * x2 + t * t * t * x3;
+                    let py = mt * mt * mt * y + 3.0 * mt * mt * t * y1 + 3.0 * mt * t * t * y2 + t * t * t * y3;
+                    current.push((px, py));
+                }
+                (x, y) = (x3, y3);
+            }
+            'Z' => {
+                if !current.is_empty() {
+                    current.push((start_x, start_y));
+                    polylines.push(std::mem::take(&mut current));
+                }
+                (x, y) = (start_x, start_y);
+            }
+            _ => {
+                // 未知命令：跳过一个 token，避免死循环。
+                cursor += 1;
+            }
+        }
+        index += 1;
+        if index > 4096 {
+            break;
+        }
+    }
+    if !current.is_empty() {
+        polylines.push(current);
+    }
+    polylines
+}
+
+enum PathToken {
+    Command(char),
+    Number(f32),
+}
+
+fn tokenize_path(data: &str) -> Vec<PathToken> {
+    let mut tokens = Vec::new();
+    let mut buffer = String::new();
+    let flush = |buffer: &mut String, tokens: &mut Vec<PathToken>| {
+        if let Ok(value) = buffer.parse::<f32>() {
+            tokens.push(PathToken::Number(value));
+        }
+        buffer.clear();
+    };
+    for ch in data.chars() {
+        if ch.is_ascii_alphabetic() {
+            flush(&mut buffer, &mut tokens);
+            tokens.push(PathToken::Command(ch));
+        } else if ch.is_ascii_digit() || ch == '.' || ch == '-' || ch == '+' {
+            // 负号/正号出现在数字中间（如 `1e-5`）时不再切分，简单处理即可。
+            buffer.push(ch);
+        } else {
+            flush(&mut buffer, &mut tokens);
+        }
+    }
+    flush(&mut buffer, &mut tokens);
+    tokens
+}
+
+fn number(tokens: &[PathToken], index: usize) -> Option<f32> {
+    match tokens.get(index) {
+        Some(PathToken::Number(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn numbers(tokens: &[PathToken], index: usize, count: usize) -> Option<[f32; 6]> {
+    let mut values = [0.0f32; 6];
+    if count > 6 {
+        return None;
+    }
+    for offset in 0..count {
+        values[offset] = number(tokens, index + offset)?;
+    }
+    Some(values)
+}
+
+/// 用路径数据绘制图标（24×24 视图框缩放到图标盒），只描边不填充。
+fn draw_path_icon(
+    pixels: &mut [u32],
+    width: i32,
+    height: i32,
+    cx: f32,
+    cy: f32,
+    size: f32,
+    stroke: f32,
+    color: (u8, u8, u8),
+    data: &str,
+) {
+    let scale = size / 24.0;
+    let ox = cx - size / 2.0;
+    let oy = cy - size / 2.0;
+    for polyline in sample_path(data) {
+        for pair in polyline.windows(2) {
+            stroke_line(
+                pixels,
+                width,
+                height,
+                ox + pair[0].0 * scale,
+                oy + pair[0].1 * scale,
+                ox + pair[1].0 * scale,
+                oy + pair[1].1 * scale,
+                stroke,
+                color,
+            );
+        }
+    }
+}
+
 fn draw_icon(
     pixels: &mut [u32],
     width: i32,
@@ -1484,6 +1678,13 @@ fn draw_icon(
     fill_round_rect(pixels, width, height, rect, 7.0 * scale, accent, bg_alpha);
 
     let unit = size / 19.0;
+    // 实验性自定义路径优先：直接用路径绘制（仍走同一托盘与线宽口径）。
+    if let Some(data) = payload.icon_path.as_deref() {
+        let stroke = (1.25 * unit).max(1.1);
+        draw_path_icon(pixels, width, height, cx, cy, size, stroke, accent, data);
+        return;
+    }
+
     // 图标优先级：显式指定 > 定位预览固定键盘 > 按快捷键内容推断。
     let kind = payload
         .icon
@@ -1997,6 +2198,29 @@ fn icon_kind_from_name(name: &str) -> Option<IconKind> {
     })
 }
 
+/// 按快捷键内容推断图标名（供上层查自定义路径用）。
+pub(crate) fn icon_name_for_keys(keys: &str) -> &'static str {
+    match icon_kind(keys) {
+        IconKind::Keyboard => "keyboard",
+        IconKind::Copy => "copy",
+        IconKind::Paste => "paste",
+        IconKind::Cut => "cut",
+        IconKind::SelectAll => "select_all",
+        IconKind::Save => "save",
+        IconKind::Find => "find",
+        IconKind::Undo => "undo",
+        IconKind::Redo => "redo",
+        IconKind::Pin => "pin",
+        IconKind::PinTop => "pin_top",
+        IconKind::CloseAll => "close_all",
+        IconKind::Eye => "eye",
+        IconKind::Pointer => "pointer",
+        IconKind::Window => "window",
+        IconKind::Clipboard => "clipboard",
+        IconKind::Camera => "camera",
+    }
+}
+
 fn icon_kind(keys: &str) -> IconKind {
     // 必须整串比较：早先用 contains("ctrl+a") 判断，`Win+Ctrl+Alt+…` 会误命中 `ctrl+a`，
     // 结果所有带 Alt 的组合都被画成复制图标。
@@ -2097,6 +2321,7 @@ mod tests {
                 // 冒烟测试默认深色；NATIVE_TIP_THEME=light 时渲染浅色，方便两种主题都核对一遍。
                 // NATIVE_TIP_ICON 可强制图标种类、NATIVE_TIP_KEYS 可替换快捷键文本，用来逐个人工核对图标。
                 icon: std::env::var("NATIVE_TIP_ICON").ok(),
+                icon_path: std::env::var("NATIVE_TIP_ICON_PATH").ok(),
                 theme: std::env::var("NATIVE_TIP_THEME").unwrap_or_else(|_| "dark".to_owned()),
                 blur_radius: None,
                 tint_alpha: None,

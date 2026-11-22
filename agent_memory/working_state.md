@@ -2,7 +2,8 @@
 
 - 2026-11-22：`0.8.0` 功能开发已收敛（快捷键提示原生浮窗 + 键帽 DIY + 截图缺陷修复），**代码全部已提交**，`origin/master` 尚未推送新提交。
 - 开发版在跑：`%TEMP%\lwt-dev\lightweight-toolset.exe`（Vite 1420 常驻）；安装版 `v0.7.2` 在 `D:\轻量化工具集\` 运行中，**不要结束**。
-- 本批（未提交）：键盘图标保留原实心样式，其余图标线性描边（眼睛瞳孔也改描边、无线型填充）；`Ctrl+A`/`Ctrl+X` 等无专属图标的快捷键一律退回键盘图标；（键盘/复制/粘贴重画），新增 save/find/undo/redo/pin/pin_top/close_all/eye/pointer/window/clipboard/camera 共 15 种；软件级快捷键按 id 映射图标（`icon_for_hotkey`），自定义快捷键按快捷键内容推断（含 Ctrl+S/F/Z/Y 等）。
+- 本批（进行中，未提交）：图标托盘恢复、操作方向调校已提交（`2abed31` 之后）；新增「实验性功能」设置**独立标签页**，由「通用」页的「实验性功能」开关控制可见（开发版默认开启且锁定、正式版默认关闭可点）：路径数据驱动图标（24×24，M/L/H/V/C/Z），可编辑/预览/保存/恢复内置/复制 JSON；存储 `AppSettings.experimental_icons`，命令 `experimental_snapshot` / `experimental_set_icons`（正式版返回 unavailable 并拒绝写入）；`native_tip` 按 `icon_path` 优先绘制。
+- 历史：键盘图标保留原实心样式，其余图标线性描边（眼睛瞳孔也改描边、无线型填充）；`Ctrl+A`/`Ctrl+X` 等无专属图标的快捷键一律退回键盘图标；（键盘/复制/粘贴重画），新增 save/find/undo/redo/pin/pin_top/close_all/eye/pointer/window/clipboard/camera 共 15 种；软件级快捷键按 id 映射图标（`icon_for_hotkey`），自定义快捷键按快捷键内容推断（含 Ctrl+S/F/Z/Y 等）。
 
 # Scope
 

@@ -691,6 +691,7 @@ pub fn apply_development_defaults(settings: &mut AppSettings) {
     settings.silent_start = false;
     settings.main_window_always_on_top = true;
     settings.developer_mode = true;
+    settings.experimental_enabled = true;
     for tool in TOOLS.iter() {
         settings.tools.insert(tool.id.to_owned(), false);
     }

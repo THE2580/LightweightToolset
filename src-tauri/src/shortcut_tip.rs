@@ -133,6 +133,7 @@ enum Command {
         title: String,
         keys: Option<String>,
         icon: Option<String>,
+        icon_path: Option<String>,
     },
     Reset,
 }
@@ -153,6 +154,18 @@ const APP_HOTKEY_PRESETS: &[(&str, &str)] = &[
     ("pin_toggle_visible", "隐藏/显示所有贴图窗口"),
     ("pin_passthrough", "鼠标穿透"),
 ];
+
+/// 查实验性自定义图标路径（只在开发版生效；正式版一律返回 `None`）。
+fn experimental_icon_path(icon: Option<&str>) -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let name = icon?;
+    let app = APP.get()?;
+    let state = app.try_state::<AppState>()?;
+    let registry = state.registry.lock().ok()?;
+    registry.settings().experimental_icons.get(name).cloned()
+}
 
 /// 软件级快捷键 → 提示浮窗图标名（与 `native_tip` 的图标集合对应）。
 fn icon_for_hotkey(hotkey_id: &str) -> Option<&'static str> {
@@ -543,6 +556,8 @@ pub fn notify_app_hotkey(hotkey_id: &str) {
     if keys.is_empty() {
         return;
     }
+    let icon = icon_for_hotkey(hotkey_id).map(str::to_owned);
+    let icon_path = experimental_icon_path(icon.as_deref());
     report(
         keys.clone(),
         Origin::Command,
@@ -550,7 +565,8 @@ pub fn notify_app_hotkey(hotkey_id: &str) {
         Some(keys),
         true,
         Some(target.id),
-        icon_for_hotkey(hotkey_id).map(str::to_owned),
+        icon,
+        icon_path,
     );
 }
 
@@ -656,7 +672,16 @@ pub fn notify_text(title: &str, origin: Origin) {
     if title.is_empty() {
         return;
     }
-    report(format!("text:{title}"), origin, title.to_owned(), None, false, None, None);
+    report(
+        format!("text:{title}"),
+        origin,
+        title.to_owned(),
+        None,
+        false,
+        None,
+        None,
+        None,
+    );
 }
 
 /// 进入录制：钩子接管并吞掉按键，避免系统或应用热键把按键吃掉/触发。
@@ -694,7 +719,11 @@ pub fn notify_shortcut(keys: &str, origin: Origin) {
     let Some((id, label, tip_keys, preset)) = lookup(&chord) else {
         return;
     };
-    report(chord, origin, label, Some(tip_keys), preset, Some(id), None);
+    let icon = Some(crate::native_tip::icon_name_for_keys(&chord).to_owned());
+    let icon_path = experimental_icon_path(icon.as_deref());
+    report(
+        chord, origin, label, Some(tip_keys), preset, Some(id), icon, icon_path,
+    );
 }
 
 fn lookup(chord: &str) -> Option<(String, String, String, bool)> {
@@ -740,6 +769,7 @@ fn report(
     preset: bool,
     bump_id: Option<String>,
     icon: Option<String>,
+    icon_path: Option<String>,
 ) {
     if !notifications_enabled() {
         return;
@@ -751,7 +781,12 @@ fn report(
         bump_triggered(&id);
     }
     let _ = preset;
-    send(Command::Show { title, keys, icon });
+    send(Command::Show {
+        title,
+        keys,
+        icon,
+        icon_path,
+    });
 }
 
 fn claim_report(key: &str, origin: Origin) -> bool {
@@ -808,7 +843,12 @@ fn start_worker() {
                         count = 0;
                         visible_until = None;
                     }
-                    Command::Show { title, keys, icon } => {
+                    Command::Show {
+                        title,
+                        keys,
+                        icon,
+                        icon_path,
+                    } => {
                         if !notifications_enabled() {
                             continue;
                         }
@@ -842,6 +882,7 @@ fn start_worker() {
                             duration_ms: Some(appearance.duration_ms),
                             preview: None,
                             icon: icon.clone(),
+                            icon_path: icon_path.clone(),
                             chip_bg: color_to_u32(&(if theme == "dark" {
                                 &appearance.dark_chip_bg
                             } else {

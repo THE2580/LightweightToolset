@@ -119,6 +119,14 @@ pub struct AppSettings {
     /// 截图 UI 检测：`none` 不检测 / `window` 仅窗口 / `window_ui` 窗口和 UI（本轮未实现）。
     #[serde(default = "default_ui_detection")]
     pub screenshot_ui_detection: String,
+    /// 是否启用「实验性功能」（开发版固定开启；正式版由用户开关控制，默认关闭）。
+    #[serde(default)]
+    pub experimental_enabled: bool,
+    /// 实验性功能的图标覆盖：图标名 → 路径数据（24×24 视图框，支持 M/L/H/V/C/Z）。
+    ///
+    /// 只在开发版生效（正式版后端拒绝写入、也不参与绘制）。
+    #[serde(default)]
+    pub experimental_icons: BTreeMap<String, String>,
 }
 
 fn default_ui_detection() -> String {
@@ -217,6 +225,8 @@ impl Default for AppSettings {
             screenshot_pin_history: default_pin_history(),
             screenshot_pin_auto_copy_text: false,
             screenshot_ui_detection: default_ui_detection(),
+            experimental_enabled: false,
+            experimental_icons: BTreeMap::new(),
         }
     }
 }

@@ -110,6 +110,7 @@ struct SettingsPatch {
     window_title: Option<String>,
     close_behavior: Option<CloseBehavior>,
     developer_mode: Option<bool>,
+    experimental_enabled: Option<bool>,
     storage_path: Option<String>,
     screenshot_manual_save_dir: Option<String>,
     screenshot_quick_save_dir: Option<String>,
@@ -951,6 +952,56 @@ fn shortcut_tip_set_appearance(
     shortcut_tip::set_appearance(appearance)
 }
 
+/// 实验性功能快照：只在开发版可用（正式版 `available=false`，前端据此隐藏入口）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExperimentalSnapshot {
+    available: bool,
+    icons: std::collections::BTreeMap<String, String>,
+}
+
+#[tauri::command]
+fn experimental_snapshot(state: State<'_, AppState>) -> Result<ExperimentalSnapshot, String> {
+    let registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+    let settings = registry.settings();
+    let available = cfg!(debug_assertions) || settings.experimental_enabled;
+    Ok(ExperimentalSnapshot {
+        available,
+        icons: if available {
+            settings.experimental_icons.clone()
+        } else {
+            Default::default()
+        },
+    })
+}
+
+/// 保存实验性图标路径（仅开发版；正式版直接拒绝）。
+#[tauri::command]
+fn experimental_set_icons(
+    state: State<'_, AppState>,
+    icons: std::collections::BTreeMap<String, String>,
+) -> Result<ExperimentalSnapshot, String> {
+    let settings = {
+        let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+        let settings = registry.settings_mut();
+        if !cfg!(debug_assertions) && !settings.experimental_enabled {
+            return Err("实验性功能未开启".to_owned());
+        }
+        settings.experimental_icons = icons;
+        settings.clone()
+    };
+    save_app_settings(&state, &settings)?;
+    push_debug_log(
+        &state,
+        "experimental",
+        format!("experimental.icons.updated count={}", settings.experimental_icons.len()),
+    );
+    Ok(ExperimentalSnapshot {
+        available: true,
+        icons: settings.experimental_icons,
+    })
+}
+
 #[tauri::command]
 fn shortcut_tip_snapshot() -> Result<ShortcutTipSnapshot, String> {
     shortcut_tip::snapshot()
@@ -1338,6 +1389,11 @@ fn update_app_settings(
             // 首次开启时提示一次，避免下次启动后用户以为没启动成功。
             std::thread::spawn(windows_notification::notify_silent_start_enabled);
         }
+    }
+    if let Some(experimental_enabled) = patch.experimental_enabled {
+        // 开发版固定开启实验性功能（界面开关也锁定），方便开发时直接改实验项。
+        settings.experimental_enabled =
+            if cfg!(debug_assertions) { true } else { experimental_enabled };
     }
     if let Some(developer_mode) = patch.developer_mode {
         // 开发版固定开启开发者模式（界面开关也锁定），避免误关闭后看不到诊断信息。
@@ -1950,6 +2006,8 @@ pub fn run() {
             shortcut_tip_report,
             shortcut_tip_set_appearance,
             shortcut_tip_snapshot,
+            experimental_snapshot,
+            experimental_set_icons,
             shortcut_tip_upsert,
             shortcut_tip_delete,
             shortcut_tip_restore_presets,
