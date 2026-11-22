@@ -1350,6 +1350,122 @@ fn stroke_round_rect(
 /// 图形按 18×18 的基准盒子设计，先量出实际包围盒再居中——之前用固定左偏移，
 /// 图形整体偏左了半个字宽。
 #[allow(clippy::too_many_arguments)]
+/// 画一个实心圆点（线性图标的端点/节点用）。
+fn dot(
+    pixels: &mut [u32],
+    width: i32,
+    height: i32,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    color: (u8, u8, u8),
+) {
+    let x0 = (cx - radius - 1.0).floor().max(0.0) as i32;
+    let y0 = (cy - radius - 1.0).floor().max(0.0) as i32;
+    let x1 = (cx + radius + 1.0).ceil().min(width as f32) as i32;
+    let y1 = (cy + radius + 1.0).ceil().min(height as f32) as i32;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let dist = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+            let alpha = (radius - dist + 0.5).clamp(0.0, 1.0);
+            if alpha > 0.0 {
+                blend_px(pixels, width, x, y, color, alpha);
+            }
+        }
+    }
+}
+
+/// 画一条圆头线段（线性图标的主笔画）。
+fn stroke_line(
+    pixels: &mut [u32],
+    width: i32,
+    height: i32,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    thickness: f32,
+    color: (u8, u8, u8),
+) {
+    let radius = (thickness / 2.0).max(0.6);
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let steps = dx.abs().max(dy.abs()).ceil().max(1.0) as i32;
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        dot(pixels, width, height, x1 + dx * t, y1 + dy * t, radius, color);
+    }
+}
+
+/// 圆角矩形描边（线性图标的框体）。
+fn outline_round_rect(
+    pixels: &mut [u32],
+    width: i32,
+    height: i32,
+    rect: (f32, f32, f32, f32),
+    radius: f32,
+    thickness: f32,
+    color: (u8, u8, u8),
+) {
+    let (rx, ry, rw, rh) = rect;
+    let inner = (
+        rx + thickness,
+        ry + thickness,
+        rw - 2.0 * thickness,
+        rh - 2.0 * thickness,
+    );
+    let x0 = rx.floor().max(0.0) as i32;
+    let y0 = ry.floor().max(0.0) as i32;
+    let x1 = (rx + rw).ceil().min(width as f32) as i32;
+    let y1 = (ry + rh).ceil().min(height as f32) as i32;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let outer = round_coverage(px, py, rect, radius);
+            let covered = round_coverage(px, py, inner, (radius - thickness).max(0.0));
+            let ring = (outer - covered).clamp(0.0, 1.0);
+            if ring > 0.0 {
+                blend_px(pixels, width, x, y, color, ring);
+            }
+        }
+    }
+}
+
+/// 椭圆描边（眼睛等曲线图标用）。
+fn outline_ellipse(
+    pixels: &mut [u32],
+    width: i32,
+    height: i32,
+    cx: f32,
+    cy: f32,
+    rx: f32,
+    ry: f32,
+    thickness: f32,
+    color: (u8, u8, u8),
+) {
+    let x0 = (cx - rx - 1.0).floor().max(0.0) as i32;
+    let y0 = (cy - ry - 1.0).floor().max(0.0) as i32;
+    let x1 = (cx + rx + 1.0).ceil().min(width as f32) as i32;
+    let y1 = (cy + ry + 1.0).ceil().min(height as f32) as i32;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let nx = (px - cx) / rx;
+            let ny = (py - cy) / ry;
+            let dist = (nx * nx + ny * ny).sqrt();
+            // 只画"环"：距边缘越近越不透明，椭圆内部保持透明（否则小尺寸下会糊成实心块）。
+            let edge = (1.0 - (1.0 - dist).abs() * rx / thickness).clamp(0.0, 1.0);
+            if edge > 0.0 {
+                blend_px(pixels, width, x, y, color, edge);
+            }
+        }
+    }
+}
+
 fn draw_icon(
     pixels: &mut [u32],
     width: i32,
@@ -1363,43 +1479,66 @@ fn draw_icon(
     payload: &NativeTipPayload,
 ) {
     let size = box_size * scale;
+    // 图标托盘：半透明主色圆角底（线条本身仍不填充，托盘负责让图标有落座感）。
     let rect = (cx - size / 2.0, cy - size / 2.0, size, size);
     fill_round_rect(pixels, width, height, rect, 7.0 * scale, accent, bg_alpha);
 
-    let unit = size / 24.0;
-    let line = (2.0 * unit).max(1.0);
+    let unit = size / 19.0;
     // 图标优先级：显式指定 > 定位预览固定键盘 > 按快捷键内容推断。
-    let kind = match payload.icon.as_deref() {
-        Some("keyboard") => IconKind::Keyboard,
-        Some("copy") => IconKind::Copy,
-        Some("paste") => IconKind::Paste,
-        _ if payload.preview == Some(true) => IconKind::Keyboard,
-        _ => payload.keys.as_deref().map(icon_kind).unwrap_or(IconKind::Keyboard),
-    };
+    let kind = payload
+        .icon
+        .as_deref()
+        .and_then(icon_kind_from_name)
+        .unwrap_or_else(|| {
+            if payload.preview == Some(true) {
+                IconKind::Keyboard
+            } else {
+                payload
+                    .keys
+                    .as_deref()
+                    .map(icon_kind)
+                    .unwrap_or(IconKind::Keyboard)
+            }
+        });
 
-    // 各类图形的设计尺寸（单位 = unit），用于计算居中偏移。
+    // 统一线性风格：只描边不填充，圆头笔画，视觉重量一致。
+    let stroke = (1.25 * unit).max(1.1);
+    let ink = accent;
     let (glyph_w, glyph_h) = match kind {
-        IconKind::Keyboard => (13.0 * unit, 12.0 * unit),
-        IconKind::Copy => (12.0 * unit, 12.0 * unit),
-        IconKind::Paste => (11.0 * unit, 12.5 * unit),
+        IconKind::Keyboard => (13.0 * unit, 11.0 * unit),
+        IconKind::Copy => (11.5 * unit, 13.0 * unit),
+        IconKind::Paste => (10.5 * unit, 13.0 * unit),
+        IconKind::Cut => (14.5 * unit, 14.0 * unit),
+        IconKind::SelectAll => (12.5 * unit, 12.5 * unit),
+        IconKind::Save => (12.0 * unit, 12.0 * unit),
+        IconKind::Find => (12.0 * unit, 12.0 * unit),
+        IconKind::Undo | IconKind::Redo => (12.0 * unit, 10.0 * unit),
+        IconKind::Pin => (10.0 * unit, 13.0 * unit),
+        IconKind::PinTop => (12.0 * unit, 12.0 * unit),
+        IconKind::CloseAll => (10.0 * unit, 10.0 * unit),
+        IconKind::Eye => (13.0 * unit, 8.0 * unit),
+        IconKind::Pointer => (9.0 * unit, 13.0 * unit),
+        IconKind::Window => (12.0 * unit, 12.0 * unit),
+        IconKind::Clipboard => (10.5 * unit, 13.0 * unit),
+        IconKind::Camera => (13.0 * unit, 10.0 * unit),
     };
     let x0 = cx - glyph_w / 2.0;
     let y0 = cy - glyph_h / 2.0;
+    let u = unit;
 
     match kind {
         IconKind::Keyboard => {
+            // 键盘沿用原来的实心键点 + 底条（其余图标是线性风格，键盘保持原样）。
             for row in 0..2 {
                 for col in 0..3 {
-                    let x = x0 + col as f32 * 5.0 * unit;
-                    let y = y0 + row as f32 * 4.5 * unit;
-                    fill_round_rect(
+                    dot(
                         pixels,
                         width,
                         height,
-                        (x, y, 3.0 * unit, 3.0 * unit),
-                        1.0 * unit,
-                        accent,
-                        1.0,
+                        x0 + (1.4 + col as f32 * 5.0) * u,
+                        y0 + (1.6 + row as f32 * 4.5) * u,
+                        1.5 * u,
+                        ink,
                     );
                 }
             }
@@ -1407,51 +1546,246 @@ fn draw_icon(
                 pixels,
                 width,
                 height,
-                (x0, y0 + 9.0 * unit, 13.0 * unit, line),
-                line / 2.0,
-                accent,
+                (x0, y0 + 8.6 * u, 13.0 * u, (2.0 * u).max(1.0)),
+                u,
+                ink,
                 1.0,
             );
         }
         IconKind::Copy => {
-            fill_round_rect(
+            outline_round_rect(pixels, width, height, (x0, y0, 8.5 * u, 9.5 * u), 1.5 * u, stroke, ink);
+            outline_round_rect(
                 pixels,
                 width,
                 height,
-                (x0, y0, 9.0 * unit, 9.0 * unit),
-                1.5 * unit,
-                accent,
-                1.0,
-            );
-            fill_round_rect(
-                pixels,
-                width,
-                height,
-                (x0 + 3.0 * unit, y0 + 3.0 * unit, 9.0 * unit, 9.0 * unit),
-                1.5 * unit,
-                accent,
-                1.0,
+                (x0 + 3.0 * u, y0 + 3.0 * u, 8.5 * u, 9.5 * u),
+                1.5 * u,
+                stroke,
+                ink,
             );
         }
         IconKind::Paste => {
-            fill_round_rect(
+            outline_round_rect(
                 pixels,
                 width,
                 height,
-                (x0, y0 + 0.5 * unit, 11.0 * unit, 12.0 * unit),
-                1.5 * unit,
-                accent,
-                1.0,
+                (x0, y0 + 1.5 * u, 10.5 * u, 11.5 * u),
+                1.5 * u,
+                stroke,
+                ink,
             );
-            fill_round_rect(
+            outline_round_rect(
                 pixels,
                 width,
                 height,
-                (x0 + 3.5 * unit, y0, 4.0 * unit, 2.5 * unit),
-                1.0 * unit,
-                accent,
-                1.0,
+                (x0 + 2.6 * u, y0, 5.3 * u, 3.0 * u),
+                1.0 * u,
+                stroke,
+                ink,
             );
+            stroke_line(pixels, width, height, x0 + 2.4 * u, y0 + 6.0 * u, x0 + 8.1 * u, y0 + 6.0 * u, stroke, ink);
+            stroke_line(pixels, width, height, x0 + 2.4 * u, y0 + 8.6 * u, x0 + 6.6 * u, y0 + 8.6 * u, stroke, ink);
+        }
+        IconKind::Cut => {
+            // 剪刀：握环在左、刀刃向右张开（开口朝右），握环内孔放大方便辨认。
+            let ring_r = 2.3 * u;
+            let ring_cx = cx - 4.4 * u;
+            let ring_dy = 2.9 * u;
+            stroke_line(
+                pixels,
+                width,
+                height,
+                cx - 1.6 * u,
+                cy + 2.6 * u,
+                cx + 7.4 * u,
+                cy - 3.6 * u,
+                stroke,
+                ink,
+            );
+            stroke_line(
+                pixels,
+                width,
+                height,
+                cx - 1.6 * u,
+                cy - 2.6 * u,
+                cx + 7.4 * u,
+                cy + 3.6 * u,
+                stroke,
+                ink,
+            );
+            outline_ellipse(
+                pixels,
+                width,
+                height,
+                ring_cx,
+                cy - ring_dy,
+                ring_r,
+                ring_r,
+                stroke * 0.95,
+                ink,
+            );
+            outline_ellipse(
+                pixels,
+                width,
+                height,
+                ring_cx,
+                cy + ring_dy,
+                ring_r,
+                ring_r,
+                stroke * 0.95,
+                ink,
+            );
+        }
+        IconKind::SelectAll => {
+            // 全选：四角选择框（只画角）+ 中间的小方框，表达"整块被框选"。
+            let arm = 3.6 * u;
+            let wx = 12.5 * u;
+            let wy = 12.5 * u;
+            let (l, t) = (x0, y0);
+            let (r, b) = (x0 + wx, y0 + wy);
+            for (px, py, sx, sy) in [
+                (l, t, 1.0, 1.0),
+                (r, t, -1.0, 1.0),
+                (l, b, 1.0, -1.0),
+                (r, b, -1.0, -1.0),
+            ] {
+                stroke_line(pixels, width, height, px, py, px + arm * sx, py, stroke, ink);
+                stroke_line(pixels, width, height, px, py, px, py + arm * sy, stroke, ink);
+            }
+            outline_round_rect(
+                pixels,
+                width,
+                height,
+                (cx - 2.6 * u, cy - 2.6 * u, 5.2 * u, 5.2 * u),
+                0.8 * u,
+                stroke * 0.95,
+                ink,
+            );
+        }
+        IconKind::Save => {
+            outline_round_rect(pixels, width, height, (x0, y0, 12.0 * u, 12.0 * u), 1.5 * u, stroke, ink);
+            outline_round_rect(
+                pixels,
+                width,
+                height,
+                (x0 + 3.0 * u, y0 + 6.5 * u, 6.0 * u, 5.5 * u),
+                0.8 * u,
+                stroke,
+                ink,
+            );
+            stroke_line(pixels, width, height, x0 + 4.0 * u, y0, x0 + 4.0 * u, y0 + 3.0 * u, stroke, ink);
+            stroke_line(pixels, width, height, x0 + 8.0 * u, y0, x0 + 8.0 * u, y0 + 3.0 * u, stroke, ink);
+        }
+        IconKind::Find => {
+            outline_ellipse(
+                pixels,
+                width,
+                height,
+                cx - 1.5 * u,
+                cy - 1.5 * u,
+                4.2 * u,
+                4.2 * u,
+                stroke,
+                ink,
+            );
+            stroke_line(pixels, width, height, cx + 1.6 * u, cy + 1.6 * u, cx + 5.6 * u, cy + 5.6 * u, stroke, ink);
+        }
+        IconKind::Undo | IconKind::Redo => {
+            let left = matches!(kind, IconKind::Undo);
+            let (tip, tail) = if left {
+                (x0 + 1.0 * u, x0 + 11.0 * u)
+            } else {
+                (x0 + 11.0 * u, x0 + 1.0 * u)
+            };
+            let y = cy;
+            stroke_line(pixels, width, height, tip, y, tail, y, stroke, ink);
+            let inward = if left { 3.6 * u } else { -3.6 * u };
+            stroke_line(pixels, width, height, tip, y, tip + inward, y - 3.4 * u, stroke, ink);
+            stroke_line(pixels, width, height, tip, y, tip + inward, y + 3.4 * u, stroke, ink);
+        }
+        IconKind::Pin => {
+            stroke_line(pixels, width, height, cx, y0 + 5.0 * u, cx, y0 + 12.5 * u, stroke, ink);
+            outline_round_rect(
+                pixels,
+                width,
+                height,
+                (cx - 4.2 * u, y0, 8.4 * u, 5.0 * u),
+                1.4 * u,
+                stroke,
+                ink,
+            );
+        }
+        IconKind::PinTop => {
+            outline_round_rect(
+                pixels,
+                width,
+                height,
+                (x0, y0 + 4.0 * u, 12.0 * u, 8.0 * u),
+                1.4 * u,
+                stroke,
+                ink,
+            );
+            stroke_line(pixels, width, height, cx, y0 + 9.0 * u, cx, y0 + 1.5 * u, stroke, ink);
+            stroke_line(pixels, width, height, cx, y0 + 1.5 * u, cx - 2.4 * u, y0 + 4.0 * u, stroke, ink);
+            stroke_line(pixels, width, height, cx, y0 + 1.5 * u, cx + 2.4 * u, y0 + 4.0 * u, stroke, ink);
+        }
+        IconKind::CloseAll => {
+            stroke_line(pixels, width, height, x0, y0, x0 + 10.0 * u, y0 + 10.0 * u, stroke, ink);
+            stroke_line(pixels, width, height, x0 + 10.0 * u, y0, x0, y0 + 10.0 * u, stroke, ink);
+        }
+        IconKind::Eye => {
+            outline_ellipse(pixels, width, height, cx, cy, 6.4 * u, 3.9 * u, stroke, ink);
+            // 瞳孔也只用描边，保持"线型图标不填充"。
+            outline_ellipse(pixels, width, height, cx, cy, 1.7 * u, 1.7 * u, stroke * 0.9, ink);
+        }
+        IconKind::Pointer => {
+            stroke_line(pixels, width, height, cx - 3.2 * u, cy - 6.0 * u, cx + 4.2 * u, cy - 0.6 * u, stroke, ink);
+            stroke_line(pixels, width, height, cx + 4.2 * u, cy - 0.6 * u, cx + 0.6 * u, cy + 0.2 * u, stroke, ink);
+            stroke_line(pixels, width, height, cx + 0.6 * u, cy + 0.2 * u, cx + 2.4 * u, cy + 6.2 * u, stroke, ink);
+            stroke_line(pixels, width, height, cx + 2.4 * u, cy + 6.2 * u, cx - 0.6 * u, cy + 2.4 * u, stroke, ink);
+            stroke_line(pixels, width, height, cx - 0.6 * u, cy + 2.4 * u, cx - 3.2 * u, cy - 6.0 * u, stroke, ink);
+        }
+        IconKind::Window => {
+            outline_round_rect(pixels, width, height, (x0, y0, 12.0 * u, 12.0 * u), 1.6 * u, stroke, ink);
+            stroke_line(pixels, width, height, x0 + 0.6 * u, y0 + 3.8 * u, x0 + 11.4 * u, y0 + 3.8 * u, stroke, ink);
+        }
+        IconKind::Clipboard => {
+            outline_round_rect(
+                pixels,
+                width,
+                height,
+                (x0, y0 + 1.5 * u, 10.5 * u, 11.5 * u),
+                1.5 * u,
+                stroke,
+                ink,
+            );
+            outline_round_rect(
+                pixels,
+                width,
+                height,
+                (x0 + 2.6 * u, y0, 5.3 * u, 3.0 * u),
+                1.0 * u,
+                stroke,
+                ink,
+            );
+            for row in 0..3 {
+                let y = y0 + (5.4 + row as f32 * 2.6) * u;
+                let end = if row == 2 { 6.4 } else { 8.2 };
+                stroke_line(pixels, width, height, x0 + 2.6 * u, y, x0 + end * u, y, stroke, ink);
+            }
+        }
+        IconKind::Camera => {
+            outline_round_rect(
+                pixels,
+                width,
+                height,
+                (x0, y0 + 2.0 * u, 13.0 * u, 8.5 * u),
+                1.6 * u,
+                stroke,
+                ink,
+            );
+            outline_ellipse(pixels, width, height, cx, y0 + 6.2 * u, 2.8 * u, 2.8 * u, stroke, ink);
+            stroke_line(pixels, width, height, x0 + 4.2 * u, y0 + 2.0 * u, x0 + 5.4 * u, y0, stroke, ink);
         }
     }
 }
@@ -1623,6 +1957,44 @@ enum IconKind {
     Keyboard,
     Copy,
     Paste,
+    Cut,
+    SelectAll,
+    Save,
+    Find,
+    Undo,
+    Redo,
+    Pin,
+    PinTop,
+    CloseAll,
+    Eye,
+    Pointer,
+    Window,
+    Clipboard,
+    Camera,
+}
+
+/// 图标字符串 → 种类（前端/后端约定同一套名字）。
+fn icon_kind_from_name(name: &str) -> Option<IconKind> {
+    Some(match name {
+        "keyboard" => IconKind::Keyboard,
+        "copy" => IconKind::Copy,
+        "paste" => IconKind::Paste,
+        "cut" => IconKind::Cut,
+        "select_all" => IconKind::SelectAll,
+        "save" => IconKind::Save,
+        "find" => IconKind::Find,
+        "undo" => IconKind::Undo,
+        "redo" => IconKind::Redo,
+        "pin" => IconKind::Pin,
+        "pin_top" => IconKind::PinTop,
+        "close_all" => IconKind::CloseAll,
+        "eye" => IconKind::Eye,
+        "pointer" => IconKind::Pointer,
+        "window" => IconKind::Window,
+        "clipboard" => IconKind::Clipboard,
+        "camera" => IconKind::Camera,
+        _ => return None,
+    })
 }
 
 fn icon_kind(keys: &str) -> IconKind {
@@ -1634,8 +2006,17 @@ fn icon_kind(keys: &str) -> IconKind {
         .collect::<String>()
         .to_ascii_lowercase();
     match chord.as_str() {
-        "ctrl+c" | "ctrl+x" | "ctrl+a" => IconKind::Copy,
+        "ctrl+c" => IconKind::Copy,
+        "ctrl+x" => IconKind::Cut,
+        "ctrl+a" => IconKind::SelectAll,
         "ctrl+v" => IconKind::Paste,
+        "ctrl+s" => IconKind::Save,
+        "ctrl+f" | "ctrl+g" | "ctrl+h" => IconKind::Find,
+        "ctrl+z" | "ctrl+backspace" => IconKind::Undo,
+        "ctrl+y" | "ctrl+shift+z" => IconKind::Redo,
+        "ctrl+w" | "alt+f4" => IconKind::CloseAll,
+        "ctrl+n" | "ctrl+t" => IconKind::Window,
+        "printscreen" | "alt+printscreen" => IconKind::Camera,
         _ => IconKind::Keyboard,
     }
 }
@@ -1708,9 +2089,14 @@ mod tests {
         for round in 0..2 {
             show(NativeTipPayload {
                 title: "关闭所有贴图窗口".to_owned(),
-                keys: Some("Win+Ctrl+Alt+Shift+PageUp".to_owned()),
+                keys: Some(
+                    std::env::var("NATIVE_TIP_KEYS")
+                        .unwrap_or_else(|_| "Win+Ctrl+Alt+Shift+PageUp".to_owned()),
+                ),
                 count: 3,
                 // 冒烟测试默认深色；NATIVE_TIP_THEME=light 时渲染浅色，方便两种主题都核对一遍。
+                // NATIVE_TIP_ICON 可强制图标种类、NATIVE_TIP_KEYS 可替换快捷键文本，用来逐个人工核对图标。
+                icon: std::env::var("NATIVE_TIP_ICON").ok(),
                 theme: std::env::var("NATIVE_TIP_THEME").unwrap_or_else(|_| "dark".to_owned()),
                 blur_radius: None,
                 tint_alpha: None,
@@ -1719,7 +2105,6 @@ mod tests {
                 persistent: None,
                 duration_ms: None,
                 preview: None,
-                icon: None,
                 chip_bg: None,
                 chip_border: None,
                 chip_text: None,

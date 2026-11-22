@@ -52,7 +52,8 @@
 # 快捷键提示浮窗（原生实现）
 
 - 「快捷键提示」的浮窗**已由原生实现接管**：`src-tauri/src/native_tip.rs` 用纯 Win32 分层窗口 + GDI 自绘，独立线程消息循环；原 WebView 浮窗（`notification.tsx` / `notification.html`）已删除。工具 id 仍是 `shortcut_tip`，预设、自定义提示、排序、启停状态全部沿用，无需迁移。
-- 显示链路：`shortcut_tip` 的 worker 收到 `Command::Show` 后只维护「同内容累加 ×N」与可见窗口，然后调用 `native_tip::show`；主题、模糊、不透明度、动画、停留时长、位置来自 `shortcut_tip` 设置里的 `appearance`（`shortcut_tip_set_appearance` 命令与快照一起下发）。
+- 显示链路：`shortcut_tip` 的 worker 收到 `Command::Show` 后只维护「同内容累加 ×N」与可见窗口，然后调用 `native_tip::show`；主题、模糊、不透明度、动画、停留时长、位置、**键帽配色（浅/暗各一套底色/描边/文字，`#RRGGBB`）**来自 `shortcut_tip` 设置里的 `appearance`（`shortcut_tip_set_appearance` 命令与快照一起下发，配置了实色就按 1.0 不透明度绘制）。
+- 外观设置入口：「快捷键提示」页右上「设置」按钮 → 标准弹窗（`createPortal` + 整窗模糊遮罩 + 进退场动画），底栏左侧「恢复默认配置」（二次确认后整体复位）。
 - 既定设计口径：**窗口尺寸固定**（不提供缩放配置），内容按固定 1.20 比例自适应；亚克力为「显示那一刻抓屏快照 → 盒式模糊 → 主题色覆盖」；进入 200ms 缓入缓出、退出 300ms、图标/徽标弹动 230ms；停留时长可配 0.8–10s（默认 2s）。
 - 定位模式：X/Y 两个滑块（屏幕物理像素），进入后显示**常驻静态预览**（标题「示例提示」、键盘图标、不播任何动画），X/Y 实时移动、重置立即生效；期间后端全局压制普通弹出，退出即失效并收起。
 - 机制：显示/隐藏/预览走「最新意图 + 单调序号」状态机；`start()` 先 `paint()` 再 `ShowWindow`；预览态不启动动画定时器。

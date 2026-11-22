@@ -143,6 +143,8 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - **React 前端两条硬约束**：①`setState` 的 updater（`(current) => ...`）里**不能读合成事件**（`event.currentTarget.value/checked`）——React 延迟执行 updater，那时 `currentTarget` 已置空，会抛 `TypeError` 并让整棵树卸载成白屏；必须先在事件回调里取值。②`useEffect` 的 cleanup **不能「无条件注册 + 在里面读 ref 判断状态」**——状态由 false→true 时会先执行上一次 cleanup，而 ref 已是新值，清理动作会立刻发生（本项目表现为「刚进入定位态就把刚弹出的窗口收掉」）；正确写法是 `if (!state) return;` 只在状态成立时注册 cleanup。
 - **前端异常要能看见**：主入口 `src/main.tsx` 有错误边界（页面出错显示「页面出错了」而不是白屏），并把 `window.onerror`/`unhandledrejection`/渲染异常写入 `<存储目录>/logs/frontend.log`（命令 `frontend_error_log`）。排查白屏优先读这个文件。
 
+- **截图覆盖层的重绘口径（踩过两次）**：① 增量重绘的「脏区」必须覆盖**上一帧实际画过的范围**，不能只记"按当前状态算出来的框"——否则强制整屏重绘那一帧多画的部分没人擦，会留下块状残留；② 拖拽/移动期间不要拿"预选矩形"当亮块（预选可能是全屏），亮块只能是当前拖拽框/选区；③ **同一帧不要分两次呈现到屏幕**：先呈现辅助线带、再呈现内容区，中间态会表现为辅助线闪烁；要么逐块"合成+呈现"一次到位（当前实现），要么先全部合成进后备缓冲、帧末统一呈现（改动前需先抽象「内容区/亮区」，否则会擦出黑线）。
+
 ## 分支、提交与发布
 
 - 主分支 `master`，远程 `origin`（https://github.com/THE2580/LightweightToolset.git）。当前为单人开发，提交直接落在 `master`；是否引入功能分支/PR 待确认。

@@ -129,7 +129,11 @@ struct InputListener {
 }
 
 enum Command {
-    Show { title: String, keys: Option<String> },
+    Show {
+        title: String,
+        keys: Option<String>,
+        icon: Option<String>,
+    },
     Reset,
 }
 
@@ -149,6 +153,22 @@ const APP_HOTKEY_PRESETS: &[(&str, &str)] = &[
     ("pin_toggle_visible", "隐藏/显示所有贴图窗口"),
     ("pin_passthrough", "鼠标穿透"),
 ];
+
+/// 软件级快捷键 → 提示浮窗图标名（与 `native_tip` 的图标集合对应）。
+fn icon_for_hotkey(hotkey_id: &str) -> Option<&'static str> {
+    Some(match hotkey_id {
+        "main_window" => "window",
+        "clipboard" => "clipboard",
+        "window_pinner" => "pin_top",
+        "screenshot" => "camera",
+        "screenshot_pin" => "pin",
+        "pin_restore" => "undo",
+        "pin_close_all" => "close_all",
+        "pin_toggle_visible" => "eye",
+        "pin_passthrough" => "pointer",
+        _ => return None,
+    })
+}
 
 /// 绑定设置类快捷键归属的工具；`None` 表示软件级入口（呼出主窗口），始终可用。
 /// 软件级快捷键归属的工具；`None` 表示软件级入口（呼出主窗口），始终可用。
@@ -530,6 +550,7 @@ pub fn notify_app_hotkey(hotkey_id: &str) {
         Some(keys),
         true,
         Some(target.id),
+        icon_for_hotkey(hotkey_id).map(str::to_owned),
     );
 }
 
@@ -635,7 +656,7 @@ pub fn notify_text(title: &str, origin: Origin) {
     if title.is_empty() {
         return;
     }
-    report(format!("text:{title}"), origin, title.to_owned(), None, false, None);
+    report(format!("text:{title}"), origin, title.to_owned(), None, false, None, None);
 }
 
 /// 进入录制：钩子接管并吞掉按键，避免系统或应用热键把按键吃掉/触发。
@@ -673,7 +694,7 @@ pub fn notify_shortcut(keys: &str, origin: Origin) {
     let Some((id, label, tip_keys, preset)) = lookup(&chord) else {
         return;
     };
-    report(chord, origin, label, Some(tip_keys), preset, Some(id));
+    report(chord, origin, label, Some(tip_keys), preset, Some(id), None);
 }
 
 fn lookup(chord: &str) -> Option<(String, String, String, bool)> {
@@ -718,6 +739,7 @@ fn report(
     keys: Option<String>,
     preset: bool,
     bump_id: Option<String>,
+    icon: Option<String>,
 ) {
     if !notifications_enabled() {
         return;
@@ -729,7 +751,7 @@ fn report(
         bump_triggered(&id);
     }
     let _ = preset;
-    send(Command::Show { title, keys });
+    send(Command::Show { title, keys, icon });
 }
 
 fn claim_report(key: &str, origin: Origin) -> bool {
@@ -786,7 +808,7 @@ fn start_worker() {
                         count = 0;
                         visible_until = None;
                     }
-                    Command::Show { title, keys } => {
+                    Command::Show { title, keys, icon } => {
                         if !notifications_enabled() {
                             continue;
                         }
@@ -819,7 +841,7 @@ fn start_worker() {
                             persistent: None,
                             duration_ms: Some(appearance.duration_ms),
                             preview: None,
-                            icon: None,
+                            icon: icon.clone(),
                             chip_bg: color_to_u32(&(if theme == "dark" {
                                 &appearance.dark_chip_bg
                             } else {

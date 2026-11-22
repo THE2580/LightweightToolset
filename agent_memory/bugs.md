@@ -41,6 +41,8 @@
 
 # 已确认经验
 
+- 2026-11-22（提示浮窗线性图标"糊成一坨/有填充感"）：三个原因叠加。① `outline_ellipse` 的环覆盖率写成 `(1-dist)*rx/thickness`，椭圆内部也被算成不透明 → 放大镜/眼睛/镜头全是实心块；必须用 `abs(1-dist)` 才是"只画环"。② 图标胶囊那层圆角底色（accent + `icon_bg_alpha`）本身就是"填充感"来源，线性图标要去掉底座只留线条。③ 尺寸口径：`unit = size/24` 时笔画 `2*unit` 相对 13u 的字形太粗，小尺寸下小图形会糊成块；改为 `unit = size/19`、笔画 `1.25*unit`，图形放大且线条比例正常。调试手段：冒烟测试支持 `NATIVE_TIP_ICON` / `NATIVE_TIP_KEYS` / `NATIVE_TIP_DUMP`，可逐个导出图标帧拼对照图。
+
 - 2026-11-22（截图选区偶发"漏压暗一块"）：**根因在脏区记账与"亮块回退"**。`selecting_rect()` 在拖拽起步帧（`current_rect()` 为 0 大小）会**回退到预选矩形**，而预选可能仍是全屏；此帧又正好触发"强制整屏重绘"（`painted_once=false`），于是整屏被画成亮块（未压暗）。下一帧的脏区只按 `union(last_frame, frame)` 计算，`last_frame` 记的是小框而非实际画过的整屏，多画的亮区再没人擦 → 残留一块跟着选区走。修法：① `dragging` 时 `selecting_rect()` 不再回退预选（只认当前拖拽框）；② 拖拽期间的强制整屏重绘，把 `last_frame` 记为整屏，让下一帧擦回压暗（只多一次整屏重绘，之后自动回落到小脏区）。排查靠的是临时埋点（debug 构建写 `%TEMP%\lwt-overlay-paint.log`，记录 `painted_once/dragging/bright/preselect/last/frame/base/rects`），定位后已删除。
 
 - 2026-11-22（贴图偶发"无焦点/穿透"）：根因是**全局状态泄漏**——`PASSTHROUGH` / `HIDDEN` 是进程级标志，「全部穿逐/隐藏」只翻转不复位，最后一张贴图销毁后仍保留，之后新建的贴图会继承（穿透=点不动，隐藏=看不见）。修法：① 最后一张贴图销毁（`PINS` 为空）时把两个标志复位；② 没有贴图时 `ToggleVisible` / `TogglePassthrough` 不再翻转标志。注意贴图平时**故意不抢焦点**（`SW_SHOWNOACTIVATE`），只有文字编辑才 `SetForegroundWindow`，所以"看起来没焦点"本身可能是设计行为，先排查全局标志再怀疑焦点。
