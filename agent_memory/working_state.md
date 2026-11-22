@@ -1,4 +1,5 @@
 # 当前现场
+- 2026-11-22 键帽与设置弹窗（本次提交）：键帽配色可配（浅/暗各一套底色/描边/文字，`#RRGGBB` 存 `appearance`）、字号 12.5→15px、内边距 7×2；设置弹窗重排（键帽配色三列紧凑色块、挪到参数之后）、底栏新增「恢复默认配置」+ 标准确认弹窗；`cargo test` 55 passed / 3 ignored、`npm run build` 通过。
 
 - 2026-11-21 收工：开发版进程已全部结束、Vite（1420）已关闭；`origin/master` = `67a2a54`，工作树只剩既有的 `window_pinner.rs` 换行差异与 `.codex/`（都不该提交）。
 - 明天开工：先 `npm run dev` 起 Vite（1420），再 `cargo build` 后把 `src-tauri/target/debug/lightweight-toolset.exe` 复制到 `%TEMP%\lwt-dev\` 并 `Start-Process -Verb RunAs` 启动；注意安装版仍在跑（pid 6112，`D:\轻量化工具集\`），不要结束它。

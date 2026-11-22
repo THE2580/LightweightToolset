@@ -63,6 +63,14 @@ pub struct ShortcutTipAppearance {
     /// `fade` / `slide_up` / `slide_down`
     pub animation: String,
     pub duration_ms: u32,
+    /// 键帽配色（`#RRGGBB`）：浅色主题一套。
+    pub light_chip_bg: String,
+    pub light_chip_border: String,
+    pub light_chip_text: String,
+    /// 键帽配色（`#RRGGBB`）：暗色主题一套。
+    pub dark_chip_bg: String,
+    pub dark_chip_border: String,
+    pub dark_chip_text: String,
     /// 屏幕物理像素；None = 主屏底部居中。
     pub position: Option<[i32; 2]>,
 }
@@ -77,6 +85,14 @@ impl Default for ShortcutTipAppearance {
             dark_tint: 0.78,
             animation: "fade".to_owned(),
             duration_ms: 2000,
+            // 默认值＝内置主题键帽的等效实色（浅色：淡蓝灰底 + 灰蓝描边 + 深蓝灰字）。
+            light_chip_bg: "#E3E6EF".to_owned(),
+            light_chip_border: "#A8B3C9".to_owned(),
+            light_chip_text: "#303E58".to_owned(),
+            // 暗色：中性灰底 + 浅灰描边 + 浅蓝灰字。
+            dark_chip_bg: "#404044".to_owned(),
+            dark_chip_border: "#757578".to_owned(),
+            dark_chip_text: "#D6E0F0".to_owned(),
             position: None,
         }
     }
@@ -360,6 +376,23 @@ fn save_store(path: &Path, store: &ShortcutTipStore) -> Result<(), String> {
     fs::write(path, text).map_err(|error| format!("写入快捷键提示失败: {error}"))
 }
 
+/// 校验并规范化 `#RRGGBB`；非法值落回暗色默认（避免把无效颜色塞进绘制层）。
+fn normalize_color(value: String) -> String {
+    let trimmed = value.trim();
+    let hex = trimmed.strip_prefix('#').unwrap_or(trimmed);
+    if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        format!("#{}", hex.to_ascii_uppercase())
+    } else {
+        "#808080".to_owned()
+    }
+}
+
+/// `#RRGGBB` → 0xRRGGBB。
+fn color_to_u32(value: &str) -> Option<u32> {
+    let hex = value.trim().strip_prefix('#').unwrap_or(value.trim());
+    u32::from_str_radix(hex, 16).ok()
+}
+
 /// 读取当前外观（不持锁跨调用）。
 pub fn appearance() -> ShortcutTipAppearance {
     store_handle()
@@ -385,6 +418,12 @@ pub fn set_appearance(input: ShortcutTipAppearance) -> Result<ShortcutTipSnapsho
                 _ => "fade".to_owned(),
             },
             duration_ms: input.duration_ms.clamp(800, 10_000),
+            light_chip_bg: normalize_color(input.light_chip_bg),
+            light_chip_border: normalize_color(input.light_chip_border),
+            light_chip_text: normalize_color(input.light_chip_text),
+            dark_chip_bg: normalize_color(input.dark_chip_bg),
+            dark_chip_border: normalize_color(input.dark_chip_border),
+            dark_chip_text: normalize_color(input.dark_chip_text),
             position: input.position,
         };
         let _ = save_store(&handle.path, &handle.store);
@@ -781,6 +820,21 @@ fn start_worker() {
                             duration_ms: Some(appearance.duration_ms),
                             preview: None,
                             icon: None,
+                            chip_bg: color_to_u32(&(if theme == "dark" {
+                                &appearance.dark_chip_bg
+                            } else {
+                                &appearance.light_chip_bg
+                            })),
+                            chip_border: color_to_u32(&(if theme == "dark" {
+                                &appearance.dark_chip_border
+                            } else {
+                                &appearance.light_chip_border
+                            })),
+                            chip_text: color_to_u32(&(if theme == "dark" {
+                                &appearance.dark_chip_text
+                            } else {
+                                &appearance.light_chip_text
+                            })),
                         });
                     }
                 }

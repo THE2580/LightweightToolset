@@ -87,6 +87,13 @@ pub struct NativeTipPayload {
     /// 停留时长（毫秒），缺省 2000，夹在 800–10000。
     #[serde(default)]
     pub duration_ms: Option<u32>,
+    /// 键帽配色覆盖（0xRRGGBB）：底色 / 描边 / 文字；不给就用主题内置配色。
+    #[serde(default)]
+    pub chip_bg: Option<u32>,
+    #[serde(default)]
+    pub chip_border: Option<u32>,
+    #[serde(default)]
+    pub chip_text: Option<u32>,
     /// 强制图标：`keyboard` / `copy` / `paste`；不给就按快捷键内容推断。
     #[serde(default)]
     pub icon: Option<String>,
@@ -662,6 +669,15 @@ struct Palette {
     badge: (u8, u8, u8),
 }
 
+/// 0xRRGGBB → (r, g, b)。
+fn rgb_from_u32(value: u32) -> (u8, u8, u8) {
+    (
+        ((value >> 16) & 0xFF) as u8,
+        ((value >> 8) & 0xFF) as u8,
+        (value & 0xFF) as u8,
+    )
+}
+
 fn palette(theme: &str) -> Palette {
     if theme == "light" {
         Palette {
@@ -861,7 +877,7 @@ fn paint_tip(
         let gap = 8.0 * s;
 
         let title_font = make_font(14.5 * s, 600, "Microsoft YaHei UI");
-        let keys_font = make_font(12.5 * s, 500, "Consolas");
+        let keys_font = make_font(15.0 * s, 500, "Consolas");
         let badge_font = make_font(11.5 * s, 700, "Segoe UI");
 
         let title_wide = to_wide(&payload.title);
@@ -874,7 +890,7 @@ fn paint_tip(
         let badge_size = measure(mem_dc, badge_font, &badge_wide);
 
         let chip_pad_x = (7.0 * s).round() as i32;
-        let chip_pad_y = (3.0 * s).round() as i32;
+        let chip_pad_y = (2.0 * s).round() as i32;
         let chip_w = keys_size
             .as_ref()
             .map(|size| size.cx + chip_pad_x * 2)
@@ -957,15 +973,25 @@ fn paint_tip(
                 chip_w as f32,
                 chip_h as f32,
             );
-            fill_round_rect(pixels, width, height, chip, 6.0 * s, pal.chip, pal.chip_alpha);
-            stroke_round_rect(pixels, width, height, chip, 6.0 * s, pal.chip_border, pal.chip_border_alpha);
+            // 键帽配色可配置：给了就用实色（用户自己选的色不该再被主题透明度稀释）。
+            let (chip_bg, chip_bg_alpha) = match payload.chip_bg.map(rgb_from_u32) {
+                Some(color) => (color, 1.0),
+                None => (pal.chip, pal.chip_alpha),
+            };
+            let (chip_border, chip_border_alpha) = match payload.chip_border.map(rgb_from_u32) {
+                Some(color) => (color, 1.0),
+                None => (pal.chip_border, pal.chip_border_alpha),
+            };
+            let chip_text = payload.chip_text.map(rgb_from_u32).unwrap_or(pal.muted);
+            fill_round_rect(pixels, width, height, chip, 7.0 * s, chip_bg, chip_bg_alpha);
+            stroke_round_rect(pixels, width, height, chip, 7.0 * s, chip_border, chip_border_alpha);
             draw_text_ink_centered(
                 mem_dc,
                 keys_font,
                 keys,
                 (cursor + chip_pad_x as f32).round() as i32,
                 center_y.round() as i32,
-                pal.muted,
+                chip_text,
             );
             cursor += chip_w as f32 + gap;
         }
@@ -1694,6 +1720,9 @@ mod tests {
                 duration_ms: None,
                 preview: None,
                 icon: None,
+                chip_bg: None,
+                chip_border: None,
+                chip_text: None,
             })
             .expect("show 应成功");
             std::thread::sleep(Duration::from_millis(500));

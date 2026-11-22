@@ -1147,6 +1147,8 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .shortcut-tip-appearance-dialog .native-tip-params + .native-tip-params { border-top: 1px solid var(--soft-border); }
 .shortcut-tip-appearance-dialog .native-tip-stack + .native-tip-params { border-top: 1px solid var(--soft-border); padding-top: 10px; }
 .native-tip-range { width: 100%; accent-color: var(--primary); cursor: pointer; }
+.native-tip-chip-colors { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 20px; }
+.native-tip-color { width: 100%; height: 22px; padding: 0 2px; border: 1px solid var(--field-border); border-radius: 6px; background: var(--field-bg); cursor: pointer; }
 .native-tip-range:disabled { cursor: not-allowed; opacity: 0.45; }
 .shortcut-tip-appearance-dialog .native-tip-field.is-disabled .native-tip-field-label { opacity: 0.55; }
 .shortcut-tip-appearance-dialog .native-tip-field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; }
@@ -1156,7 +1158,8 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .shortcut-tip-appearance-dialog .native-tip-field-row > .native-tip-field { text-align: left; }
 .shortcut-tip-appearance-dialog .native-tip-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .shortcut-tip-appearance-dialog .native-tip-slider input[type="range"] { max-width: none; }
-.shortcut-tip-appearance-dialog .update-dialog-actions { flex: 0 0 auto; padding: 10px 14px 13px; justify-content: flex-end; gap: 8px; display: flex; }
+.shortcut-tip-appearance-dialog .update-dialog-actions { flex: 0 0 auto; padding: 10px 14px 13px; justify-content: flex-end; gap: 8px; display: flex; align-items: center; }
+.shortcut-tip-appearance-actions .shortcut-tip-reset { margin-right: auto; }
 .shortcut-tip-dialog-body { display: flex; flex-direction: column; gap: 9px; padding: 13px 14px 3px; }
 .shortcut-tip-dialog-body .shortcut-tip-capture { width: 100%; height: 42px; padding: 0 12px; font-size: 13px; }
 .shortcut-tip-dialog-body .shortcut-tip-label-input { flex: 0 0 auto; width: 100%; height: 42px; padding: 0 12px; border-radius: 8px; font-size: 13px; }

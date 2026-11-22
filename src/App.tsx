@@ -122,6 +122,12 @@ type ShortcutTipAppearance = {
   darkTint: number;
   animation: "fade" | "slide_up" | "slide_down";
   durationMs: number;
+  lightChipBg: string;
+  lightChipBorder: string;
+  lightChipText: string;
+  darkChipBg: string;
+  darkChipBorder: string;
+  darkChipText: string;
   position: [number, number] | null;
 };
 
@@ -1403,6 +1409,8 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [appearanceClosing, setAppearanceClosing] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [resetConfirmClosing, setResetConfirmClosing] = useState(false);
   const [draft, setDraft] = useState<{ id?: string; keys: string; label: string; preset: boolean } | null>(null);
   const [tab, setTab] = useState<"preset" | "custom">("preset");
   const [sortRule, setSortRule] = useState<ShortcutTipSortRule>(() => {
@@ -1449,6 +1457,36 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
     }
   }
 
+  function openResetConfirm() {
+    setResetConfirmClosing(false);
+    setResetConfirmOpen(true);
+  }
+
+  function closeResetConfirm() {
+    if (resetConfirmClosing) {
+      return;
+    }
+    setResetConfirmClosing(true);
+    window.setTimeout(() => {
+      setResetConfirmOpen(false);
+      setResetConfirmClosing(false);
+    }, 170);
+  }
+
+  async function resetAppearance() {
+    closeResetConfirm();
+    try {
+      setSnapshot(
+        await invoke<ShortcutTipSnapshot>("shortcut_tip_set_appearance", {
+          appearance: SHORTCUT_TIP_APPEARANCE_DEFAULTS,
+        }),
+      );
+      pushToast("提示外观已恢复默认");
+    } catch (error) {
+      pushToast(String(error));
+    }
+  }
+
   /// 预览一条示例提示：图标固定键盘，标题固定「示例提示」。
   async function previewAppearance() {
     if (!snapshot) return;
@@ -1473,6 +1511,11 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
           position: current.position,
           durationMs: current.durationMs,
           icon: "keyboard",
+          chipBg: hexToNumber(theme === "dark" ? current.darkChipBg : current.lightChipBg),
+          chipBorder: hexToNumber(
+            theme === "dark" ? current.darkChipBorder : current.lightChipBorder,
+          ),
+          chipText: hexToNumber(theme === "dark" ? current.darkChipText : current.lightChipText),
         },
       });
     } catch (error) {
@@ -1629,7 +1672,15 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
                     onChange={applyAppearance}
                   />
                 </div>
-                <footer className="update-dialog-actions">
+                <footer className="update-dialog-actions shortcut-tip-appearance-actions">
+                  <button
+                    className="secondary-action shortcut-tip-reset"
+                    disabled={previewBusy}
+                    onClick={openResetConfirm}
+                    type="button"
+                  >
+                    恢复默认配置
+                  </button>
                   <button
                     className="secondary-action"
                     disabled={previewBusy}
@@ -1639,6 +1690,39 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
                     预览提示
                   </button>
                   <button className="primary-action" onClick={closeAppearance} type="button">完成</button>
+                </footer>
+              </section>
+            </div>,
+            document.body,
+          )
+        : null}
+
+      {resetConfirmOpen
+        ? createPortal(
+            <div
+              className={`dialog-backdrop ${resetConfirmClosing ? "closing" : ""}`}
+              onMouseDown={closeResetConfirm}
+              role="presentation"
+            >
+              <section
+                aria-modal="true"
+                className={`update-dialog shortcut-tip-dialog ${resetConfirmClosing ? "closing" : ""}`}
+                onMouseDown={(event) => event.stopPropagation()}
+                role="dialog"
+              >
+                <header className="update-dialog-header">
+                  <div className="update-dialog-icon"><Settings size={16} /></div>
+                  <div>
+                    <h2>恢复默认配置</h2>
+                    <p>主题、动画、停留时间、磨砂与键帽配色、位置都会回到内置默认值。</p>
+                  </div>
+                  <button aria-label="关闭" className="dialog-close-button" onClick={closeResetConfirm} type="button">
+                    <X size={18} />
+                  </button>
+                </header>
+                <footer className="update-dialog-actions">
+                  <button className="secondary-action" onClick={closeResetConfirm} type="button">取消</button>
+                  <button className="primary-action" onClick={() => void resetAppearance()} type="button">恢复默认</button>
                 </footer>
               </section>
             </div>,
@@ -1912,6 +1996,31 @@ type NativeTipMetrics = {
   defaultY: number;
 };
 
+/// 提示外观的内置默认值（与后端 `ShortcutTipAppearance::default()` 保持一致）。
+const SHORTCUT_TIP_APPEARANCE_DEFAULTS: ShortcutTipAppearance = {
+  mode: "auto",
+  animation: "fade",
+  durationMs: 2000,
+  lightBlur: 4,
+  lightTint: 0.92,
+  darkBlur: 4,
+  darkTint: 0.78,
+  lightChipBg: "#E3E6EF",
+  lightChipBorder: "#A8B3C9",
+  lightChipText: "#303E58",
+  darkChipBg: "#404044",
+  darkChipBorder: "#757578",
+  darkChipText: "#D6E0F0",
+  position: null,
+};
+
+/// `#RRGGBB` → 0xRRGGBB（原生浮窗的键帽配色参数）。
+function hexToNumber(value: string) {
+  const hex = value.replace("#", "").trim();
+  const parsed = Number.parseInt(hex, 16);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 /// 快捷键提示的外观设置：提示浮窗由原生实现（`native_tip`）绘制，参数存后端设置。
 function ShortcutTipAppearancePanel({
   appearance,
@@ -1993,6 +2102,9 @@ function ShortcutTipAppearancePanel({
       persistent,
       preview: persistent,
       durationMs: draft.durationMs,
+      chipBg: hexToNumber(theme === "dark" ? draft.darkChipBg : draft.lightChipBg),
+      chipBorder: hexToNumber(theme === "dark" ? draft.darkChipBorder : draft.lightChipBorder),
+      chipText: hexToNumber(theme === "dark" ? draft.darkChipText : draft.lightChipText),
     };
   }
 
@@ -2132,6 +2244,26 @@ function ShortcutTipAppearancePanel({
               value={activeTheme === "light" ? draft.lightTint : draft.darkTint}
             />
           </div>
+        </div>
+        <div className="native-tip-chip-colors">
+          {([
+            ["键帽底色", activeTheme === "light" ? "lightChipBg" : "darkChipBg"],
+            ["键帽描边", activeTheme === "light" ? "lightChipBorder" : "darkChipBorder"],
+            ["键帽文字", activeTheme === "light" ? "lightChipText" : "darkChipText"],
+          ] as const).map(([label, key]) => (
+            <div className="native-tip-field" key={key}>
+              <span className="native-tip-field-label">{label}</span>
+              <input
+                className="native-tip-color"
+                onChange={(event) => {
+                  const value = event.currentTarget.value.toUpperCase();
+                  patch({ [key]: value } as Partial<ShortcutTipAppearance>);
+                }}
+                type="color"
+                value={draft[key]}
+              />
+            </div>
+          ))}
         </div>
       </div>
 
