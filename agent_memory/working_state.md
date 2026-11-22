@@ -1,3 +1,8 @@
+# 当前现场
+
+- 2026-11-21 收工：开发版进程已全部结束、Vite（1420）已关闭；`origin/master` = `67a2a54`，工作树只剩既有的 `window_pinner.rs` 换行差异与 `.codex/`（都不该提交）。
+- 明天开工：先 `npm run dev` 起 Vite（1420），再 `cargo build` 后把 `src-tauri/target/debug/lightweight-toolset.exe` 复制到 `%TEMP%\lwt-dev\` 并 `Start-Process -Verb RunAs` 启动；注意安装版仍在跑（pid 6112，`D:\轻量化工具集\`），不要结束它。
+
 # Scope
 
 - 工具集已含七个工具：**截图与贴图**（`v0.7.0` 首发，`v0.7.1` 跟随发版）、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。
@@ -53,6 +58,7 @@
 
 # Verification
 
+- 2026-11-21 已提交并推送：`67a2a54 refactor: render shortcut tip popup with native window`（含入正、设置弹窗、文档）；`origin/master` 已同步，未打 tag、未发版，版本号仍 `0.7.2`。
 - 2026-11-21 外观弹窗排版定稿：分隔线分区、两列网格撑满（修 `align-items: center` 导致内容居中）、固定高度、编辑态 X/Y 两列、只显示当前生效主题的模糊/不透明度；开发版已重启。
 - 2026-11-21 外观弹窗交互调整：位置行放「编辑/重置」（重置仅编辑期间显示）、预览提示移到底栏、预览固定键盘图标（payload 新增 `icon` 覆盖）、滑块改本地草稿 + 180ms 去抖提交（拖动跟手）并右对齐；`cargo test` 54 passed / 3 ignored、`npm run build` 通过，开发版已重启（pid 26296）。
 - 2026-11-21 外观弹窗内容改为纵向分行（主题/动画各占一行、按钮单独一行、分段控件 `width: max-content` 不再压缩），弹窗图标改用设置图标；`npm run build` 通过，开发版已重启（pid 16256）。

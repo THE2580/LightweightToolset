@@ -219,6 +219,15 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// 归属某工具的软件级快捷键 id（复用快捷键提示的归属表，避免两份映射漂移）。
+    fn app_hotkeys_owned_by(&self, tool_id: &str) -> Vec<&'static str> {
+        APP_HOTKEYS
+            .iter()
+            .filter(|hotkey| crate::shortcut_tip::hotkey_owner_tool(hotkey.id) == Some(tool_id))
+            .map(|hotkey| hotkey.id)
+            .collect()
+    }
+
     pub fn register_app_hotkeys(&self, app: &AppHandle) -> Result<(), String> {
         if self.shortcuts_suspended {
             return Ok(());
@@ -226,6 +235,12 @@ impl ToolRegistry {
         // 单个快捷键被别的软件占用时不能让其余快捷键一起失效，逐条注册并记录失败项。
         let mut failures: Vec<String> = Vec::new();
         for hotkey in APP_HOTKEYS.iter() {
+            // 归属工具已停用：它的软件级快捷键也必须处于注销状态（工具生命周期完整性）。
+            if let Some(owner) = crate::shortcut_tip::hotkey_owner_tool(hotkey.id) {
+                if !self.is_enabled(owner) {
+                    continue;
+                }
+            }
             let shortcut = match self.shortcut_for(hotkey.id) {
                 Ok(Some(shortcut)) => shortcut,
                 Ok(None) => continue,
@@ -514,6 +529,9 @@ impl ToolRegistry {
     }
 
     fn hotkey_should_register(&self, hotkey_id: &str) -> bool {
+        if let Some(owner) = crate::shortcut_tip::hotkey_owner_tool(hotkey_id) {
+            return self.is_enabled(owner);
+        }
         APP_HOTKEYS.iter().any(|hotkey| hotkey.id == hotkey_id)
             || (self.is_enabled(hotkey_id) && self.supports_hotkey(hotkey_id))
     }
@@ -542,6 +560,28 @@ impl ToolRegistry {
             return Ok(());
         }
         log_tool_lifecycle(app, tool.id, "tool.lifecycle.start_requested");
+        if !self.shortcuts_suspended {
+            // 归属该工具的软件级快捷键随工具启用一起注册（与停用时的注销成对）。
+            let mut failures: Vec<String> = Vec::new();
+            for hotkey_id in self.app_hotkeys_owned_by(tool.id) {
+                match self.shortcut_for(hotkey_id) {
+                    Ok(Some(shortcut)) => {
+                        if let Err(error) = app.global_shortcut().register(shortcut) {
+                            failures.push(format!("{hotkey_id}: {error}"));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => failures.push(format!("{hotkey_id}: {error}")),
+                }
+            }
+            if !failures.is_empty() {
+                log_tool_lifecycle(
+                    app,
+                    tool.id,
+                    format!("tool.hotkey.register_failed {}", failures.join("; ")),
+                );
+            }
+        }
         if !self.shortcuts_suspended && tool.default_hotkey.is_some() {
             if let Some(shortcut) = self.shortcut_for(tool.id)? {
                 app.global_shortcut()
@@ -582,6 +622,12 @@ impl ToolRegistry {
         log_tool_lifecycle(app, tool.id, "tool.lifecycle.stop_requested");
         if !self.shortcuts_suspended && tool.default_hotkey.is_some() {
             self.unregister_hotkey_if_registered(app, tool.id);
+        }
+        if !self.shortcuts_suspended {
+            // 工具生命周期结束：归属它的软件级快捷键一并注销，别继续占用系统按键。
+            for hotkey_id in self.app_hotkeys_owned_by(tool.id) {
+                self.unregister_hotkey_if_registered(app, hotkey_id);
+            }
         }
         window_service::close_tool_window(app, tool.id);
         if tool.id == "clipboard" {
@@ -862,6 +908,26 @@ fn normalize_hotkey_part(part: &str) -> String {
 mod tests {
     use super::{canonical_hotkey, format_hotkey_display, normalize_hotkey};
     use tauri_plugin_global_shortcut::Shortcut;
+
+    /// 工具停用必须把它名下的软件级快捷键一起注销：归属表是这条规则的唯一依据，
+    /// 这里锁住截图组 5 条的归属，避免以后新增快捷键漏登记（漏登记就会在工具停用后继续占键）。
+    #[test]
+    fn app_hotkeys_owner_table_covers_screenshot_group() {
+        let owner = |id: &str| crate::shortcut_tip::hotkey_owner_tool(id);
+        assert_eq!(owner("main_window"), None);
+        assert_eq!(owner("clipboard"), Some("clipboard"));
+        assert_eq!(owner("window_pinner"), Some("window_pinner"));
+        for id in [
+            "screenshot",
+            "screenshot_pin",
+            "pin_restore",
+            "pin_close_all",
+            "pin_toggle_visible",
+            "pin_passthrough",
+        ] {
+            assert_eq!(owner(id), Some("screenshot"), "{id} 必须归属 screenshot");
+        }
+    }
 
     #[test]
     fn formats_hotkey_for_display_with_titlecase_modifiers() {

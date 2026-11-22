@@ -135,7 +135,10 @@ const APP_HOTKEY_PRESETS: &[(&str, &str)] = &[
 ];
 
 /// 绑定设置类快捷键归属的工具；`None` 表示软件级入口（呼出主窗口），始终可用。
-fn hotkey_owner_tool(hotkey_id: &str) -> Option<&'static str> {
+/// 软件级快捷键归属的工具；`None` 表示软件级入口（呼出主窗口），始终可用。
+///
+/// 工具停用时要按这份归属表注销/启用它的软件级快捷键，所以对外暴露给 `tools`。
+pub(crate) fn hotkey_owner_tool(hotkey_id: &str) -> Option<&'static str> {
     match hotkey_id {
         "main_window" => None,
         "clipboard" => Some("clipboard"),

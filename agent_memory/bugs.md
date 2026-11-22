@@ -41,6 +41,8 @@
 
 # 已确认经验
 
+- 2026-11-22（已安装 v0.7.2 的兜底缺陷，用户已复现确认）：`v0.7.2` 热键回调末尾是 `if handled { ... } else { show_main_window(app) }`，任何"按下但未处理"的快捷键都会呼出主窗口。停用「截图」后，贴图组快捷键属于 **APP_HOTKEYS（软件级）**，注册不看工具启用状态，仍然进回调；而回调里贴图分支要求 `is_enabled("screenshot")` 才置 `handled`，于是全部落到兜底 → 弹主窗口。截图自身的工具级快捷键在停用时被注销，故只有它"正常"。**该兜底已在 master 的 `f81a99e` 改为只记 `hotkey.unmatched`**，因此开发版不复现，安装版仍带缺陷。残留两项待办：① 停用工具时注销其名下 APP_HOTKEYS（现仍占用全局键）；② 未执行时不要派发 `notify_app_hotkey`（工具停用仍弹提示窗）。
+
 - 2026-11-21（前端弹窗层级）：应用内弹窗必须 `createPortal(..., document.body)` + `.dialog-backdrop`（`position: fixed; inset: 0; z-index: 9999`、`backdrop-filter: blur(3px)`、`dialog-fade/dialog-pop` 进退场动画）。直接渲染在工具页 DOM 里时，遮罩只覆盖内容区、侧栏不被遮住、也没有淡入淡出——层级就不对。关闭要走 `closing` 状态 + 170ms 延迟卸载，才有退场动画。
 
 - 2026-11-21（分层窗口 / 显示顺序）：`UpdateLayeredWindow` 在窗口隐藏时也会更新内容，所以**必须先画再 `ShowWindow`**。先显示再画，用户会先看到上一次留在图层里的旧画面（本项目表现为"退出定位后第一次弹出闪一下示例"）。
