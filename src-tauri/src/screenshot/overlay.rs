@@ -293,10 +293,16 @@ impl OverlayState {
         Some((left, top, right - left, bottom - top))
     }
 
-    /// 选区阶段实际展示的区域：拖拽中的矩形优先，否则用预选矩形。
+    /// 选区阶段实际展示的区域：拖拽中的矩形优先，未拖拽时用预选矩形。
+    ///
+    /// 拖拽期间**绝不**回退到预选：预选可能还是全屏，回退会让「强制整屏重绘」那一帧
+    /// 把整屏画成亮块（未压暗），后续增量重绘又只擦自己的小脏区，于是留下一块亮区。
     fn selecting_rect(&self) -> Option<(i32, i32, i32, i32)> {
         if let Some(rect) = self.current_rect() {
             return Some(rect);
+        }
+        if self.dragging {
+            return None;
         }
         self.preselect.map(|sel| (sel.x, sel.y, sel.width, sel.height))
     }
@@ -1016,7 +1022,8 @@ fn paint(hdc: HDC) {
             SelectClipRgn(hdc, std::ptr::null_mut());
 
             let frame = state.frame_rect();
-            let base = if !state.painted_once {
+            let forced_full = !state.painted_once;
+            let base = if forced_full {
                 Some((0, 0, state.width, state.height))
             } else {
                 union_rect(state.last_frame, frame)
@@ -1048,7 +1055,13 @@ fn paint(hdc: HDC) {
 
             state.guide_bands = new_bands;
             state.painted_once = true;
-            state.last_frame = frame;
+            // 兜底：拖拽期间的整屏重绘实际画过整屏，记账也记整屏，
+            // 让下一帧一定把这次多画的区域擦回压暗（只多一整屏重绘，之后自动回落到小脏区）。
+            state.last_frame = if state.dragging && forced_full {
+                Some((0, 0, state.width, state.height))
+            } else {
+                frame
+            };
         }
     });
 }

@@ -41,6 +41,10 @@
 
 # 已确认经验
 
+- 2026-11-22（截图选区偶发"漏压暗一块"）：**根因在脏区记账与"亮块回退"**。`selecting_rect()` 在拖拽起步帧（`current_rect()` 为 0 大小）会**回退到预选矩形**，而预选可能仍是全屏；此帧又正好触发"强制整屏重绘"（`painted_once=false`），于是整屏被画成亮块（未压暗）。下一帧的脏区只按 `union(last_frame, frame)` 计算，`last_frame` 记的是小框而非实际画过的整屏，多画的亮区再没人擦 → 残留一块跟着选区走。修法：① `dragging` 时 `selecting_rect()` 不再回退预选（只认当前拖拽框）；② 拖拽期间的强制整屏重绘，把 `last_frame` 记为整屏，让下一帧擦回压暗（只多一次整屏重绘，之后自动回落到小脏区）。排查靠的是临时埋点（debug 构建写 `%TEMP%\lwt-overlay-paint.log`，记录 `painted_once/dragging/bright/preselect/last/frame/base/rects`），定位后已删除。
+
+- 2026-11-22（贴图偶发"无焦点/穿透"）：根因是**全局状态泄漏**——`PASSTHROUGH` / `HIDDEN` 是进程级标志，「全部穿逐/隐藏」只翻转不复位，最后一张贴图销毁后仍保留，之后新建的贴图会继承（穿透=点不动，隐藏=看不见）。修法：① 最后一张贴图销毁（`PINS` 为空）时把两个标志复位；② 没有贴图时 `ToggleVisible` / `TogglePassthrough` 不再翻转标志。注意贴图平时**故意不抢焦点**（`SW_SHOWNOACTIVATE`），只有文字编辑才 `SetForegroundWindow`，所以"看起来没焦点"本身可能是设计行为，先排查全局标志再怀疑焦点。
+
 - 2026-11-22（已安装 v0.7.2 的兜底缺陷，用户已复现确认）：`v0.7.2` 热键回调末尾是 `if handled { ... } else { show_main_window(app) }`，任何"按下但未处理"的快捷键都会呼出主窗口。停用「截图」后，贴图组快捷键属于 **APP_HOTKEYS（软件级）**，注册不看工具启用状态，仍然进回调；而回调里贴图分支要求 `is_enabled("screenshot")` 才置 `handled`，于是全部落到兜底 → 弹主窗口。截图自身的工具级快捷键在停用时被注销，故只有它"正常"。**该兜底已在 master 的 `f81a99e` 改为只记 `hotkey.unmatched`**，因此开发版不复现，安装版仍带缺陷。残留两项待办：① 停用工具时注销其名下 APP_HOTKEYS（现仍占用全局键）；② 未执行时不要派发 `notify_app_hotkey`（工具停用仍弹提示窗）。
 
 - 2026-11-21（前端弹窗层级）：应用内弹窗必须 `createPortal(..., document.body)` + `.dialog-backdrop`（`position: fixed; inset: 0; z-index: 9999`、`backdrop-filter: blur(3px)`、`dialog-fade/dialog-pop` 进退场动画）。直接渲染在工具页 DOM 里时，遮罩只覆盖内容区、侧栏不被遮住、也没有淡入淡出——层级就不对。关闭要走 `closing` 状态 + 170ms 延迟卸载，才有退场动画。

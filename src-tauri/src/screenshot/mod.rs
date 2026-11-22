@@ -15,8 +15,6 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
-/// 最近一次截图产出的图，没有覆盖层时按贴图快捷键用它。
-static LAST_SHOT: Mutex<Option<Arc<pin::PinImage>>> = Mutex::new(None);
 /// 覆盖层「贴图」按钮/快捷键的提示文本（工具栏悬停用）。
 static PIN_HOTKEY: Mutex<String> = Mutex::new(String::new());
 
@@ -246,11 +244,6 @@ fn run(app: &AppHandle) -> Result<String, String> {
         height: selection.height,
         top_down: outcome.top_down,
     });
-    // 记住这次截图，这样没有覆盖层时按贴图快捷键也能贴出来。
-    if let Ok(mut last) = LAST_SHOT.lock() {
-        *last = Some(Arc::clone(&image));
-    }
-
     if outcome.pin {
         // 先把窗口贴出来，历史落盘放到后台，避免写盘拖慢首次呈现。
         let rect = windows_sys::Win32::Foundation::RECT {
@@ -305,27 +298,18 @@ fn run(app: &AppHandle) -> Result<String, String> {
 
 /// 贴图快捷键：覆盖层打开时钉当前选区，否则钉最近一次截图。
 pub fn pin_from_hotkey(app: &AppHandle) {
+    // 贴图快捷键只在截图标注阶段等价于「贴图」按钮。
+    // 其它阶段一律无响应——不要退化成「恢复上次关闭的贴图」，那是另一个快捷键的功能。
     if overlay::request_pin() {
+        log(app, "screenshot.pin_annotation".to_owned());
         return;
     }
-    let image = LAST_SHOT.lock().ok().and_then(|last| last.clone());
-    let Some(image) = image else {
-        log(app, "screenshot.pin_skipped reason=no_shot".to_owned());
-        return;
-    };
-    let (options, history, dir) = pin_config(app);
-    let rect = windows_sys::Win32::Foundation::RECT {
-        left: 120,
-        top: 120,
-        right: 120 + image.width,
-        bottom: 120 + image.height,
-    };
-    pin::record_history(&dir, &image, history);
-    pin::create(image, rect, options);
-    log(app, "screenshot.pin_from_last".to_owned());
+    log(
+        app,
+        "screenshot.pin_skipped reason=not_annotating".to_owned(),
+    );
 }
 
-/// 恢复上次关闭的贴图。
 pub fn restore_pin(app: &AppHandle) {
     let (options, _, dir) = pin_config(app);
     let restored = pin::restore_last(&dir, options);

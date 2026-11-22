@@ -282,6 +282,8 @@ struct PinState {
     zoom: f32,
     lock: PinLock,
     confirm: bool,
+    /// 「关闭所有贴图」已经统一确认过：避免逐张再问一遍。
+    close_confirmed: std::sync::atomic::AtomicBool,
     double_click: DoubleClick,
     drag: Option<Drag>,
     zoom_until: u32,
@@ -512,10 +514,40 @@ unsafe fn drain(rx: &mpsc::Receiver<PinCommand>) {
                 rect,
                 options,
             } => create_window(image, rect, options),
-            PinCommand::CloseAll => each_pin(|hwnd| {
-                PostMessageW(hwnd, WM_CLOSE, 0, 0);
-            }),
+            PinCommand::CloseAll => {
+                let mut total = 0usize;
+                let mut need_confirm = false;
+                let mut first: Option<HWND> = None;
+                each_pin(|hwnd| {
+                    total += 1;
+                    if first.is_none() {
+                        first = Some(hwnd);
+                    }
+                    if let Some(state) = state_of(hwnd) {
+                        if (*state).confirm {
+                            need_confirm = true;
+                        }
+                    }
+                });
+                if total == 0 {
+                    continue;
+                }
+                if need_confirm && !first.is_some_and(|hwnd| confirm_close_all(hwnd)) {
+                    continue;
+                }
+                // 统一确认通过：给每张贴图打标记，逐个关闭时不再单独询问。
+                each_pin(|hwnd| {
+                    if let Some(state) = state_of(hwnd) {
+                        (*state).close_confirmed.store(true, Ordering::Relaxed);
+                    }
+                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                });
+            }
             PinCommand::ToggleVisible => {
+                // 没有贴图时不要翻转全局状态，否则新贴出来的第一张会继承"隐藏"。
+                if PINS.lock().map(|pins| pins.is_empty()).unwrap_or(true) {
+                    continue;
+                }
                 let hide = HIDDEN.load(Ordering::SeqCst) == 0;
                 HIDDEN.store(if hide { 1 } else { 0 }, Ordering::SeqCst);
                 each_pin(|hwnd| {
@@ -531,6 +563,10 @@ unsafe fn drain(rx: &mpsc::Receiver<PinCommand>) {
                 });
             }
             PinCommand::TogglePassthrough => {
+                // 同上：没有贴图时不翻转，避免新贴图一出生就是穿透状态（点不动）。
+                if PINS.lock().map(|pins| pins.is_empty()).unwrap_or(true) {
+                    continue;
+                }
                 let on = PASSTHROUGH.load(Ordering::SeqCst) == 0;
                 PASSTHROUGH.store(if on { 1 } else { 0 }, Ordering::SeqCst);
                 each_pin(|hwnd| set_passthrough(hwnd, on));
@@ -594,6 +630,7 @@ unsafe fn create_window(image: Arc<PinImage>, rect: RECT, options: PinOptions) {
         zoom: 1.0,
         lock: options.lock,
         confirm: options.confirm_close,
+        close_confirmed: std::sync::atomic::AtomicBool::new(false),
         double_click: options.double_click,
         drag: None,
         zoom_until: 0,
@@ -877,10 +914,22 @@ unsafe fn render_shadow(
 
 /// 关闭前确认（设置项），返回是否继续关闭。
 unsafe fn confirm_close(hwnd: HWND, state: &PinState) -> bool {
-    if !state.confirm {
+    if !state.confirm || state.close_confirmed.load(Ordering::Relaxed) {
         return true;
     }
     let text = widen("关闭这张贴图？");
+    let caption = widen("轻量化工具集");
+    MessageBoxW(
+        hwnd,
+        text.as_ptr(),
+        caption.as_ptr(),
+        MB_OKCANCEL | MB_ICONQUESTION,
+    ) == IDOK
+}
+
+/// 「关闭所有贴图」的统一确认：只问一次，而不是逐张询问。
+unsafe fn confirm_close_all(hwnd: HWND) -> bool {
+    let text = widen("关闭所有贴图？");
     let caption = widen("轻量化工具集");
     MessageBoxW(
         hwnd,
@@ -4266,8 +4315,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 drop(Box::from_raw(state));
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
-            if let Ok(mut pins) = PINS.lock() {
+            let remaining = if let Ok(mut pins) = PINS.lock() {
                 pins.retain(|item| *item != hwnd as isize);
+                pins.len()
+            } else {
+                0
+            };
+            if remaining == 0 {
+                // 「全部穿透 / 全部隐藏」是贴图窗口的临时状态，没有窗口了就必须复位：
+                // 否则会一直留在全局标志里，之后新建的贴图继承穿透（点不动）或被隐藏（看不见）。
+                PASSTHROUGH.store(0, Ordering::SeqCst);
+                HIDDEN.store(0, Ordering::SeqCst);
             }
             DefWindowProcW(hwnd, msg, wp, lp)
         }
