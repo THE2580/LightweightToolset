@@ -2,7 +2,7 @@
 
 - LightweightToolset 是旧版 LightweightWindowsToolset 的独立 Tauri 2 / Rust / React / TypeScript 路线；旧 Electron 项目只作稳定参考与迁移对照，新功能不回写旧项目。
 - 已实现工具：截图与贴图（原生覆盖层 + 贴图窗口 + 标注 + 本地 OCR 文本选择，行为参照 `docs/pixpin-clone-analysis.md`）、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。后续候选：快捷翻译、桌宠。
-- 当前稳定发布为 `v0.8.0`，发布提交 `8d83b88`，仓库 `https://github.com/THE2580/LightweightToolset`。
+- 当前稳定发布为 `v0.8.1`，发布提交 `1361100`，仓库 `https://github.com/THE2580/LightweightToolset`。
 
 # 协作环境
 
@@ -60,6 +60,7 @@
 
 # 发布索引
 
+- `v0.8.1` / `1361100`：主窗口改为按需创建 + 关窗立即销毁（`EmptyWorkingSet`），托盘态专用工作集 ≈153MB → **≈10MB**；采键 helper 启动即回收（≈16MB → 1MB）；`run()` 拦截 `ExitRequested` 防「窗口归零即退出」。安装包 `LightweightToolset_0.8.1_x64-setup.exe`（33,879,183 字节），SHA-256 `ad7b66332499724c72b6dd1c6d86849546b158909bf20bfb466440cc44a9dd6c`，Release `https://github.com/The2580/LightweightToolset/releases/tag/v0.8.1`。
 - `v0.8.0` / `8d83b88`：快捷键提示浮窗改为原生绘制（省掉常驻 WebView2 渲染进程约 58MB）+ 外观 DIY（主题/动画/停留/位置/模糊/不透明度/键帽配色/恢复默认）+ 线性语义图标 + 「实验性功能」开关与图标绘制标签页（路径数据 M/L/H/V/C/Z）；修复符号键快捷键误判、停用工具后快捷键仍生效、贴图快捷键作用域/关闭确认/穿透状态残留、选区偶发漏压暗。安装包 `LightweightToolset_0.8.0_x64-setup.exe`（33,873,147 字节），SHA-256 `a1ba487dfc3aaeae49c364163723321c4c22adcbed3cf41fe16a9d269695e108`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.8.0`。
 - `v0.7.2` / `abe5441`：修复主线程嵌套建窗导致的整机卡死（剪贴板弹窗与快捷键提示浮窗同时首次创建时互相等锁 → 主线程永久死锁，表现为托盘菜单/快捷键/所有窗口无响应）。新增 `window_service::begin_window_build/window_build_busy` 占位，后到建窗让路并写 `logs/window.log`。安装包 `LightweightToolset_0.7.2_x64-setup.exe`（33,851,424 字节），SHA-256 `2C24A3B5CCB13795DF60414AB7803E161A1D2732CCAF1C01C01BCF4C7D43130E`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.2`。
 - `v0.7.1` / `c1359bc`：新增截图「UI 检测」（不检测 / 仅窗口，`窗口和UI` 置灰）与默认全屏预选（仅窗口下预选跟随光标窗口）；快捷键入口归位（剪贴板/窗口置顶迁入各自页面）与录制框改版；数量档位选择器；快捷键文案统一（`Win → Ctrl → Alt → Shift → 主键`、`SUPER` 不再外露）；快捷键提示预设扩充（新增 `Win+P/Win+R/Win+T/Win+G/Alt+F4`，截图 6 个快捷键纳入绑定预设）；贴图组快捷键恢复提示；主窗口最小化可唤出 + 唤出事件落盘 `logs/window.log`；截图设置页「UI 检测」独立与辅助线折叠分组。安装包 `LightweightToolset_0.7.1_x64-setup.exe`（33,856,072 字节），SHA-256 `5E875F6C6ECFE0EE1E32281888023AFD83C2DCB5535627110B220ED9FF00ECDE`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.7.1`。
