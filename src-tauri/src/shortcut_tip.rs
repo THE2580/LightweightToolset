@@ -1096,6 +1096,14 @@ pub fn run_shortcut_helper(port: u16) -> ! {
     let _ = stream.set_nodelay(true);
     let _ = HELPER_STREAM.set(Mutex::new(stream));
 
+    // 采键子进程也要按「托盘低内存」口径归还工作集：装完钩子就没什么驻留需求。
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::ProcessStatus::EmptyWorkingSet;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let _ = EmptyWorkingSet(GetCurrentProcess());
+    }
+
     unsafe {
         let module = GetModuleHandleW(std::ptr::null());
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(helper_keyboard_hook), module, 0);

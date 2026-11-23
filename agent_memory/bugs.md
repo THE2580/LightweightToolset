@@ -41,6 +41,8 @@
 
 # 已确认经验
 
+- 2026-11-23（托盘低内存改造，踩到三处）：① **销毁最后一个窗口会让进程静默退出**——Tauri 默认「窗口数归零即退出」，`destroy()` 主窗口后整个进程连同托盘消失；必须 `RunEvent::ExitRequested` + `ALLOW_EXIT` 标志拦下（只在托盘退出/关闭行为=直接退出时放行），并且关闭行为=直接退出那条分支要主动置位，否则真退出的路径反被拦住。② **销毁窗口不会自动回收工作集**——WebView2 进程退出后，本进程工作集仍停在 ~37MB；销毁后追加 `EmptyWorkingSet(GetCurrentProcess())` 才落到 ~10MB。③ **采键 helper 常驻 ~16MB**——它是独立进程，同样要 `EmptyWorkingSet`，实测 15.9MB → 1.3MB。另外：`tauri.conf.json` 的 `app.windows` 清空后，`get_webview_window("main")` 全部返回 `None`，所有依赖它的入口（托盘、快捷键、二次启动、设置项改标题/置顶）都必须走「按需创建」或空处理。
+
 - 2026-11-22（提示浮窗线性图标"糊成一坨/有填充感"）：三个原因叠加。① `outline_ellipse` 的环覆盖率写成 `(1-dist)*rx/thickness`，椭圆内部也被算成不透明 → 放大镜/眼睛/镜头全是实心块；必须用 `abs(1-dist)` 才是"只画环"。② 图标胶囊那层圆角底色（accent + `icon_bg_alpha`）本身就是"填充感"来源，线性图标要去掉底座只留线条。③ 尺寸口径：`unit = size/24` 时笔画 `2*unit` 相对 13u 的字形太粗，小尺寸下小图形会糊成块；改为 `unit = size/19`、笔画 `1.25*unit`，图形放大且线条比例正常。调试手段：冒烟测试支持 `NATIVE_TIP_ICON` / `NATIVE_TIP_KEYS` / `NATIVE_TIP_DUMP`，可逐个导出图标帧拼对照图。
 
 - 2026-11-22（截图选区偶发"漏压暗一块"）：**根因在脏区记账与"亮块回退"**。`selecting_rect()` 在拖拽起步帧（`current_rect()` 为 0 大小）会**回退到预选矩形**，而预选可能仍是全屏；此帧又正好触发"强制整屏重绘"（`painted_once=false`），于是整屏被画成亮块（未压暗）。下一帧的脏区只按 `union(last_frame, frame)` 计算，`last_frame` 记的是小框而非实际画过的整屏，多画的亮区再没人擦 → 残留一块跟着选区走。修法：① `dragging` 时 `selecting_rect()` 不再回退预选（只认当前拖拽框）；② 拖拽期间的强制整屏重绘，把 `last_frame` 记为整屏，让下一帧擦回压暗（只多一次整屏重绘，之后自动回落到小脏区）。排查靠的是临时埋点（debug 构建写 `%TEMP%\lwt-overlay-paint.log`，记录 `painted_once/dragging/bright/preselect/last/frame/base/rects`），定位后已删除。

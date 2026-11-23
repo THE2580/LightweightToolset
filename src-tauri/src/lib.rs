@@ -26,6 +26,8 @@ use std::{
 };
 
 use tauri::{
+    webview::WebviewWindowBuilder,
+    WebviewUrl,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, WindowEvent,
@@ -1430,6 +1432,97 @@ fn update_app_settings(
     app_snapshot(&state, &registry)
 }
 
+/// 隐藏后延迟销毁主窗口：这段时间内重新唤出就作废（`MAIN_HIDE_GENERATION` 递增）。
+fn schedule_main_window_destroy(app: AppHandle) {
+    let generation = MAIN_HIDE_GENERATION
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
+    std::thread::spawn(move || {
+        // 立即销毁：托盘态不该为"可能马上又打开"预留着整块 WebView2。
+        if MAIN_HIDE_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+            return;
+        }
+        let Some(window) = app.get_webview_window("main") else {
+            return;
+        };
+        if window.is_visible().unwrap_or(false) {
+            return;
+        }
+        if let Some(state) = app.try_state::<AppState>() {
+            push_debug_log(&state, "window", "main_window.destroyed_for_low_memory");
+        }
+        let _ = window.destroy();
+        // WebView2 的进程已经退出，但本进程里释放的页仍算在工作集里；
+        // 托盘空闲态要真低内存，这里主动回收一次工作集。
+        trim_process_working_set();
+    });
+}
+
+/// 主动归还工作集（托盘空闲态低内存的关键动作）。
+#[cfg(windows)]
+fn trim_process_working_set() {
+    use windows_sys::Win32::System::ProcessStatus::EmptyWorkingSet;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    unsafe {
+        let _ = EmptyWorkingSet(GetCurrentProcess());
+    }
+}
+
+#[cfg(not(windows))]
+fn trim_process_working_set() {}
+
+/// 是否允许进程退出：主窗口被销毁后窗口数为 0，默认 run 循环会直接退出进程，
+/// 托盘工具需要阻止这种"隐式退出"，只在托盘退出/关闭行为=直接退出时放行。
+static ALLOW_EXIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 主窗口隐藏代次：隐藏后延迟销毁 WebView，期间重新显示则作废这次销毁。
+static MAIN_HIDE_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// 按需创建主窗口（托盘工具口径：不在使用时主窗口与它的 WebView2 不该存在）。
+///
+/// 建窗前必须 `window_service::begin_window_build()` 占位，避免与其它建窗任务嵌套执行。
+fn ensure_main_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(window) = app.get_webview_window("main") {
+        return Some(window);
+    }
+    let settings = app
+        .try_state::<AppState>()
+        .and_then(|state| state.registry.lock().ok().map(|r| r.settings().clone()))
+        .unwrap_or_default();
+    let title = display_window_title(&settings.window_title);
+    let _build_guard = window_service::begin_window_build();
+    let built = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title(title)
+        .inner_size(912.0, 598.0)
+        .min_inner_size(912.0, 598.0)
+        .max_inner_size(912.0, 598.0)
+        .resizable(false)
+        .maximizable(false)
+        .decorations(false)
+        .visible(false)
+        .build();
+    match built {
+        Ok(window) => {
+            let _ = window.set_always_on_top(settings.main_window_always_on_top);
+            if let Some(state) = app.try_state::<AppState>() {
+                push_debug_log(&state, "window", "main_window.created_on_demand");
+            }
+            Some(window)
+        }
+        Err(error) => {
+            if let Some(state) = app.try_state::<AppState>() {
+                push_debug_log(
+                    &state,
+                    "error",
+                    format!("main_window.create_failed error={error}"),
+                );
+            }
+            None
+        }
+    }
+}
+
 /// 主窗口的唤出入口（托盘、托盘菜单、快捷键、二次启动共用）。
 ///
 /// 两条口径：
@@ -1448,13 +1541,20 @@ fn show_main_window(app: &AppHandle) {
     );
     #[cfg(not(windows))]
     log_main_window_event(app, "main_window.show_requested");
-    let mut window = app.get_webview_window("main");
+    // 平时主窗口是被销毁的（托盘低内存），唤出时按需重建。
+    let existed = app.get_webview_window("main").is_some();
+    let mut window = ensure_main_window(app);
+    if !existed && window.is_some() {
+        // 新建的窗口要等页面挂载，立刻显示会看到一帧空白。
+        std::thread::sleep(std::time::Duration::from_millis(180));
+    }
     let mut attempts = 0;
     while window.is_none() && attempts < 5 {
         attempts += 1;
         std::thread::sleep(std::time::Duration::from_millis(20));
         window = app.get_webview_window("main");
     }
+    MAIN_HIDE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let Some(window) = window else {
         log_main_window_event(app, "main_window.show_failed reason=window_not_found");
         // 兜底：运行时记录缺失时按「本进程 + 窗口类 + 标题」找回 HWND 直接还原，避免只能重启软件。
@@ -1679,6 +1779,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
             "quit" => {
+                ALLOW_EXIT.store(true, std::sync::atomic::Ordering::SeqCst);
                 if let Some(state) = app.try_state::<AppState>() {
                     push_debug_log(&state, "app", "tray.quit_requested");
                 }
@@ -1862,6 +1963,10 @@ pub fn run() {
                         }
                         api.prevent_close();
                         let _ = window.hide();
+                        schedule_main_window_destroy(window.app_handle().clone());
+                    } else {
+                        // 关闭行为=直接退出：放行进程退出，别被「窗口数为 0 不退出」的逻辑挡住。
+                        ALLOW_EXIT.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
             }
@@ -1894,15 +1999,6 @@ pub fn run() {
                 window_pinner::unpin_all();
             }
             let silent_start = registry.settings().silent_start;
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title(&display_window_title(&registry.settings().window_title));
-                let _ = window.set_always_on_top(registry.settings().main_window_always_on_top);
-                // 配置里主窗口默认不可见；非静默启动时才显示，避免启动瞬间闪窗。
-                if !silent_start {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
             app.manage(AppState {
                 registry: Mutex::new(registry),
                 default_config_dir: config_dir,
@@ -1927,6 +2023,10 @@ pub fn run() {
             });
             if silent_start {
                 push_debug_log(&app.state::<AppState>(), "window", "main_window.silent_start");
+            } else {
+                // 托盘工具口径：静默启动不建主窗口；非静默启动才按需创建并显示。
+                let handle = app.handle().clone();
+                std::thread::spawn(move || show_main_window(&handle));
             }
             // 贴图右键菜单里的「划词即复制」要能写回设置，且与工具页同步。
             {
@@ -2028,6 +2128,14 @@ pub fn run() {
             open_screenshot_dir,
             update_app_settings
         ])
-        .run(context)
-        .expect("启动 LightweightToolset 失败");
+        .build(context)
+        .expect("启动 LightweightToolset 失败")
+        .run(|_app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if !ALLOW_EXIT.load(std::sync::atomic::Ordering::SeqCst) {
+                    // 托盘工具：主窗口被销毁后窗口数为 0，不能因此退出进程。
+                    api.prevent_exit();
+                }
+            }
+        });
 }

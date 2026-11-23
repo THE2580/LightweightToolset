@@ -2,7 +2,7 @@
 
 ## 项目目标
 
-LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻量化桌面工具集：固定主窗口、单实例、单托盘，工具编译期注册、可独立启用/停用，所有数据本地存储。现有工具：截图与贴图、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。当前稳定版 `v0.7.2`。旧 Electron 版 LightweightWindowsToolset 只作迁移参考，新功能不回写。
+LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻量化桌面工具集：**定位为「几乎纯托盘工具」**——常态待在托盘后台工作，图形界面只是按需打开、用完即走的附属入口。固定主窗口尺寸、单实例、单托盘，工具编译期注册、可独立启用/停用，所有数据本地存储。现有工具：截图与贴图、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。当前稳定版 `v0.8.0`。旧 Electron 版 LightweightWindowsToolset 只作迁移参考，新功能不回写。
 
 ## 技术栈
 
@@ -63,6 +63,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 
 ## 硬性约束（禁止事项）
 
+- **托盘低内存是产品级约束，不是优化项**（2026-11-23 定）：本软件常态是托盘后台，闲置（没有任何界面在用）时整体应稳定在 **≈10–25MB**（任务管理器「内存」= 专用工作集口径，含本软件名下全部进程）。因此：主窗口与它的 WebView2 **不在使用时必须不存在**（隐藏后延迟销毁，不是长期挂着）；新增任何功能都要过这条尺子——若会让托盘态多出常驻重型资源（额外的 WebView 窗口、额外常驻进程、常驻大对象），必须先改设计或写明例外理由。**不要再用「隐藏窗口」代替「销毁会话」来省事。**
 - 未经用户明确要求：不提交、不推送、不发布。开发版除外：按「验证方式」的固定动作，每次改动完成即主动启动供用户测试，不需等待用户指示。
 - 不提交 `node_modules/`、`dist/`、`src-tauri/target/`、QA 截图、日志或缓存；`agent_memory/` 必须入库，不要加回 `.gitignore`。
 - 不恢复用户主动删除的内容；不修改与本任务无关的既有工作树现场（当前只剩 `.codex/` 与 `window_pinner.rs` 的换行差异）。
@@ -117,7 +118,8 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 ## 平台约束与踩坑经验（必须遵守）
 
 - **开机自启必须用计划任务，不能用 Run 键**：`requireAdministrator` 的 exe 无法由 Explorer 从 `HKCU\...\Run` 拉起——Explorer 只做 CreateProcess，提权失败返回 `ERROR_ELEVATION_REQUIRED` 并被静默丢弃（证据：`Microsoft-Windows-Shell-Core/Operational` 事件 9708 PID 0，`Microsoft-Windows-UAC/Operational` 事件 1）。现实现为 `autostart.rs`：生成 UTF-16 任务 XML，`schtasks /Create /XML` 注册「登录触发 + `HighestAvailable` + `InteractiveToken`」任务，登录时由任务计划程序以完整令牌启动、不弹 UAC；必须显式 `<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>`，否则默认 72 小时会杀掉常驻进程；同时清理旧版写入的 Run 值。不要引入 `tauri-plugin-autostart`（它只会写 Run 键，正是本缺陷来源）。
-- **静默启动必须靠 `visible:false` + 条件 `show()`**：`tauri.conf.json` 主窗口固定 `"visible": false`，在 `setup` 里读设置：`silent_start` 为 false 才 `show()` + `set_focus()`，为 true 就保持隐藏、只留托盘。不要在启动后调 `hide()`（会先闪一帧窗口）；隐藏状态下 WebView 照常加载，快捷键/剪贴板/统计/计时器不受影响。任何唤起入口（托盘、主窗口快捷键、单实例二次启动）都必须走 `show_main_window`。设置说明与启动提示各发一条通知，文案里的快捷键取实际生效值。
+- **主窗口按需创建（托盘低内存口径）**：`tauri.conf.json` 的 `app.windows` 为空——启动时**不建任何窗口**；`ensure_main_window()` 在需要时用 `WebviewWindowBuilder` 建 `main`（912×598、无边框、不可缩放、`visible:false`），建窗前必须 `window_service::begin_window_build()`。任何唤起入口（托盘左键/菜单、主窗口快捷键、单实例二次启动）都必须走 `show_main_window`；非静默启动由 `setup` 结束前在独立线程里调它。关闭到托盘时 `api.prevent_close()` + `hide()`，随后 `schedule_main_window_destroy()` **立即** `destroy()` 并 `EmptyWorkingSet`，真正释放 WebView2。
+- **主窗口销毁后进程不能退**：窗口数归零时 Tauri 默认会退出进程，托盘工具必须拦截——`run()` 用 `RunEvent::ExitRequested` + `ALLOW_EXIT` 标志：只有托盘「退出」或关闭行为=直接退出时才放行，其余一律 `api.prevent_exit()`。改动这条路径要同时验证：托盘退出能真退出、关闭行为=直接退出能真退出、关窗后托盘仍存活。
 - **`show_main_window` 必须先还原再显示**：窗口只是最小化到任务栏（未隐藏到托盘）时，`show()` 只做 `SW_SHOW`，不会把窗口从最小化还原，表现就是「按快捷键没反应、窗口还缩在任务栏」。固定口径：`is_minimized()` 为真先 `unminimize()`，再 `show()`、`set_focus()`；`get_webview_window("main")` 允许有界重试（运行时对窗口记录的挂载存在竞态），最终仍取不到时用原生 `FindWindowExW` 按「本进程 + `Tauri Window` 类 + 窗口标题」找回 HWND 兜底还原。唤出事件同时写 `<存储目录>/logs/window.log`（超过 256KB 重置），因为「唤不出」卡死时内存里的调试日志读不到。
 - **版本号单一来源**：前端版本号从 `../package.json` 直接 `import`（`src/App.tsx` 的 `APP_VERSION`）。禁止用 Vite `define` 注入全局常量——打包时会替换、dev 服务器不替换，会直接白屏。`package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` 三处版本号发版时同步修改。
 - **采键通道与 Chromium 限制**：Chromium/WebView2 窗口在前台时，Windows 会间断地不给 `WH_KEYBOARD_LL` 派发按键；被系统或其他软件注册走的热键（`Win+D`、`Win+I`、`Win+Shift+S`、他软件全局热键）连 Raw Input 都收不到。现有的三条通道缺一不可：① 软件自身窗口的普通按键走页面 `keydown`（`src/shortcutNotify.ts` → `shortcut_tip_report`）；② 焦点在别处时走进程内钩子；③ 系统/他软件热键走独立采键子进程——复用同一个 exe，带 `--shortcut-tip-helper <port>` 启动，不初始化 Tauri/WebView（分叉要在进入 Tauri 之前），装钩子后经 `127.0.0.1` 回环 TCP 回传组合键；子进程继承提权、不加 UAC，连接断开或回传失败必须自行退出，工具停用时主程序负责结束它。三条通道共用节流与去重。
@@ -151,7 +153,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 提交信息沿用 Conventional Commits：`feat:`、`fix:`、`chore:`、`docs:`、`refactor:`，发布提交在末尾追加版本号（如 `fix: release startup initialization v0.4.4`）。
 - 提交前必须：`git status --short` 核对仅包含预期文件；`npm run build`；`cargo check`；涉及 Rust 逻辑时跑串行单测。
 - 版本规则：新增工具调整第一/二位版本号；缺陷修复或既有工具扩展调整第三位。
-- 发布 = 带注释 tag + GitHub Release + 安装包 SHA-256 记录，须用户明确授权；当前最新为 `v0.7.2`。
+- 发布 = 带注释 tag + GitHub Release + 安装包 SHA-256 记录，须用户明确授权；当前最新为 `v0.8.0`。
 - **发版时必须同步更新 README 与项目简介（固定动作，不是可选项）**：每次发版都要把对外说明更新到当版，不允许只发代码、文档滞后。
   1. **README**：版本号、功能列表（新增 / 变更 / 移除）、下载与安装说明；过期的截图、命令或描述一并修正。
   2. **项目简介**：GitHub 仓库 About 描述随版本与功能更新（`gh repo edit --description "..."`）。

@@ -1,3 +1,15 @@
+# 托盘低内存（产品级约束，2026-11-23 完成，随 v0.8.1 发布）
+
+- **目标**：只要处于「仅托盘、没在用 UI」，整体回落到 **≈10–25MB**（任务管理器「内存」= 专用工作集）；用 UI 时允许上升；可反复。
+- **已实现（用户已验收）**：
+  1. `tauri.conf.json` 的 `app.windows` 清空——启动不建窗口；
+  2. `ensure_main_window()` 按需用 `WebviewWindowBuilder` 建 `main`（912×598、无边框、不可缩放、`visible:false`），建窗前 `window_service::begin_window_build()`；`show_main_window` 统一走它（托盘/菜单/快捷键/二次启动共用）；
+  3. 关闭到托盘：`prevent_close` + `hide()` → `schedule_main_window_destroy()` 立即 `destroy()` + `EmptyWorkingSet`，真正释放 WebView2；
+  4. 采键 helper 启动后也 `EmptyWorkingSet`（15.9MB → 1.3MB）；
+  5. `run()` 改为 `RunEvent::ExitRequested` + `ALLOW_EXIT`：窗口销毁导致的「窗口数=0」不再退出进程；托盘退出/关闭行为=直接退出时放行。
+- **实测（开发版）**：开着窗口 36.5MB；关闭 6 秒后 **10.2MB + helper 0.2MB ≈ 10.4MB**，WebView2 进程数 0；再次启动 exe 可重建窗口并正常渲染（已连续两轮验证）。
+- **待用户真机验收**：开机静默启动后任务管理器应看不到 WebView2；托盘唤出；关窗回落；反复循环；托盘退出/关闭行为=直接退出仍能真退出；快捷键唤出主窗口（开发版受安装版占热键影响，需在正式版验）。
+
 # 当前阶段：`0.8.0` 开发（功能已收敛，待发版）
 
 - 稳定版仍是 `v0.7.2`（`abe5441`，安装版在 `D:\轻量化工具集\` 运行中）。
