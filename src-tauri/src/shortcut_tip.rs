@@ -312,6 +312,16 @@ pub fn init(config_dir: &Path, app: &AppHandle) -> Result<(), String> {
     let path = dir.join(STORE_FILE);
     let mut store = load_store(&path)?;
     let mut seeded = false;
+    // 旧版本在「进入位置编辑」时会把默认坐标写死成固定值（用户并未真正放置）。
+    // 迁移：保存的坐标若与当前默认位置一致，就清回 None，恢复"跟随默认位置"，换显示器/缩放时自动对齐。
+    let mut appearance_repaired = false;
+    if let Some([x, y]) = store.appearance.position {
+        let (_, _, _, _, _, _, default_x, default_y) = crate::native_tip::metrics();
+        if x == default_x && y == default_y {
+            store.appearance.position = None;
+            appearance_repaired = true;
+        }
+    }
     for preset in PRESETS.iter() {
         let exists = store
             .tips
@@ -358,7 +368,7 @@ pub fn init(config_dir: &Path, app: &AppHandle) -> Result<(), String> {
             repaired = true;
         }
     }
-    if repaired || seeded {
+    if repaired || seeded || appearance_repaired {
         save_store(&path, &store)?;
     }
     if !store.tips.iter().any(|tip| tip.preset) {

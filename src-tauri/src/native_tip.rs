@@ -2003,9 +2003,65 @@ fn slide_offset(payload: &NativeTipPayload, alpha: f32, scale: f32) -> i32 {
     }
 }
 
+/// 把自定义位置夹进「光标所在屏幕的可见工作区」。
+///
+/// 返回 `None` 表示这块矩形完全不在任何显示器上（例如保存的是已拔掉的副屏坐标），
+/// 调用方应回落到默认位置。纯几何部分单独拆出来便于单测。
+fn clamp_into_visible_work_area(x: i32, y: i32, width: i32, height: i32) -> Option<(i32, i32)> {
+    unsafe {
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONULL,
+        };
+        let center = POINT {
+            x: x + width / 2,
+            y: y + height / 2,
+        };
+        let monitor = MonitorFromPoint(center, MONITOR_DEFAULTTONULL);
+        let monitor = if monitor.is_invalid() {
+            MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONULL)
+        } else {
+            monitor
+        };
+        if monitor.is_invalid() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return None;
+        }
+        let work = info.rcWork;
+        Some(clamp_rect_position(
+            (x, y),
+            (width, height),
+            (work.left, work.top, work.right, work.bottom),
+        ))
+    }
+}
+
+/// 纯几何：把窗口左上角夹进工作区（窗口比工作区大时贴左上）。
+fn clamp_rect_position(
+    position: (i32, i32),
+    size: (i32, i32),
+    work: (i32, i32, i32, i32),
+) -> (i32, i32) {
+    let (x, y) = position;
+    let (w, h) = size;
+    let (left, top, right, bottom) = work;
+    let max_x = (right - w).max(left);
+    let max_y = (bottom - h).max(top);
+    (x.clamp(left, max_x), y.clamp(top, max_y))
+}
+
 fn window_position(width: i32, height: i32, custom: Option<[i32; 2]>) -> (i32, i32) {
     if let Some([x, y]) = custom {
-        return (x, y);
+        // 自定义位置存的是物理像素：显示器拔插、分辨率/缩放变化后可能落在可见区域之外，
+        // 那样提示窗"弹了但看不见"。越界时夹回最近的工作区，完全不在任何屏幕上则回落到默认位置。
+        if let Some(clamped) = clamp_into_visible_work_area(x, y, width, height) {
+            return clamped;
+        }
     }
     unsafe {
         use windows::Win32::Graphics::Gdi::{
@@ -2264,6 +2320,17 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// 自定义位置越界时必须夹回工作区，避免"弹了但看不见"。
+    #[test]
+    fn clamp_rect_position_keeps_inside_work_area() {
+        let work = (0, 0, 2560, 1440);
+        assert_eq!(clamp_rect_position((100, 200), (560, 56), work), (100, 200));
+        assert_eq!(clamp_rect_position((2500, 200), (560, 56), work), (2000, 200));
+        assert_eq!(clamp_rect_position((100, 2000), (560, 56), work), (100, 1384));
+        assert_eq!(clamp_rect_position((-3000, -500), (560, 56), work), (0, 0));
+        assert_eq!(clamp_rect_position((50, 50), (4000, 2000), work), (0, 0));
+    }
+
     /// 手动跑的冒烟测试（默认 ignore）：确认原生浮窗真的建出来、尺寸对、可见，并截一张图到临时目录。
     /// 运行：`cargo test --lib native_tip -- --ignored --test-threads=1`
     struct FindCtx {
@@ -2326,7 +2393,10 @@ mod tests {
                 blur_radius: None,
                 tint_alpha: None,
                 animation: None,
-                position: None,
+                position: std::env::var("NATIVE_TIP_POS").ok().and_then(|text| {
+                    let (x, y) = text.split_once(',')?;
+                    Some([x.trim().parse::<i32>().ok()?, y.trim().parse::<i32>().ok()?])
+                }),
                 persistent: None,
                 duration_ms: None,
                 preview: None,
@@ -2336,6 +2406,47 @@ mod tests {
             })
             .expect("show 应成功");
             std::thread::sleep(Duration::from_millis(500));
+
+            // 给了自定义位置（尤其是越界坐标）时，窗口必须被夹回可见工作区。
+            if std::env::var("NATIVE_TIP_POS")
+                .ok()
+                .and_then(|text| {
+                    let (x, y) = text.split_once(',')?;
+                    Some([x.trim().parse::<i32>().ok()?, y.trim().parse::<i32>().ok()?])
+                })
+                .is_some()
+            {
+                let window = find_own_window().expect("窗口应存在");
+                let mut rect: windows::Win32::Foundation::RECT = unsafe { std::mem::zeroed() };
+                unsafe {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(window, &mut rect);
+                }
+                // 主屏工作区
+                let (left, top, right, bottom) = unsafe {
+                    use windows::Win32::Graphics::Gdi::{
+                        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+                    };
+                    let monitor = MonitorFromPoint(
+                        windows::Win32::Foundation::POINT { x: 0, y: 0 },
+                        MONITOR_DEFAULTTOPRIMARY,
+                    );
+                    let mut info = MONITORINFO {
+                        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                        ..Default::default()
+                    };
+                    let _ = GetMonitorInfoW(monitor, &mut info);
+                    (
+                        info.rcWork.left,
+                        info.rcWork.top,
+                        info.rcWork.right,
+                        info.rcWork.bottom,
+                    )
+                };
+                assert!(rect.left >= left, "窗口越界 left={} work_left={}", rect.left, left);
+                assert!(rect.top >= top, "窗口越界 top={} work_top={}", rect.top, top);
+                assert!(rect.right <= right, "窗口越界 right={} work_right={}", rect.right, right);
+                assert!(rect.bottom <= bottom, "窗口越界 bottom={} work_bottom={}", rect.bottom, bottom);
+            }
 
             unsafe {
                 let hwnd = find_own_window().unwrap_or_else(|| panic!("第 {} 轮：原生提示窗口应已创建", round + 1));

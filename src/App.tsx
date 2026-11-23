@@ -2037,6 +2037,21 @@ function ShortcutTipAppearancePanel({
   const positioningRef = useRef(false);
   const [metrics, setMetrics] = useState<NativeTipMetrics | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // 打开设置就先取一次屏幕度量：否则未进过「编辑」时 X/Y 滑块只能显示 0,0。
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<NativeTipMetrics>("native_tip_metrics")
+      .then((next) => {
+        if (!cancelled) {
+          setMetrics(next);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const { pushToast } = useToastQueue();
 
   // 拖动滑块要跟手：界面用本地草稿即时更新，写设置去抖后再提交。
@@ -2117,7 +2132,8 @@ function ShortcutTipAppearancePanel({
       setMetrics(next);
       const position = draft.position ?? [next.defaultX, next.defaultY];
       setPositioning(true);
-      patch({ position });
+      // 进入定位态不写死坐标：只有真的拖动滑块（moveTo）时才保存固定位置，
+      // 这样换显示器后仍能自动跟随"默认位置"而不是被旧坐标带偏。
       await invoke("native_tip_hide");
       await invoke("native_tip_set_positioning", { active: true });
       await invoke("native_tip_show", { payload: payloadFor(position, true) });
@@ -2140,6 +2156,18 @@ function ShortcutTipAppearancePanel({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [positioning]);
+
+  /// 位置「重置」：清回"跟随默认位置"，不要写死成固定坐标（否则换显示器会偏）。
+  async function resetPosition() {
+    patch({ position: null });
+    if (!positioningRef.current)
+      return;
+    try {
+      await invoke("native_tip_show", { payload: payloadFor(null, true) });
+    } catch (error) {
+      pushToast(String(error));
+    }
+  }
 
   async function moveTo(position: [number, number] | null) {
     patch({ position });
@@ -2291,7 +2319,7 @@ function ShortcutTipAppearancePanel({
           {positioning ? (
             <button
               className="secondary-action"
-              onClick={() => void moveTo(metrics ? [metrics.defaultX, metrics.defaultY] : null)}
+              onClick={() => void resetPosition()}
               type="button"
             >
               重置
