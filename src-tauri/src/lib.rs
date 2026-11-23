@@ -159,6 +159,14 @@ fn app_snapshot(state: &AppState, registry: &ToolRegistry) -> Result<AppSnapshot
 }
 
 fn start_runtime_initialization(app: AppHandle, storage_dir: PathBuf) {
+    // 幂等：重复调用只生效一次（前端快照轮询、未来新增入口都可能重复触发）。
+    if app
+        .state::<AppState>()
+        .runtime_started
+        .swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let result = (|| -> Result<(), String> {
             window_pinner::start_watchdog(&storage_dir)?;
@@ -356,19 +364,10 @@ fn initial_storage_dir(default_config_dir: &PathBuf) -> Result<PathBuf, String> 
 }
 
 #[tauri::command]
-fn get_app_snapshot(app: AppHandle, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
-    let snapshot = {
-        let registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
-        app_snapshot(&state, &registry)?
-    };
-    if state
-        .runtime_started
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        start_runtime_initialization(app, state.runtime_storage_dir.clone());
-    }
-    Ok(snapshot)
+fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    // 运行时初始化由 `setup` 自己在后台启动（托盘工具不能在无窗口时等前端来触发）。
+    let registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+    app_snapshot(&state, &registry)
 }
 
 #[tauri::command]
@@ -2049,6 +2048,13 @@ pub fn run() {
                 });
             }
             build_tray(app.handle())?;
+            // 托盘工具口径：运行时（工具启动、软件级快捷键、看门狗、静默启动通知）必须
+            // 在无窗口状态下也完成初始化，不能等前端页面调用 get_app_snapshot 才触发。
+            {
+                let handle = app.handle().clone();
+                let storage_dir = app.state::<AppState>().runtime_storage_dir.clone();
+                start_runtime_initialization(handle, storage_dir);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
