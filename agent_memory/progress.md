@@ -10,12 +10,12 @@
   4. 设置弹窗打开即预取 `native_tip_metrics`，避免未进过编辑时 X/Y 滑块显示 0,0。
 - **状态**：`cargo test --lib` 56 passed / 3 ignored；`npm run build` 通过；开发版已验收 1–3，第 4 条待验；已随 `v0.8.3` 发布（`86381f9`，资产 33,891,232 字节 / SHA-256 `14fb2e62…`）。
 
-# 已修复并发布：v0.8.2（2026-11-23）
+# 已修复并发布：v0.8.2（2026-11-23，用户已在安装版验收通过）
 
-- **已修**：静默启动后整个软件不可用（严重回归）。修法：把 `start_runtime_initialization` 从 `get_app_snapshot`（前端触发）移到 `setup` 末尾自行启动，并加 `runtime_started.swap` 幂等；`get_app_snapshot` 只读快照。开发版验证：静默启动（无窗口、WebView2=0）时采键 helper 已启动、运行时正常。发布 v0.8.2（`b778fa4`，资产 33,885,497 字节 / SHA-256 `769ea8ba…`）。：`v0.8.1` 改成「主窗口按需创建」后，静默启动期间进程里没有任何窗口 → 前端页面不加载 → 前端挂载时调用的 `get_app_snapshot` 没人调 → **`start_runtime_initialization()` 永不执行**。后果：启动启用工具、注册软件级快捷键、贴图看门狗、静默启动通知等全部不生效，**直到用户第一次打开主窗口**才恢复；「静默启动」提示也因此要等首次开窗才弹（两个症状同一根因）。
-  - 代码位置：`src-tauri/src/lib.rs` —— `get_app_snapshot` 里用 `runtime_started.compare_exchange` 触发 `start_runtime_initialization(app, storage_dir)`；该函数内部包含 `window_pinner::start_watchdog` / `registry.start_enabled(&app)` / `register_app_hotkeys` / `notify_silent_start`。
-  - 修法方向：运行时初始化改为**后端在 `setup` 完成后自行启动**（不依赖窗口/前端），保留 `runtime_started` 幂等；前端随后调用 `get_app_snapshot` 只读快照。修完验证：静默启动且**不打开窗口**时热键/剪贴板/计时器/统计可用、启动通知在启动时弹出；非静默启动正常；关窗回托盘后功能仍可用。
-  - 建议按补丁版 **0.8.2** 尽快修；在此之前对外说明「静默启动需先打开一次主窗口」。
+- **回归**：`v0.8.1` 改成「主窗口按需创建」后，静默启动期间没有任何窗口 → 前端不加载 → 前端挂载时调用的 `get_app_snapshot` 没人调 → `start_runtime_initialization()` 永不执行。后果：启用工具、注册软件级快捷键、贴图看门狗、静默启动通知全部不生效，直到第一次打开主窗口才恢复。
+- **修法**：运行时初始化改由后端在 `setup` 末尾自行启动（`runtime_started.swap` 幂等），`get_app_snapshot` 只读快照。
+- **验收**：用户安装版 `v0.8.2` 确认「静默启动后功能可用 + 启动通知正常弹出」。
+- **发布**：`b778fa4`，资产 `LightweightToolset_0.8.2_x64-setup.exe`（33,885,497 字节），SHA-256 `769ea8ba…`。
 
 # 当前阶段：`v0.8.3` 已发布（2026-11-23）
 
@@ -32,7 +32,7 @@
   4. 采键 helper 启动后也 `EmptyWorkingSet`（15.9MB → 1.3MB）；
   5. `run()` 改为 `RunEvent::ExitRequested` + `ALLOW_EXIT`：窗口销毁导致的「窗口数=0」不再退出进程；托盘退出/关闭行为=直接退出时放行。
 - **实测（开发版）**：开着窗口 36.5MB；关闭 6 秒后 **10.2MB + helper 0.2MB ≈ 10.4MB**，WebView2 进程数 0；再次启动 exe 可重建窗口并正常渲染（已连续两轮验证）。
-- **待用户真机验收**：开机静默启动后任务管理器应看不到 WebView2；托盘唤出；关窗回落；反复循环；托盘退出/关闭行为=直接退出仍能真退出；快捷键唤出主窗口（开发版受安装版占热键影响，需在正式版验）。
+- **用户已验收（v0.8.1 期间）**：关窗即刻回落到 ≈10MB、WebView2 退出、托盘唤出与反复循环正常；静默启动相关回归随后由 `v0.8.2` 修复并验收。
 
 # 当前阶段：`0.8.0` 开发（功能已收敛，待发版）
 
