@@ -1,11 +1,11 @@
-# 已修复待发布：v0.8.1 静默启动回归（修于 2026-11-23）
+# 已修复并发布：v0.8.2（2026-11-23）
 
-- **已修**：静默启动后整个软件不可用（严重回归）。修法：把 `start_runtime_initialization` 从 `get_app_snapshot`（前端触发）移到 `setup` 末尾自行启动，并加 `runtime_started.swap` 幂等；`get_app_snapshot` 只读快照。开发版验证：静默启动（无窗口、WebView2=0）时采键 helper 已启动、运行时日志正常；通知在开发版无法直接验证（开发版 AUMID/快捷方式未注册），需装在正式版确认。：`v0.8.1` 改成「主窗口按需创建」后，静默启动期间进程里没有任何窗口 → 前端页面不加载 → 前端挂载时调用的 `get_app_snapshot` 没人调 → **`start_runtime_initialization()` 永不执行**。后果：启动启用工具、注册软件级快捷键、贴图看门狗、静默启动通知等全部不生效，**直到用户第一次打开主窗口**才恢复；「静默启动」提示也因此要等首次开窗才弹（两个症状同一根因）。
+- **已修**：静默启动后整个软件不可用（严重回归）。修法：把 `start_runtime_initialization` 从 `get_app_snapshot`（前端触发）移到 `setup` 末尾自行启动，并加 `runtime_started.swap` 幂等；`get_app_snapshot` 只读快照。开发版验证：静默启动（无窗口、WebView2=0）时采键 helper 已启动、运行时正常。发布 v0.8.2（`b778fa4`，资产 33,885,497 字节 / SHA-256 `769ea8ba…`）。：`v0.8.1` 改成「主窗口按需创建」后，静默启动期间进程里没有任何窗口 → 前端页面不加载 → 前端挂载时调用的 `get_app_snapshot` 没人调 → **`start_runtime_initialization()` 永不执行**。后果：启动启用工具、注册软件级快捷键、贴图看门狗、静默启动通知等全部不生效，**直到用户第一次打开主窗口**才恢复；「静默启动」提示也因此要等首次开窗才弹（两个症状同一根因）。
   - 代码位置：`src-tauri/src/lib.rs` —— `get_app_snapshot` 里用 `runtime_started.compare_exchange` 触发 `start_runtime_initialization(app, storage_dir)`；该函数内部包含 `window_pinner::start_watchdog` / `registry.start_enabled(&app)` / `register_app_hotkeys` / `notify_silent_start`。
   - 修法方向：运行时初始化改为**后端在 `setup` 完成后自行启动**（不依赖窗口/前端），保留 `runtime_started` 幂等；前端随后调用 `get_app_snapshot` 只读快照。修完验证：静默启动且**不打开窗口**时热键/剪贴板/计时器/统计可用、启动通知在启动时弹出；非静默启动正常；关窗回托盘后功能仍可用。
   - 建议按补丁版 **0.8.2** 尽快修；在此之前对外说明「静默启动需先打开一次主窗口」。
 
-# 当前阶段：`v0.8.1` 已发布（2026-11-23）
+# 当前阶段：`v0.8.2` 已发布（2026-11-23）
 
 - 发布提交 `1361100`，tag `v0.8.1` 已推；安装包 `LightweightToolset_0.8.1_x64-setup.exe`（33,879,183 字节），SHA-256 `ad7b66332499724c72b6dd1c6d86849546b158909bf20bfb466440cc44a9dd6c`，Release https://github.com/THE2580/LightweightToolset/releases/tag/v0.8.1 ；仓库 About 已更新。
 - 开发环境已关闭（开发版进程、Vite、开发版数据目录、`%TEMP%\lwt-dev` 均已清理；安装版 `v0.8.0` 当时仍在运行，未动）。
