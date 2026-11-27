@@ -2,7 +2,7 @@
 
 ## 项目目标
 
-LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻量化桌面工具集：**定位为「几乎纯托盘工具」**——常态待在托盘后台工作，图形界面只是按需打开、用完即走的附属入口。固定主窗口尺寸、单实例、单托盘，工具编译期注册、可独立启用/停用，所有数据本地存储。现有工具：截图与贴图、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。当前稳定版 `v0.8.0`。旧 Electron 版 LightweightWindowsToolset 只作迁移参考，新功能不回写。
+LightweightToolset 是基于 Tauri 2 + Rust + React + TypeScript 的 Windows 轻量化桌面工具集：**定位为「几乎纯托盘工具」**——常态待在托盘后台工作，图形界面只是按需打开、用完即走的附属入口。固定主窗口尺寸、单实例、单托盘，工具编译期注册、可独立启用/停用，所有数据本地存储。现有工具：截图与贴图、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。当前稳定版 `v0.8.4`。旧 Electron 版 LightweightWindowsToolset 只作迁移参考，新功能不回写。
 
 ## 技术栈
 
@@ -59,6 +59,15 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 录制框 `.hotkey-box` 的视觉口径：宽度随内容（不设 `min-width`）、2px 边框；有值实线、未配置虚线、录制中主色 + 光晕。
 - 工具页内保存快捷键后必须从实时 `tools` 读 `hotkey`：`activeTool` 是导航时的快照，不会随保存刷新。
 - **快捷键外显口径统一**：存储值仍是 `normalize_hotkey` 的大写形式（`CTRL+SUPER+X`，`SUPER` 是 `Win` 的存储别名），但任何展示给用户的文本都必须过格式化函数：前端 `formatHotkeyForDisplay`（`src/App.tsx`）、后端 `tools::format_hotkey_display`。规则：修饰键固定 `Win` → `Ctrl` → `Alt` → `Shift` → 主键 的顺序（首字母大写、`+` 连接），`SUPER` / `META` / `CMD` / `COMMAND` / `WINDOWS` 一律显示为 `Win`，功能键名 `Space` / `Esc` / `PageUp` 等也按此表转写。不要在 JSX 或通知文案里直接渲染 `hotkey` 原值，也不要在录制态另拼一套大写文案。
+- **触发类型（`global` / `listen`）**：每条快捷键可显式切换两种形态，存储 `AppSettings.hotkey_kinds`（缺省 global，旧数据零迁移）。
+  - `global`：组合键或单个 F1–F24，走 `RegisterHotKey` 独占注册；
+  - `listen`：任意键盘单键或鼠标侧键（`Mouse4`/`Mouse5`），走 `hotkey_listener` 的低级键鼠钩子——**不吞键、按下即触发、不做长按**、250ms 同键去抖、忽略注入事件；钩子线程要在 `GetMessage` 前 `PeekMessageW(PM_NOREMOVE)` 建消息队列，否则 `PostThreadMessage(WM_QUIT)` 可能失败导致 join 卡死；钩子回调只取路由快照、派发丢独立线程。
+  - 注册/注销统一走 `tools::register_hotkey` / `unregister_hotkey` 按类型分流；派发统一走 `dispatch_hotkey`（文本→id）与 `dispatch_hotkey_id`（监听直接带 id）。
+  - 类型按钮仅编辑态可点，非编辑态静态置灰、无 hover；已有键值时切换先弹确认框说明会清空，确认后清空并保持录制态。跨类型同键按冲突处理（`trigger_identity` 统一标识）。
+  - 工具热键注册失败**不能阻止工具启用**：只记日志 + 发 `tool-hotkey-warning` 轻提示（文案只说“存在冲突或被占用”，不展开具体键）；`resume_shortcuts` 逐条尽力恢复，不能因单个键失败回滚全部。
+  - 非录制阶段的不可用状态用**键值框红色虚线边框**（`hotkey_error`：配置冲突优先，其次注册失败），改键/清空/切类型/停用即清除；前端读实时 `tools` 的 `hotkeyError`，不要用 `??` 回退导航时的旧快照（`null` 会被当成空值）。
+- **快捷键提示的自定义条目采用“自动识别”**：按录到的键形态匹配（组合键 / 单个 F 键 / 单键 / 鼠标侧键），只监听、不注册；录入弹窗不放类型按钮。
+- **按键命名表有三份，加键必须三处同步**：`shortcut_tip.rs` 的钩子 `key_name(vk)`、后端 `normalize_key_name`、页面 `shortcutNotify.ts` 的 `KEY_NAMES`。锁键（CapsLock/NumLock/ScrollLock/PrintScreen/Pause）与 OEM 符号键曾因只补了 `hotkey_listener` 那套而录不进去。
 - **快捷键提示预设要跟着工具走**：新增或调整带快捷键的工具时，同步在 `shortcut_tip.rs` 的 `APP_HOTKEY_PRESETS` 加条目，并在 `hotkey_owner_tool` 里登记它归属的工具 id；否则该快捷键在提示工具里没有条目、或会被当成「工具已停用」而永不提示。系统级固定预设加在 `PRESETS`（顺序即新装后的展示顺序，只在缺失时补入，不覆盖用户改过的条目）。快捷键回调里若新增「执行完就 return」的分支，必须把 `notify_app_hotkey` 的派发放在该分支之前。
 
 ## 硬性约束（禁止事项）
@@ -153,7 +162,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 - 提交信息沿用 Conventional Commits：`feat:`、`fix:`、`chore:`、`docs:`、`refactor:`，发布提交在末尾追加版本号（如 `fix: release startup initialization v0.4.4`）。
 - 提交前必须：`git status --short` 核对仅包含预期文件；`npm run build`；`cargo check`；涉及 Rust 逻辑时跑串行单测。
 - 版本规则：新增工具调整第一/二位版本号；缺陷修复或既有工具扩展调整第三位。
-- 发布 = 带注释 tag + GitHub Release + 安装包 SHA-256 记录，须用户明确授权；当前最新为 `v0.8.0`。
+- 发布 = 带注释 tag + GitHub Release + 安装包 SHA-256 记录，须用户明确授权；当前最新为 `v0.8.4`。
 - **发版时必须同步更新 README 与项目简介（固定动作，不是可选项）**：每次发版都要把对外说明更新到当版，不允许只发代码、文档滞后。
   1. **README**：版本号、功能列表（新增 / 变更 / 移除）、下载与安装说明；过期的截图、命令或描述一并修正。
   2. **项目简介**：GitHub 仓库 About 描述随版本与功能更新（`gh repo edit --description "..."`）。
@@ -181,7 +190,7 @@ Remove-Item -Recurse -Force "$env:TEMP\lwt-dev" -ErrorAction SilentlyContinue
 - **启动开发版必须逐项自检（固定动作，禁止盲测）**：每次启动开发版前后都要核对：① `netstat` 确认 1420 在监听，并实际请求 `http://localhost:1420` 返回 200；② 结束所有 `%TEMP%\lwt-dev` 旧实例，确认 exe 复制成功（出现 Device busy 说明旧进程未退，不得继续）；③ 启动后核对进程路径确实来自 `%TEMP%\lwt-dev`；④ 确认窗口能正常加载页面——页面空白时先查 Vite/WebView，不得继续做热键或功能测试；⑤ 截图测试使用实际注册成功的热键；为排查临时改过热键，必须改回并重启；⑥ 不得凭“可能被安装版占用”臆测热键失效，要以实际注册结果/日志为准。
 
 - 前端/Build：`npm run build` 无 TS 错误与 Vite 构建错误。
-- 快捷键入口改动：确认全局设置不再列出该工具、工具页/设置页内能录制、失焦自动保存、删除可用、冲突提示正常。
+- 快捷键入口改动：确认全局设置不再列出该工具、工具页/设置页内能录制、失焦自动保存、删除可用、冲突提示正常；涉及触发类型的改动还要验证：非编辑态类型按钮置灰、切换有键值时先确认清空且保持录制态、单键/鼠标侧键可录、跨类型同键判冲突、被占用时键值框红色虚线且改键后消失。
 - 截图预选/窗口检测改动：覆盖层进入即全屏预选；`仅窗口` 下移动鼠标预选跟随窗口（含任务栏）；单击预选区域进入标注、拖拽松手进入标注；`不检测` 时不跟随窗口；`窗口和UI` 置灰不可选。
 - Rust：`cargo check` 通过；改动模块的单测通过，全量用 `--test-threads=1`（`input_monitor` 等测试共享全局按键状态，并行会偶发失败）。
 - 运行时/UI 变更：需在 Windows 真机验证；应用为管理员权限，测试高完整性窗口按键时注意同 App ID 的已安装版干扰（开发版已隔离标识，两者可同时运行）。

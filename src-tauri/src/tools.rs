@@ -1,13 +1,27 @@
 use std::{collections::BTreeMap, sync::mpsc, thread};
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::{
-    app_usage, clipboard, key_usage, push_debug_log, screenshot, settings::AppSettings, shortcut_tip,
-    timer, window_pinner, window_service, AppState,
+    app_usage, clipboard, hotkey_listener, key_usage, push_debug_log, screenshot, settings::AppSettings,
+    shortcut_tip, timer, window_pinner, window_service, AppState,
 };
+
+/// 快捷键触发类型：`RegisterHotKey` 独占的全局热键。
+pub const HOTKEY_KIND_GLOBAL: &str = "global";
+/// 快捷键触发类型：低级键鼠钩子监听（不吞键、按下即触发）。
+pub const HOTKEY_KIND_LISTEN: &str = "listen";
+
+/// 触发类型归一：只接受 `global` / `listen`，其它值视为未知类型。
+pub fn normalize_hotkey_kind(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        HOTKEY_KIND_GLOBAL => Some(HOTKEY_KIND_GLOBAL),
+        HOTKEY_KIND_LISTEN => Some(HOTKEY_KIND_LISTEN),
+        _ => None,
+    }
+}
 
 struct ToolDefinition {
     id: &'static str,
@@ -131,6 +145,9 @@ struct RunningWorker {
 pub struct ToolRegistry {
     enabled: BTreeMap<String, bool>,
     hotkeys: BTreeMap<String, String>,
+    /// 最近一次注册尝试的失败原因（快捷键 id → 友好文案）；注册成功时清除。
+    /// 用于非录制阶段在快捷键行上显示红色状态标记。
+    hotkey_errors: BTreeMap<String, String>,
     workers: BTreeMap<String, RunningWorker>,
     shortcuts_suspended: bool,
     settings: AppSettings,
@@ -143,6 +160,10 @@ pub struct ToolSnapshot {
     name: &'static str,
     description: &'static str,
     hotkey: String,
+    /// 触发类型：`global` / `listen`。
+    hotkey_kind: &'static str,
+    /// 非空表示该快捷键当前不可用：被其它程序占用、解析失败或与其它功能配置冲突。
+    hotkey_error: Option<String>,
     enabled: bool,
     implemented: bool,
     supports_hotkey: bool,
@@ -163,6 +184,11 @@ impl ToolRegistry {
         settings
             .hotkeys
             .retain(|hotkey_id, _| known_hotkey_ids.contains(&hotkey_id.as_str()));
+        // 只保留已知条目且类型合法的记录；缺省（旧数据）不写入，读取时按 global 处理。
+        settings.hotkey_kinds.retain(|hotkey_id, kind| {
+            known_hotkey_ids.contains(&hotkey_id.as_str())
+                && normalize_hotkey_kind(kind).is_some()
+        });
 
         for tool in TOOLS.iter() {
             if tool.implemented {
@@ -191,6 +217,7 @@ impl ToolRegistry {
         Self {
             enabled: settings.tools.clone(),
             hotkeys: settings.hotkeys.clone(),
+            hotkey_errors: BTreeMap::new(),
             workers: BTreeMap::new(),
             shortcuts_suspended: false,
             settings,
@@ -228,7 +255,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    pub fn register_app_hotkeys(&self, app: &AppHandle) -> Result<(), String> {
+    pub fn register_app_hotkeys(&mut self, app: &AppHandle) -> Result<(), String> {
         if self.shortcuts_suspended {
             return Ok(());
         }
@@ -241,15 +268,12 @@ impl ToolRegistry {
                     continue;
                 }
             }
-            let shortcut = match self.shortcut_for(hotkey.id) {
-                Ok(Some(shortcut)) => shortcut,
-                Ok(None) => continue,
-                Err(error) => {
-                    failures.push(format!("{}: {error}", hotkey.id));
-                    continue;
-                }
-            };
-            if let Err(error) = app.global_shortcut().register(shortcut) {
+            let value = self.hotkey_for(hotkey.id);
+            if value.is_empty() {
+                continue;
+            }
+            let kind = self.hotkey_kind(hotkey.id);
+            if let Err(error) = self.try_register_hotkey(app, hotkey.id, kind, &value) {
                 failures.push(format!("{}: {error}", hotkey.id));
             }
         }
@@ -292,6 +316,7 @@ impl ToolRegistry {
     }
 
     pub fn snapshot(&self) -> Vec<ToolSnapshot> {
+        let conflicts = self.hotkey_conflicts();
         TOOLS
             .iter()
             .map(|tool| ToolSnapshot {
@@ -299,10 +324,32 @@ impl ToolRegistry {
                 name: tool.name,
                 description: tool.description,
                 hotkey: self.hotkey_for(tool.id),
+                hotkey_kind: self.hotkey_kind(tool.id),
+                hotkey_error: self.hotkey_error(tool.id, &conflicts),
                 enabled: self.is_enabled(tool.id),
                 implemented: tool.implemented,
                 supports_hotkey: tool.default_hotkey.is_some(),
                 worker_running: self.workers.contains_key(tool.id),
+            })
+            .collect()
+    }
+
+    /// 软件级快捷键快照：`hotkey_error` 与工具行同一口径（配置冲突优先，其次注册失败）。
+    pub fn app_hotkey_snapshots(&self) -> Vec<ToolSnapshot> {
+        let conflicts = self.hotkey_conflicts();
+        APP_HOTKEYS
+            .iter()
+            .map(|hotkey| ToolSnapshot {
+                id: hotkey.id,
+                name: hotkey.name,
+                description: hotkey.description,
+                hotkey: self.hotkey_for(hotkey.id),
+                hotkey_kind: self.hotkey_kind(hotkey.id),
+                hotkey_error: self.hotkey_error(hotkey.id, &conflicts),
+                enabled: true,
+                implemented: true,
+                supports_hotkey: true,
+                worker_running: false,
             })
             .collect()
     }
@@ -320,8 +367,9 @@ impl ToolRegistry {
         if tool.is_some_and(|tool| tool.default_hotkey.is_none()) {
             return Err("该工具不需要快捷键".to_owned());
         }
-        let normalized = normalize_hotkey(&hotkey)?;
-        self.ensure_hotkey_available(hotkey_id, &normalized)?;
+        let kind = self.hotkey_kind(hotkey_id);
+        let normalized = normalize_hotkey_for_kind(kind, &hotkey)?;
+        self.ensure_hotkey_available(hotkey_id, kind, &normalized)?;
         let previous = self.hotkey_for(hotkey_id);
         if previous == normalized {
             return Ok(());
@@ -329,38 +377,21 @@ impl ToolRegistry {
 
         let should_register = self.hotkey_should_register(hotkey_id);
         if should_register && self.shortcuts_suspended {
-            let next_shortcut: Shortcut = normalized
-                .parse()
-                .map_err(|error| format!("解析新快捷键失败: {error}"))?;
-            app.global_shortcut()
-                .register(next_shortcut)
-                .map_err(|error| format!("注册新快捷键失败: {error}"))?;
-            let registered_shortcut: Shortcut = normalized
-                .parse()
-                .map_err(|error| format!("解析新快捷键失败: {error}"))?;
-            app.global_shortcut()
-                .unregister(registered_shortcut)
-                .map_err(|error| format!("释放新快捷键检查失败: {error}"))?;
+            // 录制期间快捷键已全部注销：全局热键先试注册一次再放掉，尽早暴露「键被占用」；
+            // 监听型快捷键不独占按键，没有等价的可占用性检查。
+            if kind == HOTKEY_KIND_GLOBAL {
+                register_hotkey(app, hotkey_id, kind, &normalized)?;
+                unregister_hotkey(app, hotkey_id, kind, &normalized);
+            }
         } else if should_register {
             if !previous.is_empty() {
-                let previous_shortcut: Shortcut = previous
-                    .parse()
-                    .map_err(|error| format!("解析原快捷键失败: {error}"))?;
-                app.global_shortcut()
-                    .unregister(previous_shortcut)
-                    .map_err(|error| format!("注销原快捷键失败: {error}"))?;
+                unregister_hotkey(app, hotkey_id, kind, &previous);
             }
-            let next_shortcut: Shortcut = normalized
-                .parse()
-                .map_err(|error| format!("解析新快捷键失败: {error}"))?;
-            if let Err(error) = app.global_shortcut().register(next_shortcut) {
+            if let Err(error) = self.try_register_hotkey(app, hotkey_id, kind, &normalized) {
                 if !previous.is_empty() {
-                    let restore_shortcut: Shortcut = previous
-                        .parse()
-                        .map_err(|parse_error| format!("恢复原快捷键失败: {parse_error}"))?;
-                    let _ = app.global_shortcut().register(restore_shortcut);
+                    let _ = self.try_register_hotkey(app, hotkey_id, kind, &previous);
                 }
-                return Err(format!("注册新快捷键失败: {error}"));
+                return Err(error);
             }
         }
 
@@ -369,6 +400,39 @@ impl ToolRegistry {
         self.settings
             .hotkeys
             .insert(hotkey_id.to_owned(), normalized);
+        self.hotkey_errors.remove(hotkey_id);
+        Ok(())
+    }
+
+    /// 切换快捷键的触发类型。
+    ///
+    /// **顺序固定为「先清空键值，再切类型」**：旧键值多半不符合新类型的格式
+    /// （组合键 ↔ 单键），若先按新类型校验旧键就会误报「切换失败」。清空后保持
+    /// 录制态由前端负责，这里只落库与解绑。
+    pub fn set_hotkey_kind(
+        &mut self,
+        app: &AppHandle,
+        hotkey_id: &str,
+        kind: &str,
+    ) -> Result<(), String> {
+        let known = TOOLS
+            .iter()
+            .any(|tool| tool.id == hotkey_id && tool.default_hotkey.is_some())
+            || APP_HOTKEYS.iter().any(|hotkey| hotkey.id == hotkey_id);
+        if !known {
+            return Err("未知快捷键".to_owned());
+        }
+        let kind = normalize_hotkey_kind(kind).ok_or("未知的触发类型")?;
+        if self.hotkey_kind(hotkey_id) == kind {
+            return Ok(());
+        }
+        self.unregister_hotkey_if_registered(app, hotkey_id);
+        self.hotkeys.insert(hotkey_id.to_owned(), String::new());
+        self.settings.hotkeys.insert(hotkey_id.to_owned(), String::new());
+        self.settings
+            .hotkey_kinds
+            .insert(hotkey_id.to_owned(), kind.to_owned());
+        self.hotkey_errors.remove(hotkey_id);
         Ok(())
     }
 
@@ -380,13 +444,54 @@ impl ToolRegistry {
         if tool.is_some_and(|tool| tool.default_hotkey.is_none()) {
             return Err("该工具不需要快捷键".to_owned());
         }
-        if self.hotkey_registered(hotkey_id) && !self.shortcuts_suspended {
-            self.unregister_hotkey_if_registered(app, hotkey_id);
-        }
+        self.unregister_hotkey_if_registered(app, hotkey_id);
         self.hotkeys.insert(hotkey_id.to_owned(), String::new());
         self.settings
             .hotkeys
             .insert(hotkey_id.to_owned(), String::new());
+        self.hotkey_errors.remove(hotkey_id);
+        Ok(())
+    }
+
+    /// 当前触发的规范化标识（跨类型判重用）：全局热键用 `normalize_hotkey` 的写法，
+    /// 监听型用单键标识，两者共享同一套按键名，因此 `F12` 与监听 `F12` 会判为同一键。
+    fn ensure_hotkey_available(
+        &self,
+        hotkey_id: &str,
+        kind: &str,
+        hotkey: &str,
+    ) -> Result<(), String> {
+        let Some(candidate) = trigger_identity(kind, hotkey) else {
+            return Ok(());
+        };
+        let mut conflict = false;
+        for tool in TOOLS.iter() {
+            if tool.id == hotkey_id {
+                continue;
+            }
+            let other_kind = self.hotkey_kind(tool.id);
+            let other = self.hotkey_for(tool.id);
+            if trigger_identity(other_kind, &other).as_deref() == Some(candidate.as_str()) {
+                conflict = true;
+                break;
+            }
+        }
+        if !conflict {
+            for app_hotkey in APP_HOTKEYS.iter() {
+                if app_hotkey.id == hotkey_id {
+                    continue;
+                }
+                let other_kind = self.hotkey_kind(app_hotkey.id);
+                let other = self.hotkey_for(app_hotkey.id);
+                if trigger_identity(other_kind, &other).as_deref() == Some(candidate.as_str()) {
+                    conflict = true;
+                    break;
+                }
+            }
+        }
+        if conflict {
+            return Err("快捷键已被其他功能占用".to_owned());
+        }
         Ok(())
     }
 
@@ -396,6 +501,7 @@ impl ToolRegistry {
             .iter()
             .find(|tool| {
                 self.is_enabled(tool.id)
+                    && self.hotkey_kind(tool.id) == HOTKEY_KIND_GLOBAL
                     && canonical_hotkey(&self.hotkey_for(tool.id)).as_deref()
                         == Some(normalized.as_str())
             })
@@ -407,10 +513,16 @@ impl ToolRegistry {
         APP_HOTKEYS
             .iter()
             .find(|hotkey| {
-                canonical_hotkey(&self.hotkey_for(hotkey.id)).as_deref()
-                    == Some(normalized.as_str())
+                self.hotkey_kind(hotkey.id) == HOTKEY_KIND_GLOBAL
+                    && canonical_hotkey(&self.hotkey_for(hotkey.id)).as_deref()
+                        == Some(normalized.as_str())
             })
             .map(|hotkey| hotkey.id.to_owned())
+    }
+
+    /// 该 id 是否是软件级快捷键（而非工具 id）；派发时据此分流。
+    pub fn is_app_hotkey(&self, hotkey_id: &str) -> bool {
+        APP_HOTKEYS.iter().any(|hotkey| hotkey.id == hotkey_id)
     }
 
     pub fn only_enabled_tool(&self) -> Option<String> {
@@ -443,32 +555,54 @@ impl ToolRegistry {
         if !self.shortcuts_suspended {
             return Ok(());
         }
-        let mut registered = Vec::new();
+        // 恢复注册按「逐条尽力」处理：单个键被占用不应让其余快捷键一起失效。
+        let mut failures: Vec<String> = Vec::new();
         for tool in TOOLS.iter() {
             if self.is_enabled(tool.id) && self.supports_hotkey(tool.id) {
-                let Some(shortcut) = self.shortcut_for(tool.id)? else {
+                let kind = self.hotkey_kind(tool.id);
+                let value = self.hotkey_for(tool.id);
+                if value.is_empty() {
                     continue;
-                };
-                if let Err(error) = app.global_shortcut().register(shortcut) {
-                    for registered_shortcut in registered {
-                        let _ = app.global_shortcut().unregister(registered_shortcut);
-                    }
-                    return Err(format!("恢复快捷键失败: {error}"));
                 }
-                registered.push(shortcut);
+                if let Err(error) = self.try_register_hotkey(app, tool.id, kind, &value) {
+                    failures.push(format!(
+                        "{}={}: {error}",
+                        tool.id,
+                        format_hotkey_display(&value)
+                    ));
+                }
             }
         }
         for hotkey in APP_HOTKEYS.iter() {
-            let Some(shortcut) = self.shortcut_for(hotkey.id)? else {
-                continue;
-            };
-            if let Err(error) = app.global_shortcut().register(shortcut) {
-                eprintln!("[hotkey] app hotkey restore skipped: {error}");
+            // 与 `register_app_hotkeys` 同口径：归属工具已停用时不再恢复注册。
+            if let Some(owner) = crate::shortcut_tip::hotkey_owner_tool(hotkey.id) {
+                if !self.is_enabled(owner) {
+                    continue;
+                }
+            }
+            let kind = self.hotkey_kind(hotkey.id);
+            let value = self.hotkey_for(hotkey.id);
+            if value.is_empty() {
                 continue;
             }
-            registered.push(shortcut);
+            if let Err(error) = self.try_register_hotkey(app, hotkey.id, kind, &value) {
+                failures.push(format!(
+                    "{}={}: {error}",
+                    hotkey.id,
+                    format_hotkey_display(&value)
+                ));
+            }
         }
         self.shortcuts_suspended = false;
+        if !failures.is_empty() {
+            if let Some(state) = app.try_state::<AppState>() {
+                push_debug_log(
+                    &state,
+                    "hotkey",
+                    format!("tool.hotkeys.resume_failed {}", failures.join("; ")),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -502,30 +636,17 @@ impl ToolRegistry {
             .is_some_and(|tool| tool.default_hotkey.is_some())
     }
 
-    fn ensure_hotkey_available(&self, tool_id: &str, hotkey: &str) -> Result<(), String> {
-        let Some(candidate) = canonical_hotkey(hotkey) else {
-            return Ok(());
-        };
-        let conflict = TOOLS
-            .iter()
-            .any(|tool| {
-                tool.id != tool_id
-                    && canonical_hotkey(&self.hotkey_for(tool.id)).as_deref()
-                        == Some(candidate.as_str())
-            })
-            || APP_HOTKEYS.iter().any(|app_hotkey| {
-                app_hotkey.id != tool_id
-                    && canonical_hotkey(&self.hotkey_for(app_hotkey.id)).as_deref()
-                        == Some(candidate.as_str())
-            });
-        if conflict {
-            return Err("快捷键已被其他功能占用".to_owned());
+    /// 触发类型：缺省（旧数据 / 未显式切换）一律按全局热键处理。
+    fn hotkey_kind(&self, hotkey_id: &str) -> &'static str {
+        match self
+            .settings
+            .hotkey_kinds
+            .get(hotkey_id)
+            .map(String::as_str)
+        {
+            Some(HOTKEY_KIND_LISTEN) => HOTKEY_KIND_LISTEN,
+            _ => HOTKEY_KIND_GLOBAL,
         }
-        Ok(())
-    }
-
-    fn hotkey_registered(&self, hotkey_id: &str) -> bool {
-        !self.hotkey_for(hotkey_id).is_empty() && self.hotkey_should_register(hotkey_id)
     }
 
     fn hotkey_should_register(&self, hotkey_id: &str) -> bool {
@@ -536,22 +657,88 @@ impl ToolRegistry {
             || (self.is_enabled(hotkey_id) && self.supports_hotkey(hotkey_id))
     }
 
-    fn shortcut_for(&self, hotkey_id: &str) -> Result<Option<Shortcut>, String> {
-        let hotkey = self.hotkey_for(hotkey_id);
-        if hotkey.is_empty() {
-            return Ok(None);
+    fn unregister_hotkey_if_registered(&self, app: &AppHandle, hotkey_id: &str) {
+        let kind = self.hotkey_kind(hotkey_id);
+        let value = self.hotkey_for(hotkey_id);
+        if value.is_empty() {
+            return;
         }
-        hotkey
-            .parse()
-            .map(Some)
-            .map_err(|error| format!("解析快捷键失败: {error}"))
+        unregister_hotkey(app, hotkey_id, kind, &value);
     }
 
-    fn unregister_hotkey_if_registered(&self, app: &AppHandle, hotkey_id: &str) {
-        let Ok(shortcut) = self.hotkey_for(hotkey_id).parse::<Shortcut>() else {
-            return;
-        };
-        let _ = app.global_shortcut().unregister(shortcut);
+    /// 非录制阶段该快捷键是否要显示红色状态：配置冲突优先于“注册失败”。
+    fn hotkey_error(
+        &self,
+        hotkey_id: &str,
+        conflicts: &BTreeMap<String, String>,
+    ) -> Option<String> {
+        // 没有键值的行不可能是“被占用/冲突”，避免任何陈旧错误标记残留。
+        if self.hotkey_for(hotkey_id).is_empty() {
+            return None;
+        }
+        if let Some(reason) = conflicts.get(hotkey_id) {
+            return Some(reason.clone());
+        }
+        self.hotkey_errors.get(hotkey_id).cloned()
+    }
+
+    /// 找出“同一个物理键被多个功能配置”的情况；正常保存不会产生，旧数据/手改配置可能有。
+    fn hotkey_conflicts(&self) -> BTreeMap<String, String> {
+        let mut groups: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
+        for tool in TOOLS.iter() {
+            let value = self.hotkey_for(tool.id);
+            if let Some(identity) = trigger_identity(self.hotkey_kind(tool.id), &value) {
+                groups.entry(identity).or_default().push(tool.id);
+            }
+        }
+        for hotkey in APP_HOTKEYS.iter() {
+            let value = self.hotkey_for(hotkey.id);
+            if let Some(identity) = trigger_identity(self.hotkey_kind(hotkey.id), &value) {
+                groups.entry(identity).or_default().push(hotkey.id);
+            }
+        }
+        let mut conflicts = BTreeMap::new();
+        for ids in groups.values() {
+            if ids.len() < 2 {
+                continue;
+            }
+            for id in ids {
+                let other = ids
+                    .iter()
+                    .find(|candidate| *candidate != id)
+                    .copied()
+                    .unwrap_or(*id);
+                conflicts.insert(
+                    (*id).to_owned(),
+                    format!(
+                        "与「{}」使用了同一个按键，只能生效一个",
+                        hotkey_display_name(other)
+                    ),
+                );
+            }
+        }
+        conflicts
+    }
+
+    /// 注册并记录结果：成功清除该快捷键的错误标记，失败记录友好原因。
+    fn try_register_hotkey(
+        &mut self,
+        app: &AppHandle,
+        hotkey_id: &str,
+        kind: &str,
+        value: &str,
+    ) -> Result<(), String> {
+        match register_hotkey(app, hotkey_id, kind, value) {
+            Ok(()) => {
+                self.hotkey_errors.remove(hotkey_id);
+                Ok(())
+            }
+            Err(error) => {
+                self.hotkey_errors
+                    .insert(hotkey_id.to_owned(), error.clone());
+                Err(error)
+            }
+        }
     }
 
     fn start(&mut self, app: &AppHandle, tool: &ToolDefinition) -> Result<(), String> {
@@ -564,14 +751,13 @@ impl ToolRegistry {
             // 归属该工具的软件级快捷键随工具启用一起注册（与停用时的注销成对）。
             let mut failures: Vec<String> = Vec::new();
             for hotkey_id in self.app_hotkeys_owned_by(tool.id) {
-                match self.shortcut_for(hotkey_id) {
-                    Ok(Some(shortcut)) => {
-                        if let Err(error) = app.global_shortcut().register(shortcut) {
-                            failures.push(format!("{hotkey_id}: {error}"));
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => failures.push(format!("{hotkey_id}: {error}")),
+                let kind = self.hotkey_kind(hotkey_id);
+                let value = self.hotkey_for(hotkey_id);
+                if value.is_empty() {
+                    continue;
+                }
+                if let Err(error) = self.try_register_hotkey(app, hotkey_id, kind, &value) {
+                    failures.push(format!("{hotkey_id}: {error}"));
                 }
             }
             if !failures.is_empty() {
@@ -583,10 +769,23 @@ impl ToolRegistry {
             }
         }
         if !self.shortcuts_suspended && tool.default_hotkey.is_some() {
-            if let Some(shortcut) = self.shortcut_for(tool.id)? {
-                app.global_shortcut()
-                    .register(shortcut)
-                    .map_err(|error| format!("注册快捷键失败: {error}"))?;
+            let kind = self.hotkey_kind(tool.id);
+            let value = self.hotkey_for(tool.id);
+            if !value.is_empty() {
+                // 快捷键注册失败只提示、不阻止工具启用：键被其它程序占用不应该让整块工具打不开。
+                if let Err(error) = self.try_register_hotkey(app, tool.id, kind, &value) {
+                    let display = format_hotkey_display(&value);
+                    log_tool_lifecycle(
+                        app,
+                        tool.id,
+                        format!("tool.hotkey.register_failed key={display} error={error}"),
+                    );
+                    // Toast 只说明“存在冲突/占用”，不展开具体键名与原因（详情留日志与行内悬停）。
+                    let _ = app.emit(
+                        "tool-hotkey-warning",
+                        format!("「{}」存在快捷键冲突或被其它程序占用", tool.name),
+                    );
+                }
             }
         }
         if tool.id == "clipboard" {
@@ -629,6 +828,11 @@ impl ToolRegistry {
                 self.unregister_hotkey_if_registered(app, hotkey_id);
             }
         }
+        // 停用后这些快捷键不再注册，旧的“不可用”标记随之清除（配置冲突仍由快照实时计算）。
+        self.hotkey_errors.remove(tool.id);
+        for hotkey_id in self.app_hotkeys_owned_by(tool.id) {
+            self.hotkey_errors.remove(hotkey_id);
+        }
         window_service::close_tool_window(app, tool.id);
         if tool.id == "clipboard" {
             clipboard::stop();
@@ -667,6 +871,95 @@ impl ToolRegistry {
     }
 }
 
+/// 按触发类型注册快捷键：全局热键走 `RegisterHotKey`（宿主独占），监听型走低级键鼠钩子。
+fn register_hotkey(
+    app: &AppHandle,
+    hotkey_id: &str,
+    kind: &str,
+    hotkey: &str,
+) -> Result<(), String> {
+    if hotkey.is_empty() {
+        return Ok(());
+    }
+    if kind == HOTKEY_KIND_LISTEN {
+        hotkey_listener::register(app, hotkey_id, hotkey).map_err(|error| {
+            if let Some(state) = app.try_state::<AppState>() {
+                push_debug_log(
+                    &state,
+                    "hotkey",
+                    format!("hotkey.listen.register_failed id={hotkey_id} key={hotkey} error={error}"),
+                );
+            }
+            error
+        })?;
+        if let Some(state) = app.try_state::<AppState>() {
+            push_debug_log(
+                &state,
+                "hotkey",
+                format!("hotkey.listen.registered id={hotkey_id} key={hotkey}"),
+            );
+        }
+        return Ok(());
+    }
+    let shortcut = parse_shortcut(hotkey)?;
+    app.global_shortcut()
+        .register(shortcut)
+        .map_err(friendly_register_error)
+}
+
+/// 按触发类型注销快捷键；不存在的按键静默忽略（停用工具时可能本来就没注册）。
+fn unregister_hotkey(app: &AppHandle, hotkey_id: &str, kind: &str, hotkey: &str) {
+    if hotkey.is_empty() {
+        return;
+    }
+    if kind == HOTKEY_KIND_LISTEN {
+        hotkey_listener::unregister(hotkey_id);
+        return;
+    }
+    let Ok(shortcut) = parse_shortcut(hotkey) else {
+        return;
+    };
+    let _ = app.global_shortcut().unregister(shortcut);
+}
+
+fn parse_shortcut(value: &str) -> Result<Shortcut, String> {
+    value
+        .parse()
+        .map_err(|error| format!("解析快捷键失败: {error}"))
+}
+
+/// 注册失败统一转成用户能看懂的中文：键被占用时不把系统原文抛给用户。
+fn friendly_register_error(error: impl std::fmt::Display) -> String {
+    let text = error.to_string();
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("already registered") || text.contains("1409") {
+        "该键已被其它程序占用，请换一个键".to_owned()
+    } else {
+        format!("快捷键注册失败: {text}")
+    }
+}
+
+/// 一次触发的规范化标识：全局热键用 `normalize_hotkey` 的写法，监听型用单键标识。
+/// 两者共用同一套按键名，所以「全局 F12」与「监听 F12」能判成同一个键。
+fn trigger_identity(kind: &str, hotkey: &str) -> Option<String> {
+    if hotkey.trim().is_empty() {
+        return None;
+    }
+    if kind == HOTKEY_KIND_LISTEN {
+        return hotkey_listener::listen_key_token(hotkey);
+    }
+    canonical_hotkey(hotkey)
+}
+
+/// 按触发类型校验并规范化键值：监听型只接受单个按键 / 鼠标侧键。
+fn normalize_hotkey_for_kind(kind: &str, value: &str) -> Result<String, String> {
+    if kind == HOTKEY_KIND_LISTEN {
+        return hotkey_listener::listen_key_token(value)
+            .ok_or_else(|| "键鼠监听只支持单个按键或鼠标侧键".to_owned());
+    }
+    normalize_hotkey(value)
+}
+
 fn log_tool_lifecycle(app: &AppHandle, tool_id: &str, message: impl Into<String>) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
@@ -697,24 +990,19 @@ pub fn apply_development_defaults(settings: &mut AppSettings) {
     }
 }
 
-pub fn app_hotkey_snapshots(settings: &AppSettings) -> Vec<ToolSnapshot> {
-    APP_HOTKEYS
+/// 快捷键 id → 展示名：配置冲突提示里要能说清“和谁撞了”。
+fn hotkey_display_name(hotkey_id: &str) -> &str {
+    TOOLS
         .iter()
-        .map(|hotkey| ToolSnapshot {
-            id: hotkey.id,
-            name: hotkey.name,
-            description: hotkey.description,
-            hotkey: settings
-                .hotkeys
-                .get(hotkey.id)
-                .cloned()
-                .unwrap_or_else(|| hotkey.default_hotkey.to_owned()),
-            enabled: true,
-            implemented: true,
-            supports_hotkey: true,
-            worker_running: false,
+        .find(|tool| tool.id == hotkey_id)
+        .map(|tool| tool.name)
+        .or_else(|| {
+            APP_HOTKEYS
+                .iter()
+                .find(|hotkey| hotkey.id == hotkey_id)
+                .map(|hotkey| hotkey.name)
         })
-        .collect()
+        .unwrap_or(hotkey_id)
 }
 
 fn normalize_hotkey(value: &str) -> Result<String, String> {
@@ -723,7 +1011,13 @@ fn normalize_hotkey(value: &str) -> Result<String, String> {
         .map(|part| normalize_hotkey_part(part.trim()))
         .filter(|part| !part.is_empty())
         .collect();
+    // 全局热键允许「单个功能键」：RegisterHotKey 可以只注册 F1–F24（其它单键仍要求修饰键）。
     if parts.len() < 2 {
+        if let Some(single) = parts.first() {
+            if is_function_key_token(single) {
+                return Ok(single.clone());
+            }
+        }
         return Err("快捷键必须包含修饰键和一个按键".to_owned());
     }
 
@@ -795,8 +1089,19 @@ fn normalize_hotkey(value: &str) -> Result<String, String> {
 /// 显示仍走 `format_hotkey_display`，存储值不变。
 fn canonical_hotkey(value: &str) -> Option<String> {
     let normalized = normalize_hotkey(value).ok()?;
-    let (modifiers, key) = normalized.rsplit_once('+')?;
-    Some(format!("{modifiers}+{}", canonical_key_token(key)))
+    Some(match normalized.rsplit_once('+') {
+        Some((modifiers, key)) => format!("{modifiers}+{}", canonical_key_token(key)),
+        // 单个功能键（F1–F24）没有修饰键段。
+        None => canonical_key_token(&normalized),
+    })
+}
+
+/// 是否是单个功能键（`F1`–`F24`），全局热键允许不带修饰键。
+fn is_function_key_token(token: &str) -> bool {
+    token
+        .strip_prefix('F')
+        .and_then(|rest| rest.parse::<u32>().ok())
+        .is_some_and(|number| (1..=24).contains(&number))
 }
 
 /// 把同一个物理按键的各种写法收敛到一个标识（符号 → DOM code 名，短别名 → 全名）。
@@ -890,6 +1195,25 @@ fn format_hotkey_display_part(part: &str) -> String {
         "DOWN" | "ARROWDOWN" => "Down".to_owned(),
         "LEFT" | "ARROWLEFT" => "Left".to_owned(),
         "RIGHT" | "ARROWRIGHT" => "Right".to_owned(),
+        "CAPSLOCK" => "CapsLock".to_owned(),
+        "NUMLOCK" => "NumLock".to_owned(),
+        "SCROLLLOCK" => "ScrollLock".to_owned(),
+        "PRINTSCREEN" => "PrintScreen".to_owned(),
+        "PAUSE" => "Pause".to_owned(),
+        // 键鼠监听型快捷键的单键标识：符号键与鼠标侧键要显示成用户认识的写法。
+        "SLASH" | "/" => "/".to_owned(),
+        "PERIOD" | "." => ".".to_owned(),
+        "COMMA" | "," => ",".to_owned(),
+        "SEMICOLON" | ";" => ";".to_owned(),
+        "QUOTE" | "'" => "'".to_owned(),
+        "BRACKETLEFT" | "[" => "[".to_owned(),
+        "BRACKETRIGHT" | "]" => "]".to_owned(),
+        "EQUAL" | "=" => "=".to_owned(),
+        "MINUS" | "-" => "-".to_owned(),
+        "BACKQUOTE" | "`" => "`".to_owned(),
+        "BACKSLASH" | "\\" => "\\".to_owned(),
+        "MOUSE4" => "鼠标侧键1".to_owned(),
+        "MOUSE5" => "鼠标侧键2".to_owned(),
         _ => upper,
     }
 }
@@ -907,7 +1231,7 @@ fn normalize_hotkey_part(part: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_hotkey, format_hotkey_display, normalize_hotkey};
+    use super::{canonical_hotkey, format_hotkey_display, normalize_hotkey, ToolRegistry};
     use tauri_plugin_global_shortcut::Shortcut;
 
     /// 工具停用必须把它名下的软件级快捷键一起注销：归属表是这条规则的唯一依据，
@@ -993,5 +1317,147 @@ mod tests {
         assert_eq!(slash.to_string(), "control+super+Slash");
         let period: Shortcut = "CTRL+ALT+.".parse().expect("符号键应可解析");
         assert_eq!(period.to_string(), "control+alt+Period");
+        // 单个功能键注册后的回调文本必须还能匹配回存储值（全局 F12 派发链路）。
+        let function_key: Shortcut = "F12".parse().expect("单个功能键应可解析");
+        assert_eq!(function_key.to_string(), "F12");
+    }
+
+    /// 全局热键放开单个功能键（F1–F24），但普通单键仍必须带修饰键。
+    #[test]
+    fn global_hotkey_accepts_single_function_keys_only() {
+        assert_eq!(normalize_hotkey("f12").unwrap(), "F12");
+        assert_eq!(canonical_hotkey("F12").as_deref(), Some("F12"));
+        assert_eq!(canonical_hotkey("control+alt+F12").as_deref(), Some("CTRL+ALT+F12"));
+        assert!(normalize_hotkey("A").is_err());
+        assert!(normalize_hotkey("F25").is_err());
+    }
+
+    /// 监听型快捷键的键值要显示成用户认识的写法（符号与鼠标侧键）。
+    #[test]
+    fn formats_listen_hotkeys_for_display() {
+        assert_eq!(format_hotkey_display("MOUSE4"), "鼠标侧键1");
+        assert_eq!(format_hotkey_display("MOUSE5"), "鼠标侧键2");
+        assert_eq!(format_hotkey_display("SLASH"), "/");
+        assert_eq!(format_hotkey_display("ARROWUP"), "Up");
+        assert_eq!(format_hotkey_display("F12"), "F12");
+    }
+
+    /// 旧数据没有 `hotkeyKinds`：缺省按全局热键处理，显式切换过的保持监听。
+    #[test]
+    fn hotkey_kind_defaults_to_global_and_keeps_listen() {
+        use crate::settings::AppSettings;
+        let mut settings = AppSettings::default();
+        settings
+            .hotkey_kinds
+            .insert("clipboard".to_owned(), "listen".to_owned());
+        let registry = ToolRegistry::new(settings);
+        let kind_of = |id: &str| {
+            registry
+                .snapshot()
+                .into_iter()
+                .find(|tool| tool.id == id)
+                .map(|tool| tool.hotkey_kind)
+                .unwrap()
+        };
+        assert_eq!(kind_of("clipboard"), "listen");
+        assert_eq!(kind_of("screenshot"), "global");
+    }
+
+    /// 监听型快捷键不参与全局热键的文本派发（否则单键会被误当成组合键匹配）。
+    #[test]
+    fn listen_hotkeys_do_not_match_global_dispatch() {
+        use crate::settings::AppSettings;
+        let mut settings = AppSettings::default();
+        settings.tools.insert("clipboard".to_owned(), true);
+        settings.hotkeys.insert("clipboard".to_owned(), "F12".to_owned());
+        settings
+            .hotkey_kinds
+            .insert("clipboard".to_owned(), "listen".to_owned());
+        let registry = ToolRegistry::new(settings);
+        assert_eq!(registry.tool_for_shortcut("F12"), None);
+        assert_eq!(registry.tool_for_shortcut("control+alt+F12"), None);
+    }
+
+    /// 跨类型冲突：全局 `F12` 与监听 `F12` 是同一个物理键。
+    #[test]
+    fn conflicts_are_detected_across_trigger_kinds() {
+        use crate::settings::AppSettings;
+        let mut settings = AppSettings::default();
+        settings
+            .hotkeys
+            .insert("pin_passthrough".to_owned(), "F12".to_owned());
+        let registry = ToolRegistry::new(settings);
+        assert!(registry
+            .ensure_hotkey_available("clipboard", "listen", "F12")
+            .is_err());
+        assert!(registry
+            .ensure_hotkey_available("clipboard", "listen", "F11")
+            .is_ok());
+        assert!(registry
+            .ensure_hotkey_available("clipboard", "global", "CTRL+ALT+F12")
+            .is_ok());
+    }
+
+    /// 旧数据/手改配置里两个功能同键：两行都要带红标记（冲突原因指向对方）。
+    #[test]
+    fn duplicate_configured_hotkeys_are_reported_as_conflicts() {
+        use crate::settings::AppSettings;
+        let mut settings = AppSettings::default();
+        settings
+            .hotkeys
+            .insert("clipboard".to_owned(), "CTRL+ALT+T".to_owned());
+        let registry = ToolRegistry::new(settings);
+        let tools = registry.snapshot();
+        let clipboard = tools.iter().find(|tool| tool.id == "clipboard").unwrap();
+        let pinner = tools.iter().find(|tool| tool.id == "window_pinner").unwrap();
+        let reason = clipboard.hotkey_error.as_deref().unwrap_or_default();
+        assert!(reason.contains("窗口置顶"), "{reason}");
+        assert!(pinner.hotkey_error.is_some());
+    }
+
+    /// 跨类型同键在快照里也按冲突处理（全局 F12 ↔ 监听 F12）。
+    #[test]
+    fn cross_kind_duplicates_are_reported_as_conflicts() {
+        use crate::settings::AppSettings;
+        let mut settings = AppSettings::default();
+        settings
+            .hotkeys
+            .insert("clipboard".to_owned(), "F12".to_owned());
+        settings
+            .hotkey_kinds
+            .insert("clipboard".to_owned(), "listen".to_owned());
+        settings
+            .hotkeys
+            .insert("pin_passthrough".to_owned(), "F12".to_owned());
+        let registry = ToolRegistry::new(settings);
+        let app_hotkeys = registry.app_hotkey_snapshots();
+        let pin = app_hotkeys
+            .iter()
+            .find(|hotkey| hotkey.id == "pin_passthrough")
+            .unwrap();
+        assert!(pin
+            .hotkey_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("剪贴板"));
+    }
+
+    /// 注册失败只标对应快捷键，不牵连其它行。
+    #[test]
+    fn registration_failure_marks_only_that_hotkey() {
+        use crate::settings::AppSettings;
+        let mut registry = ToolRegistry::new(AppSettings::default());
+        registry.hotkey_errors.insert(
+            "window_pinner".to_owned(),
+            "该键已被其它程序占用，请换一个键".to_owned(),
+        );
+        let tools = registry.snapshot();
+        let pinner = tools.iter().find(|tool| tool.id == "window_pinner").unwrap();
+        assert_eq!(
+            pinner.hotkey_error.as_deref(),
+            Some("该键已被其它程序占用，请换一个键")
+        );
+        let clipboard = tools.iter().find(|tool| tool.id == "clipboard").unwrap();
+        assert!(clipboard.hotkey_error.is_none());
     }
 }

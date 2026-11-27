@@ -63,11 +63,17 @@ type ThemeMode = "system" | "light" | "dark";
 type CloseBehavior = "quit" | "tray";
 type SettingsTab = "general" | "hotkey" | "logs" | "experimental" | "about";
 
+type HotkeyKind = "global" | "listen";
+
 type Tool = {
   id: string;
   name: string;
   description: string;
   hotkey: string;
+  /** 触发类型：全局热键（RegisterHotKey）或键鼠监听（低级钩子）。 */
+  hotkeyKind: HotkeyKind;
+  /** 非空表示该快捷键当前不可用（被占用 / 配置冲突），用于行内红标记。 */
+  hotkeyError: string | null;
   enabled: boolean;
   implemented: boolean;
   supportsHotkey: boolean;
@@ -112,6 +118,9 @@ type ShortcutTipEntry = {
   appHotkey?: string | null;
   available: boolean;
 };
+
+/// 提示编辑草稿：keys 为空表示尚未录制。
+type ShortcutTipDraft = { id?: string; keys: string; label: string; preset: boolean };
 
 type ShortcutTipSortRule = "name" | "created" | "count";
 
@@ -360,6 +369,8 @@ let nextToastId = 1;
 
 type AppSettings = {
   tools: Record<string, boolean>;
+  /** 快捷键触发类型：只记录显式切换过的条目，缺省按 global 处理。 */
+  hotkeyKinds: Record<string, string>;
   theme: ThemeMode;
   autoStart: boolean;
   silentStart: boolean;
@@ -617,6 +628,12 @@ function isTextInputTarget(target: EventTarget | null) {
   return element.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName);
 }
 
+/// 快捷键录制框：录制态要把方向键留给录制，页面的方向键导航必须让路（否则录不进方向键）。
+function isHotkeyRecordingTarget(target: EventTarget | null) {
+  const element = target instanceof HTMLElement ? target : null;
+  return Boolean(element?.closest("[data-hotkey-capture]"));
+}
+
 function useUpdateChecker(settings?: AppSettings) {
   const [updateStatus, setUpdateStatus] = useState("当前已是最新版本");
   const [checkingUpdates, setCheckingUpdates] = useState(false);
@@ -824,8 +841,12 @@ function App() {
     void listen("screenshot-pin-auto-copy-changed", () => void loadSnapshot())
       .then((nextDispose) => { disposers.push(nextDispose); })
       .catch((reason) => setError(String(reason)));
+    // 工具启用成功但快捷键注册失败（键被占用等）：用轻提示告知，不阻塞工具使用。
+    void listen<string>("tool-hotkey-warning", ({ payload }) => pushAppToast(payload))
+      .then((nextDispose) => { disposers.push(nextDispose); })
+      .catch((reason) => setError(String(reason)));
     return () => disposers.forEach((dispose) => dispose());
-  }, [loadSnapshot]);
+  }, [loadSnapshot, pushAppToast]);
 
   useEffect(() => {
     const theme = settings?.theme ?? "system";
@@ -968,7 +989,7 @@ function App() {
     }
 
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.defaultPrevented || isTextInputTarget(event.target)) {
+      if (event.defaultPrevented || isTextInputTarget(event.target) || isHotkeyRecordingTarget(event.target)) {
         return;
       }
       const element = event.target instanceof HTMLElement ? event.target : null;
@@ -1413,7 +1434,7 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
   const [previewBusy, setPreviewBusy] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetConfirmClosing, setResetConfirmClosing] = useState(false);
-  const [draft, setDraft] = useState<{ id?: string; keys: string; label: string; preset: boolean } | null>(null);
+  const [draft, setDraft] = useState<ShortcutTipDraft | null>(null);
   const [tab, setTab] = useState<"preset" | "custom">("preset");
   const [sortRule, setSortRule] = useState<ShortcutTipSortRule>(() => {
     const stored = window.localStorage.getItem("shortcut-tip-sort");
@@ -1436,17 +1457,6 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
     const timer = window.setInterval(() => void refresh().catch(() => {}), 2000);
     return () => window.clearInterval(timer);
   }, [refresh, tool.enabled]);
-
-  // 录制期间由后端钩子接管按键（含 Win 键等系统热键），这里接收回传的组合。
-  useEffect(() => {
-    let dispose: (() => void) | undefined;
-    void listen<string>("shortcut-tip-captured", ({ payload }) => {
-      setDraft((current) => (current && !current.preset ? { ...current, keys: payload } : current));
-    }).then((unlisten) => {
-      dispose = unlisten;
-    });
-    return () => dispose?.();
-  }, []);
 
   async function apply(pending: Promise<ShortcutTipSnapshot>, message: string) {
     try {
@@ -1567,7 +1577,12 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
     }
     const ok = await apply(
       invoke<ShortcutTipSnapshot>("shortcut_tip_upsert", {
-        entry: { id: draft.id ?? null, keys: draft.keys, label: draft.label.trim(), enabled: true },
+        entry: {
+          id: draft.id ?? null,
+          keys: draft.keys,
+          label: draft.label.trim(),
+          enabled: true,
+        },
       }),
       "快捷键提示已保存",
     );
@@ -1786,7 +1801,7 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
                   className={`shortcut-tip-row ${tip.enabled && tip.available ? "" : "shortcut-tip-row-off"}`}
                   title={tip.available ? `已提示 ${tip.triggeredCount} 次` : "对应工具已停用，暂不触发"}
                 >
-                  <kbd className="shortcut-tip-keys">{tip.keys ? formatHotkeyForDisplay(tip.keys) : "未设置"}</kbd>
+                  <kbd className="shortcut-tip-keys">{tip.keys ? formatShortcutTipKeys(tip.keys) : "未设置"}</kbd>
                   <span className="shortcut-tip-label">
                     {tip.label}
                     {tip.available ? null : <em className="shortcut-tip-row-tag">工具已停用</em>}
@@ -1837,22 +1852,63 @@ function ShortcutTipToolPage({ tool }: { tool: Tool }) {
   );
 }
 
+/// 提示键外显：鼠标侧键用中文（与快捷键设置一致），其余沿用统一格式化。
+function formatShortcutTipKeys(keys: string) {
+  const mapped = keys
+    .split("+")
+    .map((part) => {
+      switch (part.trim().toUpperCase()) {
+        case "MOUSE4":
+          return "鼠标侧键1";
+        case "MOUSE5":
+          return "鼠标侧键2";
+        default:
+          return part;
+      }
+    })
+    .join("+");
+  return formatHotkeyForDisplay(mapped);
+}
+
 function ShortcutTipEditorDialog({
   draft,
   onCancel,
   onChange,
   onSave,
 }: {
-  draft: { id?: string; keys: string; label: string; preset: boolean };
+  draft: ShortcutTipDraft;
   onCancel: () => void;
-  onChange: (draft: { id?: string; keys: string; label: string; preset: boolean } | null) => void;
+  onChange: (draft: ShortcutTipDraft | null) => void;
   onSave: () => Promise<boolean>;
 }) {
   const [capturing, setCapturing] = useState(false);
   const [closing, setClosing] = useState(false);
   const captureRef = useRef<HTMLDivElement | null>(null);
   const capturingRef = useRef(false);
+  const draftRef = useRef(draft);
+  const onChangeRef = useRef(onChange);
   const locked = draft.preset;
+
+  useEffect(() => {
+    draftRef.current = draft;
+    onChangeRef.current = onChange;
+  }, [draft, onChange]);
+
+  // 录制期间由后端钩子接管按键（含 Win 键与鼠标侧键），回填草稿。
+  // 提示不给用户选类型：按录到的键形态自动区分组合键/单键/侧键。
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void listen<string>("shortcut-tip-captured", ({ payload }) => {
+      const current = draftRef.current;
+      if (!current || current.preset) {
+        return;
+      }
+      onChangeRef.current({ ...current, keys: payload });
+    }).then((unlisten) => {
+      dispose = unlisten;
+    });
+    return () => dispose?.();
+  }, []);
 
   // 录制只跟录制框的焦点绑定：聚焦才接管按键，失焦立刻恢复，
   // 否则在下方文案框打字也会被当成录制内容回填。
@@ -1942,7 +1998,7 @@ function ShortcutTipEditorDialog({
         </header>
         <div className="shortcut-tip-dialog-body">
           {locked ? (
-            <div className="shortcut-tip-locked-keys">{draft.keys}</div>
+            <div className="shortcut-tip-locked-keys">{formatShortcutTipKeys(draft.keys)}</div>
           ) : (
             <div
               aria-label="快捷键录入"
@@ -1961,7 +2017,7 @@ function ShortcutTipEditorDialog({
               role="textbox"
               tabIndex={0}
             >
-              {draft.keys || (capturing ? "按下快捷键…" : "点击后按下快捷键")}
+              {draft.keys ? formatShortcutTipKeys(draft.keys) : (capturing ? "按下快捷键…" : "点击后按下快捷键")}
             </div>
           )}
           <input
@@ -2478,13 +2534,15 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
   const pinAutoCopyText = settings?.screenshotPinAutoCopyText ?? false;
   const uiDetection: UiDetectionMode = (settings?.screenshotUiDetection ?? "none") as UiDetectionMode;
   const currentHotkey = tools.find((item) => item.id === "screenshot")?.hotkey ?? tool.hotkey;
+  const currentHotkeyKind = tools.find((item) => item.id === "screenshot")?.hotkeyKind ?? tool.hotkeyKind;
+  const currentHotkeyError = tools.find((item) => item.id === "screenshot")?.hotkeyError ?? null;
   // 贴图组的快捷键与截图快捷键一样走工具页配置。
   const pinHotkeys = appHotkeys.filter((item) => item.supportsHotkey && PIN_HOTKEY_IDS.includes(item.id));
   const hotkeyTargets: HotkeyRowTarget[] = [
-    ...appHotkeys.filter((item) => item.supportsHotkey).map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey })),
+    ...appHotkeys.filter((item) => item.supportsHotkey).map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey, kind: item.hotkeyKind, error: item.hotkeyError })),
     ...tools
       .filter((item) => item.supportsHotkey && item.id !== "screenshot")
-      .map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey })),
+      .map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey, kind: item.hotkeyKind, error: item.hotkeyError })),
   ];
 
   useEffect(() => {
@@ -3003,7 +3061,7 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
         {activeTab === "hotkey" ? (
           <div className="settings-section hotkey-settings page-enter">
             <HotkeyRowEditor
-              item={{ id: "screenshot", name: "截图", hotkey: currentHotkey }}
+              item={{ id: "screenshot", name: "截图", hotkey: currentHotkey, kind: currentHotkeyKind, error: currentHotkeyError }}
               onNotice={showNotice}
               others={hotkeyTargets}
               setSnapshot={setSnapshot}
@@ -3011,7 +3069,7 @@ function ScreenshotToolPage({ appHotkeys, settings, setSnapshot, tool, tools, up
             {pinHotkeys.map((item) => (
               <HotkeyRowEditor
                 key={item.id}
-                item={{ id: item.id, name: item.name, hotkey: item.hotkey }}
+                item={{ id: item.id, name: item.name, hotkey: item.hotkey, kind: item.hotkeyKind, error: item.hotkeyError }}
                 onNotice={showNotice}
                 others={hotkeyTargets}
                 setSnapshot={setSnapshot}
@@ -3597,7 +3655,84 @@ type HotkeyRowTarget = {
   id: string;
   name: string;
   hotkey: string;
+  kind: HotkeyKind;
+  /** 非空表示该快捷键当前不可用（被其它程序占用 / 与其它功能配置冲突）。 */
+  error: string | null;
 };
+
+/// 单次触发的规范化标识：跨触发类型判重用（与后端 `trigger_identity` 同口径）。
+function hotkeyTriggerIdentity(kind: HotkeyKind, hotkey: string) {
+  const value = hotkey.trim().toUpperCase();
+  if (!value) {
+    return "";
+  }
+  return kind === "listen" ? canonicalListenKeyToken(value) : normalizeHotkeyDraft(value);
+}
+
+/// 触发类型的外显名称：单个切换按钮显示当前类型，点击切到另一个。
+function hotkeyKindLabel(kind: HotkeyKind) {
+  return kind === "listen" ? "键鼠监听" : "全局热键";
+}
+
+/// 全局热键的「单个功能键」：F1–F24 可以不带修饰键。
+function isFunctionKeyToken(value: string) {
+  return /^F([1-9]|1[0-9]|2[0-4])$/.test(value.trim().toUpperCase());
+}
+
+/// 切换触发类型前的确认框：明确说明会清空当前键值。
+///
+/// 整块遮罩与所有按钮都在 `mousedown` 时 `preventDefault`：确认框出现在录制态之上，
+/// 一旦焦点从录制框移开就会触发「失焦即校验保存并退出编辑」。
+function HotkeyKindConfirmDialog({
+  closing,
+  hotkey,
+  kind,
+  name,
+  onCancel,
+  onConfirm,
+}: {
+  closing: boolean;
+  hotkey: string;
+  kind: HotkeyKind;
+  name: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const stopFocusLoss = (event: React.MouseEvent) => event.preventDefault();
+  return createPortal(
+    <div
+      className={`dialog-backdrop ${closing ? "closing" : ""}`}
+      onClick={onCancel}
+      onMouseDown={stopFocusLoss}
+    >
+      <section
+        aria-label="切换触发类型"
+        aria-modal="true"
+        className={`update-dialog ${closing ? "closing" : ""}`}
+        onClick={(event) => event.stopPropagation()}
+        onMouseDown={stopFocusLoss}
+        role="dialog"
+      >
+        <header className="update-dialog-header">
+          <div className="update-dialog-icon"><Info size={16} /></div>
+          <div>
+            <h2>切换为{kind === "listen" ? "键鼠监听" : "全局热键"}？</h2>
+            <p>
+              {name} 当前的键值
+              <strong>{hotkey ? ` ${formatHotkeyForDisplay(hotkey)} ` : "（未配置）"}</strong>
+              会被清空，切换后需要重新录制。
+            </p>
+          </div>
+        </header>
+        <footer className="update-dialog-actions">
+          <button className="secondary-action" onClick={onCancel} onMouseDown={stopFocusLoss} type="button">取消</button>
+          <button className="primary-action" onClick={onConfirm} onMouseDown={stopFocusLoss} type="button">清空并切换</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
 
 /// 单个快捷键编辑行：录制、格式校验、冲突检查、保存与停用。
 /// 全局设置、截图工具页与各工具自带设置页共用，新增带快捷键的工具只需再渲染一行。
@@ -3617,7 +3752,16 @@ function HotkeyRowEditor({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<CaptureHotkeyDraft>({ display: "", value: "" });
+  const [pendingKind, setPendingKind] = useState<HotkeyKind | null>(null);
+  const [pendingClosing, setPendingClosing] = useState(false);
   const boxRef = useRef<HTMLButtonElement | null>(null);
+  const pendingKindRef = useRef<HotkeyKind | null>(null);
+  // 单按钮切换：点击后切到另一种触发类型。
+  const otherKind: HotkeyKind = item.kind === "global" ? "listen" : "global";
+
+  useEffect(() => {
+    pendingKindRef.current = pendingKind;
+  }, [pendingKind]);
 
   // 进入录制态后把焦点移到录制框，失焦即触发校验保存。
   useEffect(() => {
@@ -3625,6 +3769,32 @@ function HotkeyRowEditor({
       boxRef.current?.focus();
     }
   }, [editing]);
+
+  // 键鼠监听录制态：WebView 的 mousedown 收不到 XBUTTON，走后端临时钩子把鼠标侧键回传。
+  // 只在「监听类型 + 录制态」开这个通道，退出录制或切回全局热键即关闭。
+  useEffect(() => {
+    if (!editing || item.kind !== "listen") {
+      return;
+    }
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void invoke("begin_hotkey_capture").catch((reason) => {
+      onNotice({ phase: "error", title: "键鼠监听启动失败", message: String(reason), detail: { kind: "plain-error" } });
+    });
+    void listen<string>("hotkey-captured", (event) => {
+      if (disposed || pendingKindRef.current) {
+        return;
+      }
+      setDraft({ display: formatHotkeyForDisplay(event.payload), value: event.payload });
+    }).then((dispose) => {
+      unlisten = dispose;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+      void invoke("end_hotkey_capture").catch(() => {});
+    };
+  }, [editing, item.kind]);
 
   async function startEditing() {
     setEditing(true);
@@ -3636,29 +3806,47 @@ function HotkeyRowEditor({
     }
   }
 
-  async function stopEditing() {
+  /// 退出录制并恢复注册；返回恢复失败的原因，成功为 null。
+  async function stopEditing(): Promise<string | null> {
     setEditing(false);
     setDraft({ display: "", value: "" });
     try {
       await invoke("resume_tool_hotkeys");
-    } catch {
-      // 恢复失败由后端日志记录，界面保持可用。
+      return null;
+    } catch (reason) {
+      return String(reason);
     }
   }
 
   function captureHotkey(event: React.KeyboardEvent<HTMLElement>) {
     event.preventDefault();
+    if (pendingKindRef.current) {
+      return;
+    }
     const key = normalizeKeyboardKey(event.key);
     if (!key) {
       return;
     }
-    const parts = [
+    if (item.kind === "listen") {
+      // 监听型只认单个按键：修饰键不参与（按住 Ctrl 再按 A 记录的是 A）。
+      const token = canonicalListenKeyToken(key);
+      if (!token) {
+        return;
+      }
+      setDraft({ display: formatHotkeyForDisplay(token), value: token });
+      return;
+    }
+    const modifiers = [
       event.ctrlKey ? "CTRL" : "",
       event.altKey ? "ALT" : "",
       event.shiftKey ? "SHIFT" : "",
       event.metaKey ? "WIN" : "",
-      key,
     ].filter(Boolean);
+    // 全局热键只接受「组合键」或「单个功能键 F1–F24」，其余单键直接忽略。
+    if (modifiers.length === 0 && !isFunctionKeyToken(key)) {
+      return;
+    }
+    const parts = [...modifiers, key];
     // 录制态也走同一套外显口径（Ctrl+Alt+K），存储值仍是 normalize_hotkey 的大写形式。
     setDraft({
       display: formatHotkeyForDisplay(parts.join("+")),
@@ -3670,18 +3858,27 @@ function HotkeyRowEditor({
     if (!editing) {
       return;
     }
-    const normalized = normalizeHotkeyDraft(draft.value);
+    // 监听型的单键值本身就是规范化标识，不能再按 '+' 拆分。
+    const normalized = item.kind === "listen"
+      ? draft.value.trim().toUpperCase()
+      : normalizeHotkeyDraft(draft.value);
     if (!normalized) {
       await stopEditing();
       return;
     }
-    const validationError = validateHotkeyDraft(normalized);
+    const validationError = item.kind === "listen"
+      ? validateListenKeyDraft(normalized)
+      : validateHotkeyDraft(normalized);
     if (validationError) {
       onNotice({ phase: "error", title: "快捷键格式不正确", message: validationError, detail: { kind: "plain-error" } });
       await stopEditing();
       return;
     }
-    const conflict = others.find((other) => other.id !== item.id && normalizeHotkeyDraft(other.hotkey) === normalized);
+    // 跨类型也要判重：全局 F12 与监听 F12 是同一个物理键。
+    const candidate = hotkeyTriggerIdentity(item.kind, normalized);
+    const conflict = others.find(
+      (other) => other.id !== item.id && hotkeyTriggerIdentity(other.kind, other.hotkey) === candidate,
+    );
     if (conflict) {
       onNotice({
         phase: "error",
@@ -3695,7 +3892,16 @@ function HotkeyRowEditor({
     try {
       const nextSnapshot = await invoke<AppSnapshot>("set_tool_hotkey", { hotkey: normalized, toolId: item.id });
       setSnapshot(nextSnapshot);
-      await stopEditing();
+      const resumeError = await stopEditing();
+      if (resumeError) {
+        onNotice({
+          phase: "error",
+          title: "快捷键注册失败",
+          message: `${item.name} 的快捷键已保存，但恢复注册失败：${resumeError}`,
+          detail: { kind: "plain-error" },
+        });
+        return;
+      }
       onNotice({ phase: "success", title: "快捷键已保存", message: `${item.name} 已更新为 ${formatHotkeyForDisplay(normalized)}。` });
     } catch (reason) {
       onNotice({ phase: "error", title: "快捷键注册失败", message: String(reason), detail: { kind: "plain-error" } });
@@ -3716,6 +3922,50 @@ function HotkeyRowEditor({
     }
   }
 
+  /// 切换触发类型：已有键值时先确认（会清空），无键值时直接切换；两种都保持录制态。
+  function requestKindSwitch(nextKind: HotkeyKind) {
+    if (!editing || pendingKindRef.current || nextKind === item.kind) {
+      return;
+    }
+    if (!item.hotkey) {
+      void applyKindSwitch(nextKind);
+      return;
+    }
+    setPendingKind(nextKind);
+  }
+
+  async function applyKindSwitch(nextKind: HotkeyKind) {
+    try {
+      const nextSnapshot = await invoke<AppSnapshot>("set_tool_hotkey_kind", { kind: nextKind, toolId: item.id });
+      setSnapshot(nextSnapshot);
+      setDraft({ display: "", value: "" });
+      // 控件与确认框都在 mousedown 时 preventDefault，录制框本应保持焦点；这里再兜一次底。
+      boxRef.current?.focus();
+    } catch (reason) {
+      onNotice({ phase: "error", title: "触发类型切换失败", message: String(reason), detail: { kind: "plain-error" } });
+    }
+  }
+
+  function closeKindDialog() {
+    setPendingClosing(true);
+    window.setTimeout(() => {
+      setPendingKind(null);
+      setPendingClosing(false);
+    }, 170);
+  }
+
+  function confirmKindSwitch() {
+    const nextKind = pendingKind;
+    if (!nextKind) {
+      return;
+    }
+    closeKindDialog();
+    void applyKindSwitch(nextKind);
+  }
+
+  // 空键值不可能“被占用/冲突”：即使拿到陈旧数据也不显示红色态。
+  const errorText = !editing && item.hotkey ? item.error : null;
+
   return (
     <div className={hideTitle ? "hotkey-inline-controls" : "settings-row hotkey-row"}>
       {hideTitle ? null : (
@@ -3724,13 +3974,28 @@ function HotkeyRowEditor({
         </div>
       )}
       <div className="hotkey-controls">
+        <div className="hotkey-kind" onMouseDown={(event) => event.preventDefault()}>
+          <button
+            aria-label={`${item.name}触发类型：${hotkeyKindLabel(item.kind)}，点击切换为${hotkeyKindLabel(otherKind)}`}
+            className="hotkey-kind-toggle"
+            disabled={!editing}
+            onClick={() => requestKindSwitch(otherKind)}
+            onMouseDown={(event) => event.preventDefault()}
+            title={editing ? `切换为${hotkeyKindLabel(otherKind)}` : "进入编辑后可切换触发类型"}
+            type="button"
+          >
+            {hotkeyKindLabel(item.kind)}
+          </button>
+        </div>
         <button
           ref={boxRef}
           aria-label={`${item.name}快捷键`}
-          className={`hotkey-box ${editing ? "recording" : ""} ${!editing && !item.hotkey ? "empty" : ""}`}
+          className={`hotkey-box ${editing ? "recording" : ""} ${!editing && !item.hotkey ? "empty" : ""} ${errorText ? "error" : ""}`}
+          data-hotkey-capture={editing ? "true" : undefined}
           onBlur={() => void saveHotkey()}
           onKeyDown={captureHotkey}
           tabIndex={editing ? 0 : -1}
+          title={errorText ?? (item.kind === "listen" ? "键鼠监听：按任意单键或鼠标侧键" : "全局热键：组合键或单个 F1–F24")}
           type="button"
         >
           {editing
@@ -3760,6 +4025,16 @@ function HotkeyRowEditor({
           </button>
         )}
       </div>
+      {pendingKind ? (
+        <HotkeyKindConfirmDialog
+          closing={pendingClosing}
+          hotkey={item.hotkey}
+          kind={pendingKind}
+          name={item.name}
+          onCancel={closeKindDialog}
+          onConfirm={confirmKindSwitch}
+        />
+      ) : null}
     </div>
   );
 }
@@ -3918,6 +4193,8 @@ function toHotkeyRowTarget(item: HotkeyItem): HotkeyRowTarget {
     id: item.id,
     name: item.displayName,
     hotkey: item.hotkey,
+    kind: item.hotkeyKind,
+    error: item.hotkeyError,
   };
 }
 
@@ -3984,13 +4261,15 @@ function WindowPinnerToolPage({ appHotkeys, setAppSnapshot, tool, tools }: {
   const { pushToast } = useToastQueue();
   // 快捷键已迁到本页工具栏，需读实时 tools 才能在保存后立即刷新。
   const currentHotkey = tools.find((item) => item.id === "window_pinner")?.hotkey ?? tool.hotkey;
+  const currentHotkeyKind = tools.find((item) => item.id === "window_pinner")?.hotkeyKind ?? tool.hotkeyKind;
+  const currentHotkeyError = tools.find((item) => item.id === "window_pinner")?.hotkeyError ?? null;
   const hotkeyTargets: HotkeyRowTarget[] = [
     ...appHotkeys
       .filter((item) => item.supportsHotkey)
-      .map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey })),
+      .map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey, kind: item.hotkeyKind, error: item.hotkeyError })),
     ...tools
       .filter((item) => item.supportsHotkey && item.id !== "window_pinner")
-      .map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey })),
+      .map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey, kind: item.hotkeyKind, error: item.hotkeyError })),
   ];
 
   function showHotkeyNotice(nextNotice: HotkeyNotice) {
@@ -4052,7 +4331,7 @@ function WindowPinnerToolPage({ appHotkeys, setAppSnapshot, tool, tools }: {
         <span className="window-pinner-hotkey">快捷键
           <HotkeyRowEditor
             hideTitle
-            item={{ id: "window_pinner", name: "窗口置顶", hotkey: currentHotkey }}
+            item={{ id: "window_pinner", name: "窗口置顶", hotkey: currentHotkey, kind: currentHotkeyKind, error: currentHotkeyError }}
             onNotice={showHotkeyNotice}
             others={hotkeyTargets}
             setSnapshot={setAppSnapshot}
@@ -5064,7 +5343,7 @@ function KeyUsageToolPage({ tool }: { tool: Tool }) {
   useEffect(() => {
     const ranges: AppUsageRange[] = ["day", "week", "month", "year"];
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.defaultPrevented || isTextInputTarget(event.target)) {
+      if (event.defaultPrevented || isTextInputTarget(event.target) || isHotkeyRecordingTarget(event.target)) {
         return;
       }
       const element = event.target instanceof HTMLElement ? event.target : null;
@@ -5525,7 +5804,7 @@ function AppUsageToolPage({ tool }: { tool: Tool }) {
   useEffect(() => {
     const ranges: AppUsageRange[] = ["day", "week", "month", "year"];
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.defaultPrevented || isTextInputTarget(event.target)) {
+      if (event.defaultPrevented || isTextInputTarget(event.target) || isHotkeyRecordingTarget(event.target)) {
         return;
       }
       const element = event.target instanceof HTMLElement ? event.target : null;
@@ -6079,14 +6358,16 @@ function ClipboardToolPage({ appHotkeys, setAppSnapshot, tool, tools }: {
   const extractTokens = useMemo(() => extractClipboardTokens(extractEntry?.text ?? ""), [extractEntry]);
   // activeTool 是进入页面时的快照，快捷键保存后需读实时的 tools 才能刷新。
   const currentHotkey = tools.find((item) => item.id === "clipboard")?.hotkey ?? tool.hotkey;
+  const currentHotkeyKind = tools.find((item) => item.id === "clipboard")?.hotkeyKind ?? tool.hotkeyKind;
+  const currentHotkeyError = tools.find((item) => item.id === "clipboard")?.hotkeyError ?? null;
   // 冲突检查需要其它工具与软件级动作的当前快捷键；剪贴板自己的行由设置弹窗单独渲染。
   const hotkeyTargets: HotkeyRowTarget[] = [
     ...appHotkeys
       .filter((item) => item.supportsHotkey)
-      .map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey })),
+      .map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey, kind: item.hotkeyKind, error: item.hotkeyError })),
     ...tools
       .filter((item) => item.supportsHotkey && item.id !== "clipboard")
-      .map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey })),
+      .map((item) => ({ id: item.id, name: item.name, hotkey: item.hotkey, kind: item.hotkeyKind, error: item.hotkeyError })),
   ];
 
   const loadClipboard = useCallback(async () => {
@@ -6178,7 +6459,7 @@ function ClipboardToolPage({ appHotkeys, setAppSnapshot, tool, tools }: {
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.defaultPrevented || isTextInputTarget(event.target)) {
+      if (event.defaultPrevented || isTextInputTarget(event.target) || isHotkeyRecordingTarget(event.target)) {
         return;
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
@@ -6595,7 +6876,7 @@ function ClipboardToolPage({ appHotkeys, setAppSnapshot, tool, tools }: {
           onUpdateSettings={updateClipboardSettings}
           setSnapshot={setAppSnapshot}
           snapshot={snapshot}
-          tool={{ ...tool, hotkey: currentHotkey }}
+          tool={{ ...tool, hotkey: currentHotkey, hotkeyKind: currentHotkeyKind, hotkeyError: currentHotkeyError }}
         />
       ) : null}
 
@@ -6736,7 +7017,7 @@ function ClipboardSettingsDialog({
           </div>
           <div className="clipboard-hotkey-section">
             <HotkeyRowEditor
-              item={{ id: "clipboard", name: hotkeyFeatureName(tool), hotkey: tool.hotkey }}
+              item={{ id: "clipboard", name: hotkeyFeatureName(tool), hotkey: tool.hotkey, kind: tool.hotkeyKind, error: tool.hotkeyError }}
               onNotice={onNotice}
               others={hotkeyTargets}
               setSnapshot={setSnapshot}
@@ -7869,6 +8150,25 @@ const HOTKEY_KEY_LABELS: Record<string, string> = {
   ARROWLEFT: "Left",
   RIGHT: "Right",
   ARROWRIGHT: "Right",
+  CAPSLOCK: "CapsLock",
+  NUMLOCK: "NumLock",
+  SCROLLLOCK: "ScrollLock",
+  PRINTSCREEN: "PrintScreen",
+  PAUSE: "Pause",
+  // 键鼠监听型快捷键的规范化单键标识：符号与鼠标侧键显示成用户认识的写法。
+  SLASH: "/",
+  PERIOD: ".",
+  COMMA: ",",
+  SEMICOLON: ";",
+  QUOTE: "'",
+  BRACKETLEFT: "[",
+  BRACKETRIGHT: "]",
+  EQUAL: "=",
+  MINUS: "-",
+  BACKQUOTE: "`",
+  BACKSLASH: "\\",
+  MOUSE4: "鼠标侧键1",
+  MOUSE5: "鼠标侧键2",
 };
 
 // 修饰键外显顺序固定为 Win → Ctrl → Alt → Shift → 主键。
@@ -7918,8 +8218,87 @@ function formatHotkeyForDisplay(value: string) {
   return [...ordered, ...keys].join("+");
 }
 
+/// 键鼠监听的按键别名 → 规范化单键标识（与后端 `hotkey_listener::listen_key_token` 同口径）。
+/// 注意：规范化标识本身也必须是合法输入——`KeyboardEvent.key` 大写后就是 `SPACE` / `TAB` /
+/// `ENTER` / `ARROWUP` 这些名字，只登记别名会让这些键在录制时被当成「不支持」。
+const LISTEN_KEY_TOKENS: Record<string, string> = {
+  // 规范化标识（自映射）
+  ARROWUP: "ARROWUP",
+  ARROWDOWN: "ARROWDOWN",
+  ARROWLEFT: "ARROWLEFT",
+  ARROWRIGHT: "ARROWRIGHT",
+  PAGEUP: "PAGEUP",
+  PAGEDOWN: "PAGEDOWN",
+  TAB: "TAB",
+  SPACE: "SPACE",
+  ENTER: "ENTER",
+  ESCAPE: "ESCAPE",
+  BACKSPACE: "BACKSPACE",
+  INSERT: "INSERT",
+  DELETE: "DELETE",
+  HOME: "HOME",
+  END: "END",
+  CAPSLOCK: "CAPSLOCK",
+  NUMLOCK: "NUMLOCK",
+  SCROLLLOCK: "SCROLLLOCK",
+  PRINTSCREEN: "PRINTSCREEN",
+  PAUSE: "PAUSE",
+  MOUSE4: "MOUSE4",
+  MOUSE5: "MOUSE5",
+  // 别名 → 规范化标识
+  UP: "ARROWUP",
+  DOWN: "ARROWDOWN",
+  LEFT: "ARROWLEFT",
+  RIGHT: "ARROWRIGHT",
+  PGUP: "PAGEUP",
+  PGDN: "PAGEDOWN",
+  ESC: "ESCAPE",
+  RETURN: "ENTER",
+  DEL: "DELETE",
+  INS: "INSERT",
+  SPACEBAR: "SPACE",
+  "/": "SLASH",
+  ".": "PERIOD",
+  ",": "COMMA",
+  ";": "SEMICOLON",
+  "'": "QUOTE",
+  "[": "BRACKETLEFT",
+  "]": "BRACKETRIGHT",
+  "=": "EQUAL",
+  "-": "MINUS",
+  "`": "BACKQUOTE",
+  "\\": "BACKSLASH",
+};
+
+/// 把录制到的单键收敛成监听用的规范化标识；不支持则返回空串。
+function canonicalListenKeyToken(value: string) {
+  const upper = value.trim().toUpperCase();
+  if (!upper) {
+    return "";
+  }
+  const named = LISTEN_KEY_TOKENS[upper];
+  if (named) {
+    return named;
+  }
+  if (isFunctionKeyToken(upper)) {
+    return upper;
+  }
+  return /^[A-Z0-9]$/.test(upper) ? upper : "";
+}
+
+function validateListenKeyDraft(value: string) {
+  if (!canonicalListenKeyToken(value)) {
+    return "键鼠监听只支持单个按键或鼠标侧键";
+  }
+  return null;
+}
+
 function validateHotkeyDraft(value: string) {
   const parts = value.split("+").map((part) => part.trim().toUpperCase()).filter(Boolean);
+  if (parts.length === 1) {
+    // 全局热键允许单个功能键（RegisterHotKey 可以单独注册 F1–F24）。
+    return isFunctionKeyToken(parts[0]) ? null : "全局热键需要「修饰键 + 按键」，或单个功能键（F1–F24）";
+  }
   if (parts.length < 2) {
     return "快捷键必须包含修饰键和一个按键";
   }

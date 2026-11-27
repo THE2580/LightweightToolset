@@ -18,6 +18,11 @@ const KEY_NAMES: Record<string, string> = {
   End: "End",
   PageUp: "PageUp",
   PageDown: "PageDown",
+  CapsLock: "CapsLock",
+  NumLock: "NumLock",
+  ScrollLock: "ScrollLock",
+  PrintScreen: "PrintScreen",
+  Pause: "Pause",
 };
 
 /** 把一次按键事件拼成与后端一致的 `Ctrl+Shift+F` 形式；无法识别的键返回 null。 */

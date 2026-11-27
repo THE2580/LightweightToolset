@@ -884,7 +884,10 @@ fn paint_tip(
         let badge_font = make_font(11.5 * s, 700, "Segoe UI");
 
         let title_wide = to_wide(&payload.title);
-        let keys_wide = payload.keys.as_deref().map(to_wide);
+        let keys_wide = payload
+            .keys
+            .as_deref()
+            .map(|keys| to_wide(&display_keys(keys)));
         let badge = format!("\u{00d7}{}", payload.count.max(1));
         let badge_wide = to_wide(&badge);
 
@@ -2252,6 +2255,18 @@ fn icon_kind_from_name(name: &str) -> Option<IconKind> {
         "camera" => IconKind::Camera,
         _ => return None,
     })
+}
+
+/// 浮窗键帽外显：把存储用的鼠标侧键标识换成用户可读文案（与快捷键设置一致）。
+fn display_keys(keys: &str) -> String {
+    keys.split('+')
+        .map(|part| match part.trim() {
+            "Mouse4" => "鼠标侧键1",
+            "Mouse5" => "鼠标侧键2",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 /// 按快捷键内容推断图标名（供上层查自定义路径用）。

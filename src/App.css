@@ -236,8 +236,17 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .hotkey-box { display: inline-flex; height: 30px; align-items: center; justify-content: center; padding: 0 8px; border: 2px solid #8b98aa; border-radius: 6px; color: var(--text); background: var(--panel-bg); font: inherit; font-size: 10px; font-weight: 600; line-height: 1; outline: none; white-space: nowrap; cursor: default; }
 .hotkey-box.empty { border-style: dashed; color: var(--muted-text); }
 .hotkey-box.recording { border-color: var(--primary); color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent); cursor: text; }
+/* 非录制阶段不可用（被其它程序占用 / 与其它功能配置冲突）：键值框边框转红，悬停 title 看原因。 */
+.hotkey-box.error { border-color: var(--danger); border-style: dashed; }
 .hotkey-icon-action { display: inline-grid; place-items: center; width: 32px; min-width: 32px; height: 32px; padding: 0; border-radius: 8px; line-height: 0; }
 .hotkey-icon-action svg { display: block; }
+/* 触发类型：单个切换按钮。非编辑态置灰且完全静态（禁用所有 hover 反馈）。 */
+.hotkey-kind { display: inline-flex; align-items: center; flex: none; }
+.hotkey-kind-toggle { height: 30px; padding: 0 10px; border: 2px solid #8b98aa; border-radius: 6px; color: var(--muted-text); background: var(--control-bg); font: inherit; font-size: 10px; font-weight: 600; line-height: 1; white-space: nowrap; cursor: pointer; transition: border-color 140ms ease; }
+/* 编辑态 hover 只换边框颜色，底与文字保持不变。 */
+.hotkey-kind-toggle:hover:not(:disabled) { border-color: var(--primary); }
+.hotkey-kind-toggle:disabled { color: color-mix(in srgb, var(--muted-text) 55%, transparent); border-color: rgba(139, 152, 170, 0.45); background: var(--control-bg); cursor: default; }
+.hotkey-kind-toggle:focus-visible { outline: none; }
 .tool-page { padding-top: 2px; }
 .tool-page h1 { margin: 0 0 4px; font-size: 20px; }
 .tool-page > p { margin: 0; color: #687896; font-size: 10px; }
@@ -1075,6 +1084,7 @@ kbd { padding: 2px 4px; border: 1px solid var(--border); border-radius: 3px; col
 :root[data-theme="dark"] .setting-value.danger { color: var(--danger); background: var(--danger-bg); }
 :root[data-theme="dark"] .hotkey-box { border-color: #8b98aa; background: #252525; }
 :root[data-theme="dark"] .hotkey-box.empty { color: #8c8c8c; }
+:root[data-theme="dark"] .hotkey-box.error { border-color: var(--danger); }
 :root[data-theme="dark"] .window-pinner-limit-picker { border-color: #444; background: #2b2b2b; }
 :root[data-theme="dark"] .window-pinner-limit-picker:hover,
 :root[data-theme="dark"] .window-pinner-limit-picker:focus-within { border-color: #686868; box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34), 0 3px 8px rgba(0, 0, 0, 0.24); }

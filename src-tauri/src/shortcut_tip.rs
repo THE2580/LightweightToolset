@@ -586,7 +586,6 @@ fn store_handle() -> Result<std::sync::MutexGuard<'static, StoreHandle>, String>
 }
 
 pub fn upsert(input: ShortcutTipInput) -> Result<ShortcutTipSnapshot, String> {
-    let keys = canonical_chord(&input.keys).ok_or("快捷键格式无法识别")?;
     let label = input.label.trim();
     if label.is_empty() {
         return Err("提示文案不能为空".to_owned());
@@ -602,7 +601,7 @@ pub fn upsert(input: ShortcutTipInput) -> Result<ShortcutTipSnapshot, String> {
                 .ok_or("提示不存在")?;
             // 预设条目只允许改文案与启停，快捷键固定。
             if !entry.preset {
-                entry.keys = keys;
+                entry.keys = canonical_chord(&input.keys).ok_or("快捷键格式无法识别")?;
             }
             entry.label = label.to_owned();
             if let Some(enabled) = input.enabled {
@@ -610,6 +609,7 @@ pub fn upsert(input: ShortcutTipInput) -> Result<ShortcutTipSnapshot, String> {
             }
         }
         None => {
+            let keys = canonical_chord(&input.keys).ok_or("快捷键格式无法识别")?;
             handle.store.tips.push(ShortcutTipEntry {
                 id: now_id(),
                 keys,
@@ -1202,12 +1202,14 @@ unsafe fn install_input_listeners(ready_tx: mpsc::Sender<Option<u32>>) {
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
             DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-            WH_KEYBOARD_LL,
+            WH_KEYBOARD_LL, WH_MOUSE_LL,
         },
     };
 
     let module = GetModuleHandleW(std::ptr::null());
     let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_hook), module, 0);
+    // 鼠标侧键没有系统热键语义、Chromium 也不会拦截低级鼠标钩子，主进程钩子即可全局覆盖。
+    let mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_hook), module, 0);
     let thread_id = windows_sys::Win32::System::Threading::GetCurrentThreadId();
     let _ = ready_tx.send(Some(thread_id));
 
@@ -1220,6 +1222,39 @@ unsafe fn install_input_listeners(ready_tx: mpsc::Sender<Option<u32>>) {
     if !hook.is_null() {
         UnhookWindowsHookEx(hook);
     }
+    if !mouse_hook.is_null() {
+        UnhookWindowsHookEx(mouse_hook);
+    }
+}
+
+/// 低级鼠标钩子：只关心侧键（XBUTTON1/2）。
+/// - 录制中：回传 `Mouse4/Mouse5` 并吞掉本次点击（避免 WebView 前进/后退）；
+/// - 平时：按侧键弹对应提示，不吞键。
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn low_level_mouse_hook(
+    code: i32,
+    w_param: windows_sys::Win32::Foundation::WPARAM,
+    l_param: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, LLMHF_INJECTED, MSLLHOOKSTRUCT, WM_XBUTTONDOWN, XBUTTON1,
+    };
+    let message = w_param as u32;
+    if code >= 0 && l_param != 0 && message == WM_XBUTTONDOWN {
+        let input = &*(l_param as *const MSLLHOOKSTRUCT);
+        if input.flags & LLMHF_INJECTED == 0 {
+            let which = (input.mouseData >> 16) as u16;
+            let token = if which == XBUTTON1 { "Mouse4" } else { "Mouse5" };
+            if CAPTURING.load(Ordering::SeqCst) {
+                if let Some(app) = APP.get() {
+                    let _ = app.emit("shortcut-tip-captured", token);
+                }
+                return 1;
+            }
+            notify_shortcut(token, Origin::Hook);
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1353,6 +1388,23 @@ fn key_name(vk: u32) -> Option<String> {
         0x28 => "Down".to_owned(),
         0x2D => "Insert".to_owned(),
         0x2E => "Delete".to_owned(),
+        0x13 => "Pause".to_owned(),
+        0x14 => "CapsLock".to_owned(),
+        0x2C => "PrintScreen".to_owned(),
+        0x90 => "NumLock".to_owned(),
+        0x91 => "ScrollLock".to_owned(),
+        // OEM 符号键：与页面 `KeyboardEvent.key` 的字符写法保持一致。
+        0xBA => ";".to_owned(),
+        0xBB => "=".to_owned(),
+        0xBC => ",".to_owned(),
+        0xBD => "-".to_owned(),
+        0xBE => ".".to_owned(),
+        0xBF => "/".to_owned(),
+        0xC0 => "`".to_owned(),
+        0xDB => "[".to_owned(),
+        0xDC => "\\".to_owned(),
+        0xDD => "]".to_owned(),
+        0xDE => "'".to_owned(),
         _ => return None,
     };
     Some(name)
@@ -1420,6 +1472,13 @@ fn normalize_key_name(token: &str) -> Option<String> {
         "end" => "End".to_owned(),
         "pageup" | "pgup" => "PageUp".to_owned(),
         "pagedown" | "pgdn" => "PageDown".to_owned(),
+        "capslock" | "caps_lock" => "CapsLock".to_owned(),
+        "numlock" | "num_lock" => "NumLock".to_owned(),
+        "scrolllock" | "scroll_lock" => "ScrollLock".to_owned(),
+        "printscreen" | "print_screen" | "prtsc" => "PrintScreen".to_owned(),
+        "pause" => "Pause".to_owned(),
+        "mouse4" | "mouse_4" => "Mouse4".to_owned(),
+        "mouse5" | "mouse_5" => "Mouse5".to_owned(),
         _ => {
             let upper = token.to_ascii_uppercase();
             if upper.chars().count() == 1 && upper.chars().all(|ch| ch.is_ascii_graphic()) {
@@ -1437,13 +1496,42 @@ fn normalize_key_name(token: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_chord, hotkey_owner_tool};
+    use super::{canonical_chord, hotkey_owner_tool, key_name};
 
     #[test]
     fn canonical_chord_accepts_super_alias() {
         assert_eq!(canonical_chord("CTRL+SUPER+/").as_deref(), Some("Win+Ctrl+/"));
         assert_eq!(canonical_chord("SUPER+D").as_deref(), Some("Win+D"));
         assert_eq!(canonical_chord("META+Shift+S").as_deref(), Some("Win+Shift+S"));
+    }
+
+    /// 锁键与 OEM 符号键都要能在录制/匹配链路里被命名（历史缺项导致 CapsLock 录不进去）。
+    #[test]
+    fn hook_names_cover_lock_keys_and_symbols() {
+        assert_eq!(key_name(0x14).as_deref(), Some("CapsLock"));
+        assert_eq!(key_name(0x90).as_deref(), Some("NumLock"));
+        assert_eq!(key_name(0x91).as_deref(), Some("ScrollLock"));
+        assert_eq!(key_name(0x2C).as_deref(), Some("PrintScreen"));
+        assert_eq!(key_name(0x13).as_deref(), Some("Pause"));
+        assert_eq!(key_name(0xBF).as_deref(), Some("/"));
+        assert_eq!(key_name(0xBA).as_deref(), Some(";"));
+        assert_eq!(key_name(0xBB).as_deref(), Some("="));
+        // 规范化层同样要认这些写法，保存时才不会报“格式无法识别”。
+        assert_eq!(canonical_chord("CapsLock").as_deref(), Some("CapsLock"));
+        assert_eq!(canonical_chord("caps_lock").as_deref(), Some("CapsLock"));
+        assert_eq!(canonical_chord("NumLock").as_deref(), Some("NumLock"));
+        assert_eq!(canonical_chord(";").as_deref(), Some(";"));
+    }
+
+    #[test]
+    fn canonical_chord_accepts_mouse_side_buttons() {
+        assert_eq!(canonical_chord("Mouse4").as_deref(), Some("Mouse4"));
+        assert_eq!(canonical_chord("MOUSE5").as_deref(), Some("Mouse5"));
+        // 组合键里带侧键不是监听型支持的形态，但规范化应能识别（由校验拒绝）。
+        assert_eq!(
+            canonical_chord("Ctrl+Mouse4").as_deref(),
+            Some("Ctrl+Mouse4")
+        );
     }
 
     #[test]

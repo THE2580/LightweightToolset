@@ -1,6 +1,7 @@
 mod app_usage;
 mod autostart;
 mod clipboard;
+mod hotkey_listener;
 mod input_monitor;
 mod key_usage;
 mod native_tip;
@@ -44,7 +45,7 @@ use settings::{AppSettings, CloseBehavior, ThemeMode};
 use shortcut_tip::{ShortcutTipInput, ShortcutTipSnapshot};
 use timer::{TimerCreateInput, TimerReorderInput, TimerSnapshot, TimerUpdateInput};
 use window_pinner::WindowPinnerSnapshot;
-use tools::{app_hotkey_snapshots, ToolRegistry, ToolSnapshot};
+use tools::{ToolRegistry, ToolSnapshot};
 
 const SETTINGS_FILE: &str = "settings.json";
 const STORAGE_POINTER_FILE: &str = "storage_path.txt";
@@ -149,7 +150,7 @@ fn app_snapshot(state: &AppState, registry: &ToolRegistry) -> Result<AppSnapshot
         .clone();
     Ok(AppSnapshot {
         tools: registry.snapshot(),
-        app_hotkeys: app_hotkey_snapshots(registry.settings()),
+        app_hotkeys: registry.app_hotkey_snapshots(),
         cold_start_ms: cold_start_ms(state)?,
         settings: registry.settings().clone(),
         runtime_ready: state.runtime_ready.load(Ordering::Acquire),
@@ -527,6 +528,39 @@ fn clear_tool_hotkey(
         format!("tool.hotkey.cleared id={tool_id}"),
     );
     app_snapshot(&state, &registry)
+}
+
+/// 切换快捷键触发类型（全局热键 ↔ 键鼠监听）。
+///
+/// 语义是「清空当前键值 + 切类型」的原子操作：旧键值是另一种格式，不能按新类型校验，
+/// 所以后端先解绑清空、再切类型，避免误报「切换失败」。录制态由前端保持。
+#[tauri::command]
+fn set_tool_hotkey_kind(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tool_id: String,
+    kind: String,
+) -> Result<AppSnapshot, String> {
+    let mut registry = state.registry.lock().map_err(|_| "工具注册表不可用")?;
+    registry.set_hotkey_kind(&app, &tool_id, &kind)?;
+    save_app_settings(&state, registry.settings())?;
+    push_debug_log(
+        &state,
+        "hotkey",
+        format!("tool.hotkey_kind.updated id={tool_id} kind={kind}"),
+    );
+    app_snapshot(&state, &registry)
+}
+
+/// 进入「录制一次」通道：把鼠标侧键回传给前端（WebView 的 mousedown 收不到 XBUTTON）。
+#[tauri::command]
+fn begin_hotkey_capture(app: AppHandle) -> Result<(), String> {
+    hotkey_listener::begin_capture(&app)
+}
+
+#[tauri::command]
+fn end_hotkey_capture() {
+    hotkey_listener::end_capture();
 }
 
 #[tauri::command]
@@ -1809,6 +1843,108 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 全局热键派发入口：回调只给按键文本，这里解析成快捷键 id 后再走统一动作。
+///
+/// 解析不到时不再兜底「呼出主窗口」（历史缺陷：符号键写法不一致会误弹主窗口），
+/// 只保留「剪贴板是唯一启用的工具」这一旧行为，其余记日志。
+fn dispatch_hotkey(app: &AppHandle, shortcut_text: &str) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    push_debug_log(
+        &state,
+        "hotkey",
+        format!("tool.hotkey.triggered shortcut={shortcut_text}"),
+    );
+    let mut hotkey_id: Option<String> = None;
+    let mut fallback_clipboard = false;
+    if let Ok(registry) = state.registry.lock() {
+        hotkey_id = registry
+            .app_hotkey_for_shortcut(shortcut_text)
+            .or_else(|| registry.tool_for_shortcut(shortcut_text));
+        if hotkey_id.is_none() && registry.only_enabled_tool().as_deref() == Some("clipboard") {
+            fallback_clipboard = true;
+        }
+    }
+    match hotkey_id {
+        Some(hotkey_id) => dispatch_hotkey_id(app, &hotkey_id),
+        None if fallback_clipboard => open_clipboard_from_hotkey(app),
+        None => push_debug_log(
+            &state,
+            "hotkey",
+            format!("hotkey.unmatched shortcut={shortcut_text}"),
+        ),
+    }
+}
+
+/// 按快捷键 id 执行动作：全局热键（文本解析）与键鼠监听（直接带 id）共用。
+///
+/// 运行在非主线程：键盘钩子线程通过独立线程调用，避免阻塞低级钩子影响全局输入。
+pub(crate) fn dispatch_hotkey_id(app: &AppHandle, hotkey_id: &str) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    push_debug_log(
+        &state,
+        "hotkey",
+        format!("tool.hotkey.triggered id={hotkey_id}"),
+    );
+    let (is_app_hotkey, screenshot_enabled) = match state.registry.lock() {
+        Ok(registry) => (
+            registry.is_app_hotkey(hotkey_id),
+            registry.is_enabled("screenshot"),
+        ),
+        Err(_) => return,
+    };
+
+    // 快捷键提示先派发：贴图组命令分支会直接 return，提示若排在后面就永远轮不到。
+    let notify_id = hotkey_id.to_owned();
+    std::thread::spawn(move || shortcut_tip::notify_app_hotkey(&notify_id));
+
+    match hotkey_id {
+        "main_window" => show_main_window(app),
+        "window_pinner" => match window_pinner::toggle_foreground(std::process::id()) {
+            Ok(action) => {
+                windows_notification::notify_window_pinner(&action.message);
+                let _ = app.emit("window-pinner-changed", &action);
+            }
+            Err(error) => {
+                let _ = app.emit("window-pinner-error", error);
+            }
+        },
+        // 抓屏与覆盖层都在独立线程里跑，这里立即返回。
+        "screenshot" => screenshot::capture_from_hotkey(app),
+        "clipboard" => open_clipboard_from_hotkey(app),
+        _ if is_app_hotkey => {
+            // 贴图组快捷键：截图工具停用时不再响应。
+            if !screenshot_enabled {
+                return;
+            }
+            match hotkey_id {
+                "screenshot_pin" => screenshot::pin_from_hotkey(app),
+                "pin_restore" => screenshot::restore_pin(app),
+                "pin_close_all" => screenshot::close_all_pins(),
+                "pin_toggle_visible" => screenshot::toggle_pins_visible(),
+                "pin_passthrough" => screenshot::toggle_pins_passthrough(),
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+fn open_clipboard_from_hotkey(app: &AppHandle) {
+    if let Err(error) = window_service::open_clipboard_popup(app) {
+        if let Some(state) = app.try_state::<AppState>() {
+            push_debug_log(
+                &state,
+                "error",
+                format!("clipboard.popup.open_failed error={error}"),
+            );
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// 快捷键提示的独立采键子进程入口（不初始化 Tauri / WebView）。
 pub fn run_shortcut_helper(port: u16) -> ! {
@@ -1843,101 +1979,7 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
                     if event.state() == ShortcutState::Pressed {
-                        let mut handled = false;
-                        let mut show_main_window_hotkey = false;
-                        let mut window_pinner_hotkey = false;
-                        let mut screenshot_hotkey = false;
-                        let mut pin_command: Option<String> = None;
-                        let mut triggered_hotkey_id: Option<String> = None;
-                        if let Some(state) = app.try_state::<AppState>() {
-                            push_debug_log(
-                                &state,
-                                "hotkey",
-                                format!("tool.hotkey.triggered shortcut={shortcut}"),
-                            );
-                            if let Ok(registry) = state.registry.lock() {
-                                let shortcut_text = shortcut.to_string();
-                                let app_hotkey = registry.app_hotkey_for_shortcut(&shortcut_text);
-                                triggered_hotkey_id = app_hotkey
-                                    .clone()
-                                    .or_else(|| registry.tool_for_shortcut(&shortcut_text));
-                                if app_hotkey.as_deref() == Some("main_window") {
-                                    show_main_window_hotkey = true;
-                                } else if registry.tool_for_shortcut(&shortcut_text).as_deref() == Some("window_pinner") {
-                                    window_pinner_hotkey = true;
-                                    handled = true;
-                                } else if registry.tool_for_shortcut(&shortcut_text).as_deref() == Some("screenshot") {
-                                    screenshot_hotkey = true;
-                                    handled = true;
-                                } else if let Some(command) = app_hotkey.clone() {
-                                    // 贴图组快捷键：截图工具停用时不再响应。
-                                    if command != "main_window" && registry.is_enabled("screenshot") {
-                                        pin_command = Some(command);
-                                        handled = true;
-                                    }
-                                } else if registry.tool_for_shortcut(&shortcut_text).as_deref()
-                                    == Some("clipboard")
-                                    || registry.only_enabled_tool().as_deref() == Some("clipboard")
-                                {
-                                    handled = true;
-                                }
-                            }
-                            // 先派发快捷键提示，再执行动作：贴图组命令分支会直接 return，
-                            // 提示若排在后面就永远轮不到（截图/呼出主窗口等排在其后，因此此前只它们会提示）。
-                            if let Some(hotkey_id) = triggered_hotkey_id.clone() {
-                                // 快捷键回调在主线程上，提示放到独立线程，避免阻塞 UI 或与其他锁互相等待。
-                                std::thread::spawn(move || shortcut_tip::notify_app_hotkey(&hotkey_id));
-                            }
-                            if let Some(command) = pin_command.clone() {
-                                match command.as_str() {
-                                    "screenshot_pin" => screenshot::pin_from_hotkey(app),
-                                    "pin_restore" => screenshot::restore_pin(app),
-                                    "pin_close_all" => screenshot::close_all_pins(),
-                                    "pin_toggle_visible" => screenshot::toggle_pins_visible(),
-                                    "pin_passthrough" => screenshot::toggle_pins_passthrough(),
-                                    _ => {}
-                                }
-                                return;
-                            }
-                            if window_pinner_hotkey {
-                                match window_pinner::toggle_foreground(std::process::id()) {
-                                    Ok(action) => {
-                                        windows_notification::notify_window_pinner(&action.message);
-                                        let _ = app.emit("window-pinner-changed", &action);
-                                    }
-                                    Err(error) => { let _ = app.emit("window-pinner-error", error); }
-                                }
-                            }
-                        }
-                        if window_pinner_hotkey {
-                            return;
-                        }
-                        if screenshot_hotkey {
-                            // 抓屏与覆盖层都在独立线程里跑，热键回调立即返回。
-                            screenshot::capture_from_hotkey(app);
-                            return;
-                        }
-                        if handled {
-                            if let Err(error) = window_service::open_clipboard_popup(app) {
-                                if let Some(state) = app.try_state::<AppState>() {
-                                    push_debug_log(
-                                        &state,
-                                        "error",
-                                        format!("clipboard.popup.open_failed error={error}"),
-                                    );
-                                }
-                            }
-                        } else if show_main_window_hotkey {
-                            show_main_window(app);
-                        } else if let Some(state) = app.try_state::<AppState>() {
-                            // 兜底不再当成「呼出主窗口」：未匹配的键只记录，避免误触把主窗口弹出来
-                            // （历史缺陷：符号键的存储写法与回调文本不一致，落到这里就会弹主窗口）。
-                            push_debug_log(
-                                &state,
-                                "hotkey",
-                                format!("hotkey.unmatched shortcut={shortcut}"),
-                            );
-                        }
+                        dispatch_hotkey(app, &shortcut.to_string());
                     }
                 })
                 .build(),
@@ -2066,6 +2108,9 @@ pub fn run() {
             set_tool_enabled,
             set_tool_hotkey,
             clear_tool_hotkey,
+            set_tool_hotkey_kind,
+            begin_hotkey_capture,
+            end_hotkey_capture,
             suspend_tool_hotkeys,
             resume_tool_hotkeys,
             set_auto_start_enabled,

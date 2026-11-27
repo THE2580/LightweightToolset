@@ -36,6 +36,11 @@ pub struct AppSettings {
     pub tools: BTreeMap<String, bool>,
     #[serde(default)]
     pub hotkeys: BTreeMap<String, String>,
+    /// 快捷键触发类型：`global`（`RegisterHotKey` 独占）或 `listen`（键鼠监听）。
+    ///
+    /// 只记录显式切过类型的条目，缺省按 `global` 处理——旧数据因此零迁移。
+    #[serde(default)]
+    pub hotkey_kinds: BTreeMap<String, String>,
     #[serde(default = "default_theme")]
     pub theme: ThemeMode,
     #[serde(default)]
@@ -194,6 +199,7 @@ impl Default for AppSettings {
         Self {
             tools: BTreeMap::new(),
             hotkeys: BTreeMap::new(),
+            hotkey_kinds: BTreeMap::new(),
             theme: default_theme(),
             auto_start: false,
             silent_start: false,

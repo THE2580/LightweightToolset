@@ -32,6 +32,8 @@
 
 # 环境坑（本机）
 
+- **迁移后的 release 构建缓存会带旧绝对路径**：项目从 `E:\codex_agent_project\LightweightToolset` 迁移过来后，`src-tauri/target/release` 里的 build-script `output` 仍记录旧路径；`npm run tauri build` 会因为 `failed to read ...\codex_agent_project\...\out\permissions\...` 失败（cargo 复用了“新鲜”的构建脚本输出）。修法：删除 `target/release/build/{tauri-,tauri-plugin-,lightweight-toolset-}*` 与对应的 `.fingerprint` 目录后重建（只清构建缓存，不动 release 产物/安装包，不要用 `cargo clean`）。
+
 - **npm 路径**：Git Bash 的 PATH 里没有 `npm`；用 `E:\devtools\node\v24.12.0\npm.cmd` 或 PowerShell 执行。
 - **`npm run tauri dev` 不可用**：`requireAdministrator` 清单在 cargo 拉起 debug exe 时报 `os error 740`；按 `AGENTS.md` 的「启动开发版」流程走。
 - **测试临时目录**：见上文「测试串行」。
@@ -40,6 +42,10 @@
 - **PowerShell 5.1 读写 `settings.json` 会毁配置**：读无 BOM UTF-8 按 ANSI 解码、写回加 BOM；改配置一律用 node。
 
 # 已确认经验
+
+- 2026-11-27（快捷键触发类型 / 批次 A/B，v0.8.4）：① 工具热键注册失败若用 `?` 传上去，会让「启用工具」整体失败并回滚，工具因此打不开——注册失败只能提示，不能阻塞启用；`resume_shortcuts` 同理要逐条尽力恢复，不能因单个键失败回滚全部。② 前端读状态时 `hotkeyError ?? tool.hotkeyError` 会把后端的 `null`（正常）当成空值回退到导航旧快照，表现为改键/清空后红标残留——状态字段要读实时快照，不能用 `??` 回退旧值。③ 方向键录制被侧栏导航抢：导航是 `window` 捕获阶段监听，录制框的冒泡 `onKeyDown` 永远晚；给录制框加 `data-hotkey-capture`，并让四个方向键导航处理器识别后让路。④ 快捷键提示有独立按键命名表（钩子 `key_name` / 后端 `normalize_key_name` / 页面 `KEY_NAMES`），补键必须三处同步，否则 CapsLock 等键录不进去（详见上文 2026-11-26 条）。⑤ 鼠标侧键提示：主进程装 `WH_MOUSE_LL` 即可全局覆盖（Chromium 不会抑制鼠标低级钩子）；录制时吞 XBUTTON 防 WebView 前进/后退。⑥ 提示条目本质是“监听后弹提示”，不适合 `RegisterHotKey`；最终交互选自动识别（按键形态），主快捷键行保留显式触发类型切换。
+
+- 2026-11-26（快捷键触发类型 / 键鼠监听）：四点必须记住。① **监听型不能靠注入事件自测**：`WH_KEYBOARD_LL`/`WH_MOUSE_LL` 回调里按设计忽略 `LLKHF_INJECTED` / `LLMHF_INJECTED`，所以 `SendInput`/`keybd_event` 永远不会触发监听快捷键，必须真人按键验证；② **录制鼠标侧键必须吞掉 XBUTTON**：否则 WebView2（Chromium）会把侧键当前进/后退导航，录制通道要只在「监听类型 + 录制态」生效并带超时兜底（当前 120s），避免界面异常时永久吞掉侧键；③ **低级钩子线程要先建消息队列**（`PeekMessageW(PM_NOREMOVE)`）再 `PostThreadMessage(WM_QUIT)`，否则停止时可能等不到 WM_QUIT 把 join 卡死；钩子回调里只取路由快照 + 拉线程派发，不能加锁做重活；④ **监听的按键映射表必须包含规范化标识的自映射**：`KeyboardEvent.key` 大写后就是 `SPACE`/`TAB`/`ENTER`/`ARROWUP`/`PAGEUP`…，只登记别名（`SPACEBAR`/`RETURN`/`UP`/`PGUP`）会让这些键在录制时被当成「不支持」而静默失败（已修）；⑤ **快捷键提示有自己独立的按键命名表**（钩子 `key_name`、后端 `normalize_key_name`、页面 `shortcutNotify.ts` 的 `KEY_NAMES`），与 `hotkey_listener` 那套不是一套——给快捷键补的 CapsLock/NumLock/ScrollLock/PrintScreen/Pause 不会自动出现在提示工具里，必须三处同时补，否则录制（钩子）、保存（normalize）、页面上报会分别断在不同层（CapsLock 录不进去就是这么来的，已修）；⑥ **方向键录制会被页面的 window 捕获阶段导航抢走**：侧栏上下导航是在 `window` 上以 `capture: true` 注册的，录制框自己的 `onKeyDown`（冒泡阶段）永远晚于它，`preventDefault` 也来不及；已给录制框加 `data-hotkey-capture` 标记，并让全部四个方向键导航处理器识别该标记后直接返回（录制之外导航行为不变）。
 
 - 2026-11-23（托盘低内存改造，踩到三处）：① **销毁最后一个窗口会让进程静默退出**——Tauri 默认「窗口数归零即退出」，`destroy()` 主窗口后整个进程连同托盘消失；必须 `RunEvent::ExitRequested` + `ALLOW_EXIT` 标志拦下（只在托盘退出/关闭行为=直接退出时放行），并且关闭行为=直接退出那条分支要主动置位，否则真退出的路径反被拦住。② **销毁窗口不会自动回收工作集**——WebView2 进程退出后，本进程工作集仍停在 ~37MB；销毁后追加 `EmptyWorkingSet(GetCurrentProcess())` 才落到 ~10MB。③ **采键 helper 常驻 ~16MB**——它是独立进程，同样要 `EmptyWorkingSet`，实测 15.9MB → 1.3MB。另外：`tauri.conf.json` 的 `app.windows` 清空后，`get_webview_window("main")` 全部返回 `None`，所有依赖它的入口（托盘、快捷键、二次启动、设置项改标题/置顶）都必须走「按需创建」或空处理。
 
