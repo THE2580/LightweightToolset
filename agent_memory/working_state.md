@@ -1,7 +1,8 @@
 # 当前现场
 
 - 2026-11-27：**`v0.8.4` 已发布**（提交 `5c3986d`、tag 已推、Release 已建、仓库 About 已更新）：快捷键触发类型、工具启用不被快捷键占用阻塞、非录制阶段红色虚线边框、快捷键提示自动识别 + 鼠标侧键 + 命名键补齐。
-- **开发环境已关闭**：开发版进程、Vite 1420、`%TEMP%/lwt-dev`、开发版数据目录与开发版快捷方式均已清理；安装版 `v0.7.2` 仍在 `D:\轻量化工具集\` 运行，未动。
+- **开发环境已关闭**：开发版进程、Vite 1420、`%TEMP%/lwt-dev`、开发版数据目录与开发版快捷方式均已清理。
+- **安装版已更新为 `v0.8.4`**（2026-11-27 14:56 安装，`D:\轻量化工具集\lightweight-toolset.exe`，ProductVersion 0.8.4，进程运行中）；用户已安装并开始体验最新版。
 - 工作树干净（本版改动已提交）；`src-tauri/src/window_pinner.rs` 换行差异与 `.codex/` 仍未动。
 
 # Scope
@@ -30,6 +31,7 @@
 - `cargo test --lib -- --test-threads=1` → **69 passed / 3 ignored**。
 - `npm run build`、`cargo check` 通过（仅 4 条既有 warning）；`npm run tauri build` 产出 NSIS 0.8.4。
 - 用户已验收全部 4 批改动（触发类型、工具启用修复、批次 A、批次 B）。
+- 2026-11-27：用户已安装 `v0.8.4` 安装版并开始体验（安装目录 `D:\轻量化工具集\`，版本核对 0.8.4）。
 - Release 资产名与 SHA-256 已用 `gh release view` 核对（资产名完整、digest 一致）。
 
 # Blockers

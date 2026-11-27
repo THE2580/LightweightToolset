@@ -2,7 +2,7 @@
 
 - LightweightToolset 是旧版 LightweightWindowsToolset 的独立 Tauri 2 / Rust / React / TypeScript 路线；旧 Electron 项目只作稳定参考与迁移对照，新功能不回写旧项目。
 - 已实现工具：截图与贴图（原生覆盖层 + 贴图窗口 + 标注 + 本地 OCR 文本选择，行为参照 `docs/pixpin-clone-analysis.md`）、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。后续候选：快捷翻译、桌宠。
-- 当前稳定发布为 `v0.8.4`，发布提交 `5c3986d`，仓库 `https://github.com/THE2580/LightweightToolset`。
+- 当前稳定发布为 `v0.8.4`，发布提交 `5c3986d`，仓库 `https://github.com/THE2580/LightweightToolset`；用户已于 2026-11-27 安装该版本并在日常体验（安装目录 `D:\轻量化工具集\`）。
 
 # 协作环境
 

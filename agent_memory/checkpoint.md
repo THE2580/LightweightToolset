@@ -6,7 +6,7 @@ LightweightToolset 持续迭代（Tauri 2 + Rust + React）：七个工具已上
 
 - 本版内容：快捷键触发类型（`global` 组合键/单个 F1–F24 与 `listen` 任意单键/鼠标侧键，单按钮切换、跨类型冲突、键被占用提示）；工具启用不再被快捷键注册失败阻塞；非录制阶段不可用键用红色虚线边框；快捷键提示改为按键形态自动识别，支持鼠标侧键提示/录制，补齐 CapsLock 等命名键与 OEM 符号键。
 - 发布：提交 `5c3986d`，tag `v0.8.4`，Release https://github.com/THE2580/LightweightToolset/releases/tag/v0.8.4 ；资产 `LightweightToolset_0.8.4_x64-setup.exe`（33,984,141 字节，SHA-256 `3e1968f7d92c74aca80cb587ee2daaa1955aa67070f8dc6d11d03af23e5b9762`）；README 与仓库 About 已更新。
-- 开发环境已关闭（开发版进程、Vite、开发版数据/快捷方式、`%TEMP%/lwt-dev` 已清理）；安装版 v0.7.2 未动。
+- 开发环境已关闭（开发版进程、Vite、开发版数据/快捷方式、`%TEMP%/lwt-dev` 已清理）。安装版已更新为 `v0.8.4`（`D:\轻量化工具集\`），用户已安装并开始体验。
 
 # Remaining
 
