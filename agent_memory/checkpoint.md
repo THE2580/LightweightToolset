@@ -1,33 +1,28 @@
 # Goal
 
-LightweightToolset 持续迭代（Tauri 2 + Rust + React）：七个工具已上线，稳定版 `v0.8.3`；「快捷键触发类型」扩展已通过用户验收（未提交）。
+LightweightToolset 持续迭代（Tauri 2 + Rust + React）：七个工具已上线，最新稳定版 `v0.8.4`（快捷键触发类型）。
 
-# Current Focus（2026-11-27）
+# Current Focus（2026-11-27，v0.8.4 已发布）
 
-- **快捷键触发类型**已实现并验收（未提交）：`global`（组合键 / 单个 F1–F24，`RegisterHotKey`）与新增 `listen`（任意键盘单键 + 鼠标侧键，`WH_KEYBOARD_LL` / `WH_MOUSE_LL`，不吞键、按下即触发、250ms 去抖、忽略注入事件）。
-- **交互**：类型用**单个切换按钮**显式切换（显示当前类型，仅编辑态可点；非编辑态静态置灰、无 hover）；已有键值时先弹标准确认框（说明清空、整块遮罩与按钮 `onMouseDown preventDefault` 保证录制框不失焦），确认后切类型 + 清空并保持录制态；录制框空态文案统一「按下快捷键」。
-- **其它**：跨类型冲突检测（全局 `F12` ↔ 监听 `F12`）、键被占用友好文案、鼠标侧键录制通道（`begin/end_hotkey_capture` + `hotkey-captured` 事件，录制期吞 XBUTTON 防导航，120s 兜底）。
-- **2026-11-27 修复（已验证）**：工具热键注册失败不再阻止工具启用（`tool-hotkey-warning` 轻提示）；`resume_shortcuts` 改为逐条尽力恢复。
-- **2026-11-27 批次 B（已验收）**：快捷键提示**自动识别键形态**（无类型按钮）+ 鼠标侧键 `Mouse4/5` 录制与触发；补齐 CapsLock 等命名键与 OEM 符号键；提示只监听不注册。
-- **2026-11-27 批次 A（已验收）**：`ToolSnapshot.hotkeyError` + **键值框红色边框**（仅非录制态；配置冲突优先，其次注册失败；成功/清空/切类型/停用即清除；已修“改键/清空后仍显示”的陈旧数据问题）。开发环境在跑（Vite 1420 + `%TEMP%/lwt-dev`），安装版 v0.7.2 同时运行（占用 `Ctrl+Alt+T` / `Ctrl+Alt+M`，属双版本共存预期）。
+- 本版内容：快捷键触发类型（`global` 组合键/单个 F1–F24 与 `listen` 任意单键/鼠标侧键，单按钮切换、跨类型冲突、键被占用提示）；工具启用不再被快捷键注册失败阻塞；非录制阶段不可用键用红色虚线边框；快捷键提示改为按键形态自动识别，支持鼠标侧键提示/录制，补齐 CapsLock 等命名键与 OEM 符号键。
+- 发布：提交 `5c3986d`，tag `v0.8.4`，Release https://github.com/THE2580/LightweightToolset/releases/tag/v0.8.4 ；资产 `LightweightToolset_0.8.4_x64-setup.exe`（33,984,141 字节，SHA-256 `3e1968f7d92c74aca80cb587ee2daaa1955aa67070f8dc6d11d03af23e5b9762`）；README 与仓库 About 已更新。
+- 开发环境已关闭（开发版进程、Vite、开发版数据/快捷方式、`%TEMP%/lwt-dev` 已清理）；安装版 v0.7.2 未动。
 
 # Remaining
 
-- **待办 1（已修，已验证通过）**：窗口置顶启用不再被快捷键注册失败阻塞。
-- ~~批次 A~~ **已验收**：非录制阶段快捷键边框红色态（虚线、仅被占用/配置冲突时显示；不加额外图标）。
-- ~~批次 B~~ **已验收**：快捷键提示自动识别键形态（无类型按钮）；补齐 CapsLock 等命名键与 OEM 符号键；鼠标侧键可录制并触发提示。
-- 用户要求时按 Conventional Commits 提交（建议 `feat: add hotkey trigger types with key/mouse listening`）。
-- 历史候选见 `progress.md`（辅助线掉帧、标注拖动/文本再编辑、拖拽缩略图观感、贴图历史浏览）。
+- 长期待办见 `progress.md`：截图辅助线掉帧、标注拖动/文本再编辑、拖拽缩略图观感、贴图历史浏览、自定义图标（方案 A，暂不做）。
+- 无进行中的未提交任务。
 
 # Verification
 
-- `cargo test --lib -- --test-threads=1`（TEMP/TMP 指向 `src-tauri/target/test-tmp`）→ 64 passed / 3 ignored。
-- `npm run build` 通过；`cargo check` 仅 4 条既有 warning。
-- 开发版自检：1420 监听且 HTTP 200；exe 来自开发临时目录；窗口正常渲染（截图核对）；不动安装版进程。
+- `cargo test --lib -- --test-threads=1`（TEMP/TMP 指向 `src-tauri/target/test-tmp`）→ 69 passed / 3 ignored。
+- `npm run build`、`cargo check`、`npm run tauri build` 通过；Release 资产名与 SHA-256 已用 `gh release view` 核对。
+- 用户已验收本版全部 4 批改动。
 
 # Resume Here
 
-1. 读 `agent_memory/working_state.md` 与 `progress.md` 顶部恢复现场（开发环境在跑：Vite 1420 + `%TEMP%/lwt-dev`）。
-2. 批次 B 等用户验证；有问题按反馈改（提示类型/侧键提示/旧数据迁移）。
-3. 若监听型不触发：让用户在「设置 → 日志」看 `hotkey.listen.registered` 与 `tool.hotkey.triggered id=`。
-4. 全部完成后按用户要求提交（`git status --short` 核对不含 `window_pinner.rs` 换行差异与 `.codex/`）。
+1. 读 `agent_memory/working_state.md` 与 `progress.md` 顶部恢复现场。
+2. 下一轮需求按 AGENTS「分支、提交与发布」判断版本号（本版之后：既有工具扩展改第三位、新工具改第一/二位）。
+3. 再改动前重新起开发环境：`npm run dev` + 复制 `src-tauri/target/debug/lightweight-toolset.exe` 到 `%TEMP%/lwt-dev` + `Start-Process -Verb RunAs`。
+4. 若监听型快捷键异常：先看设置 → 日志里的 `hotkey.listen.registered` / `tool.hotkey.triggered id=`。
+5. 发版前清理开发版痕迹（AGENTS 固定检查项），不要清理正式版目录。

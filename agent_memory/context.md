@@ -2,7 +2,7 @@
 
 - LightweightToolset 是旧版 LightweightWindowsToolset 的独立 Tauri 2 / Rust / React / TypeScript 路线；旧 Electron 项目只作稳定参考与迁移对照，新功能不回写旧项目。
 - 已实现工具：截图与贴图（原生覆盖层 + 贴图窗口 + 标注 + 本地 OCR 文本选择，行为参照 `docs/pixpin-clone-analysis.md`）、剪贴板、软件使用统计、按键使用统计、计时器、窗口置顶、快捷键提示。后续候选：快捷翻译、桌宠。
-- 当前稳定发布为 `v0.8.3`，发布提交 `86381f9`，仓库 `https://github.com/THE2580/LightweightToolset`。
+- 当前稳定发布为 `v0.8.4`，发布提交 `5c3986d`，仓库 `https://github.com/THE2580/LightweightToolset`。
 
 # 协作环境
 
@@ -61,6 +61,7 @@
 
 # 发布索引
 
+- `v0.8.4` / `5c3986d`：快捷键新增「触发类型」（组合键/单个 F1–F24 的全局热键 + 任意单键/鼠标侧键的键鼠监听，单按钮切换、跨类型冲突检测、键被占用友好提示）；工具启用不再被快捷键注册失败阻塞，非录制阶段不可用键用红色虚线边框标记；快捷键提示改为按键形态自动识别，支持鼠标侧键提示/录制，补齐 CapsLock/NumLock/ScrollLock/PrintScreen/Pause 与 OEM 符号键。安装包 `LightweightToolset_0.8.4_x64-setup.exe`（33,984,141 字节），SHA-256 `3e1968f7d92c74aca80cb587ee2daaa1955aa67070f8dc6d11d03af23e5b9762`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.8.4`。
 - `v0.8.3` / `86381f9`：提示窗自定义位置越界自动夹回工作区（完全不在屏幕则回落默认）；位置不再被“进入编辑”写死、旧值启动时迁移、位置「重置」清回默认、设置弹窗预取度量。安装包 `LightweightToolset_0.8.3_x64-setup.exe`（33,891,232 字节），SHA-256 `14fb2e62b40cdaefe09edf2f76fc5527a64ee6265d949a46eff8187d3780e784`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.8.3`。
 - `v0.8.2` / `b778fa4`：修复 v0.8.1 静默启动回归（运行时初始化从 `get_app_snapshot` 移到 `setup` 自行启动 + 幂等），静默启动即可用全部后台功能并正常发启动通知。安装包 `LightweightToolset_0.8.2_x64-setup.exe`（33,885,497 字节），SHA-256 `769ea8bab05ba22adc8da864d98f44fa4dfc86aca9ab75e29e0c040f255bc9dd`，Release `https://github.com/THE2580/LightweightToolset/releases/tag/v0.8.2`。
 - `v0.8.1` / `1361100`：主窗口改为按需创建 + 关窗立即销毁（`EmptyWorkingSet`），托盘态专用工作集 ≈153MB → **≈10MB**；采键 helper 启动即回收（≈16MB → 1MB）；`run()` 拦截 `ExitRequested` 防「窗口归零即退出」。安装包 `LightweightToolset_0.8.1_x64-setup.exe`（33,879,183 字节），SHA-256 `ad7b66332499724c72b6dd1c6d86849546b158909bf20bfb466440cc44a9dd6c`，Release `https://github.com/The2580/LightweightToolset/releases/tag/v0.8.1`。
